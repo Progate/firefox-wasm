@@ -1,0 +1,31 @@
+# Gecko software renderer on WASI preview1 + wasi-threads.
+# This port is separate from the Emscripten build; no JS glue is linked.
+mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-wasip1
+ac_add_options --enable-application=browser
+ac_add_options --target=wasm32-unknown-wasi
+ac_add_options --enable-default-toolkit=cairo-headless
+ac_add_options --disable-jit
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+ac_add_options --disable-shared-memory
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --enable-optimize=-O2
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-webrtc
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --disable-ctypes
+ac_add_options --disable-bootstrap
+ac_add_options --with-libclang-path=${LIBCLANG_PATH:-/usr/lib/llvm-18/lib}
+export CC="$WASI_SDK_PATH/bin/clang --target=wasm32-wasip1-threads"
+export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads"
+export AR="$WASI_SDK_PATH/bin/llvm-ar"
+export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
+export CFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread -msimd128 -I$topsrcdir/modules/freetype2/include"
+export CXXFLAGS="$CFLAGS"
+export LDFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread"
+export RUSTFLAGS="-Ctarget-feature=+simd128,+atomics,+bulk-memory"
+HOST_CC=clang
+HOST_CXX=clang++

@@ -21,12 +21,16 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #include <emscripten/wasmfs.h>
 
 // Persistent /profile + /gre provider backend, patched into libwasmfs (emsdk-
 // patches/provider_backend.h). Not in the public emscripten/wasmfs.h.
 extern "C" backend_t wasmfs_create_provider_backend(int mountId);
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 
 #include "nsXPCOM.h"
 #include "nsCOMPtr.h"

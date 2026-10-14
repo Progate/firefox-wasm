@@ -1,0 +1,47 @@
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -166,7 +166,7 @@
+     # separate objects collide on shared symbols (libVersionPoint, etc.) when
+     # statically linked into one wasm module, and wasm-ld has no
+     # --allow-multiple-definition. Folding is also what Android does.
+-    return target.os in ("WINNT", "OSX", "iOS", "Android", "EMSCRIPTEN")
++    return target.os in ("WINNT", "OSX", "iOS", "Android", "EMSCRIPTEN", "WASI")
+ 
+ 
+ set_config("MOZ_FOLD_LIBS", fold_libs)
+@@ -534,7 +534,7 @@
+         return ("cairo-uikit",)
+     elif target.os == "Android":
+         return ("cairo-android",)
+-    elif target.os == "EMSCRIPTEN":
++    elif target.os in ("EMSCRIPTEN", "WASI"):
+         # No native widget toolkit in wasm; use the offscreen headless backend
+         # (widget/headless) as the sole widget toolkit.
+         return ("cairo-headless",)
+@@ -796,7 +796,7 @@
+ @depends(freetype2_info, target)
+ def have_freetype2(freetype2_info, target):
+     # emscripten provides FreeType via its port (-sUSE_FREETYPE).
+-    if freetype2_info or target.os == "EMSCRIPTEN":
++    if freetype2_info or target.os in ("EMSCRIPTEN", "WASI"):
+         return True
+ 
+ 
+@@ -1328,7 +1328,7 @@
+     # emscripten's bundled FreeType port is ancient (2.6.0) and missing many
+     # APIs Gecko's font code needs (FT_Done_MM_Var, variable fonts, COLRv1...).
+     # Build the modern in-tree FreeType instead.
+-    if target.os == "EMSCRIPTEN":
++    if target.os in ("EMSCRIPTEN", "WASI"):
+         return True
+ 
+ 
+@@ -1360,7 +1360,7 @@
+     return (
+         freetype2_info
+         or (tree_freetype and target.os != "WINNT")
+-        or target.os == "EMSCRIPTEN"
++        or target.os in ("EMSCRIPTEN", "WASI")
+     )
+ 
+ 
