@@ -52,8 +52,10 @@ It intentionally does not run the full build or link the application yet.
 - `windowserver.cpp` compiled with native Clang and with wasi-sdk 34 targeting
   `wasm32-wasip1-threads`, with `-Wall -Wextra -Werror`.
 - The first Gecko configure attempt rejected `MOZ_AUTOMATION=1` with a source
-  archive rather than a VCS checkout. That setting was removed; the next configure
-  attempt still needs inspection.
+  archive rather than a VCS checkout. That setting was removed. The next attempt
+  passed the target/host compiler checks and stopped at `Cannot find llvm-objdump`.
+  Next: expose the SDK binary through the configure tool override or PATH, then
+  rerun configure. The SDK contains `bin/llvm-objdump`.
 - No successful Gecko configure/build/link, browser launch, or windowserver
   integration test has been established. There is no Firefox wasm artifact.
 
