@@ -25,14 +25,18 @@ export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads"
 export AR="$WASI_SDK_PATH/bin/llvm-ar"
 export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
 # setjmp/longjmp use the legacy wasm exception instructions, as BrowserOS's
-# clang.wasm does. The emulated mman/signal/clock libraries are where wasi-libc
-# keeps those POSIX functions; BrowserOS's libc fills the signal and clock ones.
+# clang.wasm does. The emulated mman/signal/clock/getpid headers are where
+# wasi-libc keeps those POSIX declarations.
 WASI_EMULATION="-D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
 WASI_SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh"
 export CFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread -msimd128 $WASI_EMULATION $WASI_SJLJ -I$topsrcdir/modules/freetype2/include"
-export CXXFLAGS="$CFLAGS"
+# wasi-sdk 34 (clang 23) reports -Wunused-template under -Wall, which Gecko's
+# warnings-as-errors directories do not expect.
+export CXXFLAGS="$CFLAGS -Wno-unused-template"
 export BINDGEN_CFLAGS="--sysroot=$BROWSEROS_SYSROOT $WASI_EMULATION"
-export LDFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread -lsetjmp -lwasi-emulated-mman -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid"
+# Gecko's libraries are relocatable objects (see MKSHLIB for WASI); libc and the
+# emulation libraries (-lsetjmp -lwasi-emulated-*) go into the final link only.
+export LDFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread"
 export RUSTFLAGS="-Ctarget-feature=+simd128,+atomics,+bulk-memory"
 HOST_CC=clang
 HOST_CXX=clang++

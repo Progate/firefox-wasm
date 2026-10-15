@@ -11,9 +11,10 @@ Emscripten release is not the deliverable for this port.
   `2e1e835a5da5907e5ceef19aade58a7493f1e34d` (the Makefile's engine pin).
 - Harness base: `bc69aaa5e2c5388bcf93a43b975b490bb940f4c0`.
 - wasi-sdk 34.0, Rust 1.95.0, Ubuntu 24.04; see `Dockerfile`.
-- BrowserOS libc: Progate/libc
-  `a0401d1a4bb6498aa2d39c49e04cd38ec5bf5604`, built with
-  `packages/browser-libc/build.mjs` using `targets: ['wasm32-wasip1-threads']`.
+- BrowserOS libc: Progate/libc `14addbac1a4c85ebd761f4ad1b4573a640e7cd2b`
+  (branch `browseros-rlimit`, which adds `getrlimit`/`setrlimit`), built with
+  `packages/browser-libc/build.mjs` using `targets: ['wasm32-wasip1-threads']`
+  and `BROWSER_LIBC_SOURCE` pointing at a checkout of that commit.
 
 Build the toolchain image from this repository's root:
 

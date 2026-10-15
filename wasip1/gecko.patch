@@ -45,7 +45,7 @@ index a89585f6f8..e847b6fee4 100644
          # narrow further down using extra information from the build system.
          # - For windows targets, correlate with the C compiler type
 diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
-index 3623a892f2..39d6aa38ad 100644
+index 3623a892f2..45d084e1c0 100644
 --- a/build/moz.configure/toolchain.configure
 +++ b/build/moz.configure/toolchain.configure
 @@ -2220,7 +2220,9 @@ set_define("_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", True, when=using_libcxx)
@@ -68,6 +68,22 @@ index 3623a892f2..39d6aa38ad 100644
          return True
  
  
+@@ -3431,6 +3433,15 @@ def make_shared_library(target, compiler):
+     flags = ["$(DSO_LDOPTS)"]
+     output = ["-o", "$@"]
+ 
++    if target.os == "WASI":
++        # wasm-ld has no shared libraries for WASI. Libraries are relocatable
++        # objects that the embedder links into one module, so libc and the
++        # emulation libraries are left for that final link.
++        return namespace(
++            mkshlib=cxx + ["-r", "-nostdlib"] + output,
++            mkcshlib=cc + ["-r", "-nostdlib"] + output,
++        )
++
+     if target.kernel == "Darwin":
+         soname = []
+     elif target.os == "EMSCRIPTEN":
 diff --git a/config/external/nspr/pr/moz.build b/config/external/nspr/pr/moz.build
 index 003cf4e481..9f5c0b5072 100644
 --- a/config/external/nspr/pr/moz.build
@@ -94,6 +110,62 @@ index 8ce3236647..fb1e60ea03 100644
  /* emscripten is Linux-like; _linux.cfg has a __wasm32__ data-model branch. */
  #  include "md/_linux.cfg"
  #elif defined(__sun__)
+diff --git a/gfx/angle/checkout/include/EGL/eglplatform.h b/gfx/angle/checkout/include/EGL/eglplatform.h
+index 777e985588..aaf8d5f6ca 100644
+--- a/gfx/angle/checkout/include/EGL/eglplatform.h
++++ b/gfx/angle/checkout/include/EGL/eglplatform.h
+@@ -70,7 +70,7 @@ typedef HWND    EGLNativeWindowType;
+ typedef IInspectable* EGLNativeWindowType;
+ #endif
+ 
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ 
+ typedef int EGLNativeDisplayType;
+ typedef int EGLNativePixmapType;
+diff --git a/gfx/angle/checkout/src/common/platform.h b/gfx/angle/checkout/src/common/platform.h
+index fd0a009b5e..1f6957d099 100644
+--- a/gfx/angle/checkout/src/common/platform.h
++++ b/gfx/angle/checkout/src/common/platform.h
+@@ -23,7 +23,7 @@
+ #elif defined(__ggp__)
+ #    define ANGLE_PLATFORM_GGP 1
+ #    define ANGLE_PLATFORM_POSIX 1
+-#elif defined(__linux__) || defined(__EMSCRIPTEN__)
++#elif defined(__linux__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #    define ANGLE_PLATFORM_LINUX 1
+ #    define ANGLE_PLATFORM_POSIX 1
+ #elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) ||              \
+diff --git a/gfx/layers/wr/WebRenderBridgeParent.cpp b/gfx/layers/wr/WebRenderBridgeParent.cpp
+index 05436c28bf..df1a3bf3b2 100644
+--- a/gfx/layers/wr/WebRenderBridgeParent.cpp
++++ b/gfx/layers/wr/WebRenderBridgeParent.cpp
+@@ -924,6 +924,12 @@ bool WebRenderBridgeParent::UpdateResources(
+         }
+         break;
+       }
++#else
++      case OpUpdateResource::TOpAddHostGpuExternalImage:
++        // Host GPU images come only from the emscripten embedding.
++        MOZ_ASSERT_UNREACHABLE("Host GPU image without a host GPU");
++        success = false;
++        break;
+ #endif
+       case OpUpdateResource::TOpPushExternalImageForTexture: {
+         const auto& op = cmd.get_OpPushExternalImageForTexture();
+diff --git a/gfx/skia/skia/include/private/base/SkFeatures.h b/gfx/skia/skia/include/private/base/SkFeatures.h
+index 9ea8063a62..0b788709fb 100644
+--- a/gfx/skia/skia/include/private/base/SkFeatures.h
++++ b/gfx/skia/skia/include/private/base/SkFeatures.h
+@@ -19,7 +19,7 @@
+         #define SK_BUILD_FOR_WIN
+     #elif defined(ANDROID) || defined(__ANDROID__)
+         #define SK_BUILD_FOR_ANDROID
+-    #elif defined(__EMSCRIPTEN__)
++    #elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+         // WASM toolchains expose a Unix-like compilation environment, but it is
+         // not Unix (e.g. posix signals are not supported).
+         #define SK_BUILD_FOR_WASM
 diff --git a/gfx/wgpu_bindings/Cargo.toml b/gfx/wgpu_bindings/Cargo.toml
 index e56d413fdd..f3a075ff42 100644
 --- a/gfx/wgpu_bindings/Cargo.toml
@@ -167,6 +239,20 @@ index 8d1c17c768..79f0240897 100644
    static const rlim_t kSystemDefaultMaxFds = 8192;
    static const char kFDDir[] = "/proc/self/fd";
  #elif defined(XP_DARWIN)
+diff --git a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
+index fb146b5dd4..9c46fb64eb 100644
+--- a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
++++ b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
+@@ -219,7 +219,9 @@
+ #define EVENT__HAVE_SA_FAMILY_T 1
+ 
+ /* Define to 1 if you have the `select' function. */
++#ifndef __wasi__
+ #define EVENT__HAVE_SELECT 1
++#endif
+ 
+ /* Define to 1 if you have the `sendfile' function. */
+ /* #undef EVENT__HAVE_SENDFILE */
 diff --git a/ipc/chromium/src/third_party/libeventcommon.mozbuild b/ipc/chromium/src/third_party/libeventcommon.mozbuild
 index 0b6f044937..95b659c899 100644
 --- a/ipc/chromium/src/third_party/libeventcommon.mozbuild
@@ -180,6 +266,29 @@ index 0b6f044937..95b659c899 100644
      # wasm: linux-like but without epoll/eventfd/sendfile/timerfd; poll/select only.
      libevent_include_suffix = 'emscripten'
  else:
+diff --git a/ipc/chromium/src/third_party/moz.build b/ipc/chromium/src/third_party/moz.build
+index fd83f2348f..4c8aac7ab7 100644
+--- a/ipc/chromium/src/third_party/moz.build
++++ b/ipc/chromium/src/third_party/moz.build
+@@ -36,11 +36,17 @@ UNIFIED_SOURCES += [
+     'libevent/listener.c',
+     'libevent/log.c',
+     'libevent/poll.c',
+-    'libevent/select.c',
+     'libevent/signal.c',
+     'libevent/strlcpy.c',
+ ]
+ 
++# wasi-libc's fd_set is a list of fds, not the bitmask select.c edits; WASI
++# uses the poll backend.
++if CONFIG["TARGET_KERNEL"] != "WASI":
++    UNIFIED_SOURCES += [
++        'libevent/select.c',
++    ]
++
+ SOURCES += [
+     'libevent/bufferevent_pair.c',       # conflicting types errors
+     # 'libevent/evrpc.c', # Unused file. # conflicting TAILQ_ENTRY definition
 diff --git a/ipc/glue/SharedMemoryPlatform_posix.cpp b/ipc/glue/SharedMemoryPlatform_posix.cpp
 index e9ee2054b2..987ab0ff8f 100644
 --- a/ipc/glue/SharedMemoryPlatform_posix.cpp
@@ -242,6 +351,30 @@ index 861f39b49d..5e506de30a 100644
      DIRS += ["app"]
  
  if CONFIG["OS_ARCH"] == "WINNT":
+diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselineInterpret.cpp
+index e33137a4ba..7577b51f7b 100644
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -129,12 +129,19 @@ static JSObject* gPBLResumeEnclosingEnv = nullptr;
+ // GECKO_WJ_EXITFPDBG=<decimal addr>: print every setter that installs the target
+ // exitFP value (task #60: the zeal crash's stale exitFP is address-deterministic).
+ static inline void WJExitFPDbg(int siteId, void* v) {
++#if defined(__EMSCRIPTEN__)
+   static const char* e = getenv("GECKO_WJ_EXITFPDBG");
+   static uintptr_t target = e ? strtoul(e, nullptr, 0) : 0;
+   if (MOZ_UNLIKELY(target != 0) && uintptr_t(v) == target) {
+     js::wasm::gWJExitFPLastSite = uint32_t(siteId);
+     js::wasm::gWJExitFPSetCount++;
+   }
++#else
++  // The JS->wasm JIT needs the host to instantiate generated modules, which
++  // only the emscripten embedding provides.
++  (void)siteId;
++  (void)v;
++#endif
+ }
+ // GECKO_WJ_RESUMETRACE=<n>: trace the first n ops of the FIRST JIT-deopt-resumed
+ // frame (op name + pc offset + stack top) -- diagnosing resume misexecution.
 diff --git a/js/xpconnect/moz.build b/js/xpconnect/moz.build
 index 77bda3959e..69df1c499d 100644
 --- a/js/xpconnect/moz.build
@@ -454,7 +587,7 @@ index 30375203b7..3ce7df0e47 100644
  
    if (newEnvp) {
 diff --git a/nsprpub/pr/src/pthreads/ptio.c b/nsprpub/pr/src/pthreads/ptio.c
-index 5a26c04f77..62e491d1da 100644
+index 5a26c04f77..4551653660 100644
 --- a/nsprpub/pr/src/pthreads/ptio.c
 +++ b/nsprpub/pr/src/pthreads/ptio.c
 @@ -148,6 +148,35 @@ static ssize_t (*pt_aix_sendfile_fptr)() = NULL;
@@ -493,24 +626,6 @@ index 5a26c04f77..62e491d1da 100644
  #    else
  #      include <sys/sendfile.h>
  #    endif
-@@ -4153,7 +4182,7 @@ PR_IMPLEMENT(PRStatus) PR_UnlockFile(PRFileDesc* fd) {
-  */
- 
- PR_IMPLEMENT(PRInt32) PR_GetSysfdTableMax(void) {
--#  if defined(AIX)
-+#  if defined(AIX) || defined(__wasi__)
-   return sysconf(_SC_OPEN_MAX);
- #  else
-   struct rlimit rlim;
-@@ -4167,7 +4196,7 @@ PR_IMPLEMENT(PRInt32) PR_GetSysfdTableMax(void) {
- }
- 
- PR_IMPLEMENT(PRInt32) PR_SetSysfdTableSize(PRIntn table_size) {
--#  if defined(AIX)
-+#  if defined(AIX) || defined(__wasi__)
-   return -1;
- #  else
-   struct rlimit rlim;
 diff --git a/nsprpub/pr/src/pthreads/ptthread.c b/nsprpub/pr/src/pthreads/ptthread.c
 index dcb707cca0..8a7f6f232a 100644
 --- a/nsprpub/pr/src/pthreads/ptthread.c
@@ -537,6 +652,20 @@ index dcb707cca0..8a7f6f232a 100644
 +#  if defined(PT_NO_SIGTIMEDWAIT) && !defined(__wasi__)
    pthread_kill(thred->id, SIGUSR1);
  #  endif
+ 
+diff --git a/python/mozbuild/mozbuild/frontend/data.py b/python/mozbuild/mozbuild/frontend/data.py
+index cb0492f67c..b1c83598b2 100644
+--- a/python/mozbuild/mozbuild/frontend/data.py
++++ b/python/mozbuild/mozbuild/frontend/data.py
+@@ -903,6 +903,9 @@ class SharedLibrary(Library):
+                     self.symbols_link_arg = "-DEF:" + self.symbols_file
+                 else:
+                     self.symbols_link_arg = self.symbols_file
++            elif os_target == "WASI":
++                # Relocatable links have no dynamic symbol table to restrict.
++                self.symbols_link_arg = None
+             elif context.config.substs.get("GCC_USE_GNU_LD"):
+                 self.symbols_link_arg = "-Wl,--version-script," + self.symbols_file
  
 diff --git a/security/moz.build b/security/moz.build
 index 02007bbc07..6e6f55ba04 100644
@@ -582,6 +711,19 @@ index 99a3a58a40..cb522bd2cb 100644
  #include <fcntl.h>
  #include <unistd.h>
  #include <errno.h>
+diff --git a/third_party/msgpack/include/msgpack/vrefbuffer.h b/third_party/msgpack/include/msgpack/vrefbuffer.h
+index 139869aa6b..b691032123 100644
+--- a/third_party/msgpack/include/msgpack/vrefbuffer.h
++++ b/third_party/msgpack/include/msgpack/vrefbuffer.h
+@@ -13,7 +13,7 @@
+ #include "zone.h"
+ #include <stdlib.h>
+ 
+-#if defined(unix) || defined(__unix) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) || defined(__QNXTO__)
++#if defined(unix) || defined(__unix) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) || defined(__QNXTO__) || defined(__wasi__)
+ #include <sys/uio.h>
+ #else
+ struct iovec {
 diff --git a/third_party/rust/glean-core/src/fd_logger.rs b/third_party/rust/glean-core/src/fd_logger.rs
 index e885c596b2..a06e3a863d 100644
 --- a/third_party/rust/glean-core/src/fd_logger.rs
@@ -740,6 +882,75 @@ index a724971ba7..d7d7aa14d3 100644
  ))]
  pub fn interface_and_mtu_impl(remote: IpAddr) -> Result<(String, usize)> {
      return Err(default_err());
+diff --git a/third_party/rust/neqo-udp/src/lib.rs b/third_party/rust/neqo-udp/src/lib.rs
+index dd5be19e9d..400b96b42f 100644
+--- a/third_party/rust/neqo-udp/src/lib.rs
++++ b/third_party/rust/neqo-udp/src/lib.rs
+@@ -137,7 +137,7 @@ fn is_enobufs(_: &io::Error) -> bool {
+     false
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::AsFd as SocketRef;
+ #[cfg(windows)]
+ use std::os::windows::io::AsSocket as SocketRef;
+diff --git a/third_party/rust/quinn-udp/src/fallback.rs b/third_party/rust/quinn-udp/src/fallback.rs
+index ee57620904..3073b8a594 100644
+--- a/third_party/rust/quinn-udp/src/fallback.rs
++++ b/third_party/rust/quinn-udp/src/fallback.rs
+@@ -65,7 +65,11 @@ impl UdpSocketState {
+         let bufs = unsafe {
+             &mut *(bufs as *mut [IoSliceMut<'_>] as *mut [socket2::MaybeUninitSlice<'_>])
+         };
++        #[cfg(not(target_os = "wasi"))]
+         let (len, _flags, addr) = socket.0.recv_from_vectored(bufs)?;
++        // socket2 has no recvmsg on WASI; one datagram goes into the first buffer.
++        #[cfg(target_os = "wasi")]
++        let (len, addr) = socket.0.recv_from(&mut bufs[0])?;
+         meta[0] = RecvMeta {
+             len,
+             stride: len,
+@@ -118,10 +122,13 @@ impl UdpSocketState {
+ }
+ 
+ fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+-    socket.0.send_to(
+-        transmit.contents,
+-        &socket2::SockAddr::from(transmit.destination),
+-    )
++    socket
++        .0
++        .send_to(
++            transmit.contents,
++            &socket2::SockAddr::from(transmit.destination),
++        )
++        .map(|_| ())
+ }
+ 
+ pub(crate) const BATCH_SIZE: usize = 1;
+diff --git a/third_party/rust/quinn-udp/src/lib.rs b/third_party/rust/quinn-udp/src/lib.rs
+index 179a02b695..d9e6e4806b 100644
+--- a/third_party/rust/quinn-udp/src/lib.rs
++++ b/third_party/rust/quinn-udp/src/lib.rs
+@@ -30,6 +30,8 @@
+ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+ #[cfg(unix)]
+ use std::os::unix::io::AsFd;
++#[cfg(target_os = "wasi")]
++use std::os::fd::AsFd;
+ #[cfg(windows)]
+ use std::os::windows::io::AsSocket;
+ #[cfg(not(wasm_browser))]
+@@ -212,7 +214,7 @@ fn log_sendmsg_error(_: &Mutex<Instant>, _: impl core::fmt::Debug, _: &Transmit<
+ #[cfg(not(wasm_browser))]
+ pub struct UdpSockRef<'a>(socket2::SockRef<'a>);
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ impl<'s, S> From<&'s S> for UdpSockRef<'s>
+ where
+     S: AsFd,
 diff --git a/third_party/rust/socket2/src/lib.rs b/third_party/rust/socket2/src/lib.rs
 index b846288f72..333ea00632 100644
 --- a/third_party/rust/socket2/src/lib.rs
@@ -970,6 +1181,52 @@ index c78cdb3383..fd50ac5cf0 100644
 +[target.'cfg(any(unix, target_os = "wasi"))'.dependencies]
  libc = "0.2"
  log = "0.4"
+diff --git a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+index d641f91719..730a53b3f5 100644
+--- a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
++++ b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+@@ -1006,15 +1006,22 @@ static nsCString GetFPUControlState() {
+     case FE_TONEAREST:
+       mode_str = "0";
+       break;
++    // wasm rounds to nearest only, so WASI's <fenv.h> has no other modes.
++#ifdef FE_DOWNWARD
+     case FE_DOWNWARD:
+       mode_str = "1";
+       break;
++#endif
++#ifdef FE_UPWARD
+     case FE_UPWARD:
+       mode_str = "2";
+       break;
++#endif
++#ifdef FE_TOWARDZERO
+     case FE_TOWARDZERO:
+       mode_str = "3";
+       break;
++#endif
+   }
+   result.AppendLiteral("std:");
+   result.Append(mode_str);
+diff --git a/toolkit/components/telemetry/moz.build b/toolkit/components/telemetry/moz.build
+index 91ae53839b..d9f0f53feb 100644
+--- a/toolkit/components/telemetry/moz.build
++++ b/toolkit/components/telemetry/moz.build
+@@ -6,9 +6,11 @@ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+ FINAL_LIBRARY = "xul"
+ 
+-DIRS = [
+-    "pingsender",
+-]
++# pingsender is a separate program that dlopens libcurl; WASI has neither.
++if CONFIG["OS_TARGET"] != "WASI":
++    DIRS = [
++        "pingsender",
++    ]
+ 
+ DEFINES["MOZ_APP_VERSION"] = '"%s"' % CONFIG["MOZ_APP_VERSION"]
+ 
 diff --git a/toolkit/moz.configure b/toolkit/moz.configure
 index b8c8a03c3d..0bc2cf1294 100644
 --- a/toolkit/moz.configure
@@ -1028,6 +1285,91 @@ index b8c8a03c3d..0bc2cf1294 100644
 +        or target.os in ("EMSCRIPTEN", "WASI")
      )
  
+ 
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+index 18c0f69889..6b40ad64da 100644
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -2650,7 +2650,8 @@ nsresult LaunchChild(bool aBlankCommandLine, bool aTryExec) {
+   rv = lf->GetNativePath(exePath);
+   if (NS_FAILED(rv)) return rv;
+ 
+-#      if defined(XP_UNIX)
++#      if defined(XP_UNIX) && !defined(__wasi__)
++  // WASI has no exec; the restart below spawns a new process instead.
+   if (aTryExec) {
+     execv(exePath.get(), gRestartArgv);
+ 
+diff --git a/tools/profiler/core/ProfilerUtils.cpp b/tools/profiler/core/ProfilerUtils.cpp
+index 64e7831e34..ade89bb785 100644
+--- a/tools/profiler/core/ProfilerUtils.cpp
++++ b/tools/profiler/core/ProfilerUtils.cpp
+@@ -89,6 +89,8 @@ ProfilerThreadId profiler_current_thread_id() {
+ // ------------------------------------------------------- Others
+ #  else
+ 
++#    include <thread>
++
+ ProfilerThreadId profiler_current_thread_id() {
+   return ProfilerThreadId::FromNativeId(std::this_thread::get_id());
+ }
+diff --git a/xpcom/base/nsDumpUtils.cpp b/xpcom/base/nsDumpUtils.cpp
+index 933b15646f..efa6af387d 100644
+--- a/xpcom/base/nsDumpUtils.cpp
++++ b/xpcom/base/nsDumpUtils.cpp
+@@ -12,7 +12,7 @@
+ #include "mozilla/ClearOnShutdown.h"
+ #include "SpecialSystemDirectory.h"
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)  // {
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)  // {
+ #  include "mozilla/Preferences.h"
+ #  include <fcntl.h>
+ #  include <unistd.h>
+@@ -392,7 +392,7 @@ void FifoWatcher::OnFileCanReadWithoutBlocking(int aFd) {
+   LOG("Got unexpected value from fifo; ignoring it.");
+ }
+ 
+-#endif  // XP_UNIX && !XP_IOS }
++#endif  // XP_UNIX && !XP_IOS && !__wasi__ }
+ 
+ // In Android case, this function will open a file named aFilename under
+ // /data/local/tmp/"aFoldername".
+diff --git a/xpcom/base/nsDumpUtils.h b/xpcom/base/nsDumpUtils.h
+index 0e49aae975..2818c3a6e3 100644
+--- a/xpcom/base/nsDumpUtils.h
++++ b/xpcom/base/nsDumpUtils.h
+@@ -25,7 +25,7 @@
+ #  define LOG(...)
+ #endif
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)  // {
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)  // {
+ 
+ /**
+  * Abstract base class for something which watches an fd and takes action when
+@@ -162,7 +162,7 @@ class SignalPipeWatcher : public FdWatcher {
+   SignalInfoArray mSignalInfo MOZ_GUARDED_BY(mSignalInfoLock);
+ };
+ 
+-#endif  // XP_UNIX && !XP_IOS }
++#endif  // XP_UNIX && !XP_IOS && !__wasi__ }
+ 
+ class nsDumpUtils {
+  public:
+diff --git a/xpcom/base/nsMemoryInfoDumper.cpp b/xpcom/base/nsMemoryInfoDumper.cpp
+index a124c75467..7f483c8e2d 100644
+--- a/xpcom/base/nsMemoryInfoDumper.cpp
++++ b/xpcom/base/nsMemoryInfoDumper.cpp
+@@ -29,7 +29,8 @@
+ #  include <unistd.h>
+ #endif
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)
++// BrowserOS's filesystem has no named pipes.
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)
+ #  define MOZ_SUPPORTS_FIFO 1
+ #endif
  
 diff --git a/xpcom/build/BinaryPath.h b/xpcom/build/BinaryPath.h
 index ff17e195cf..66f8029727 100644
