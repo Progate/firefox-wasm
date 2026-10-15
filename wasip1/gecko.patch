@@ -308,20 +308,43 @@ index f2a65c4a3f..835b4dc639 100644
  
  // Emscripten/WebAssembly: SSE intrinsics are provided by emscripten's shim headers
  // (emmintrin.h, tmmintrin.h, ...) and lowered to wasm 128-bit SIMD. The engine is
+diff --git a/mozglue/misc/StackWalk.h b/mozglue/misc/StackWalk.h
+index 34112f14e2..cc0179dfc7 100644
+--- a/mozglue/misc/StackWalk.h
++++ b/mozglue/misc/StackWalk.h
+@@ -29,7 +29,12 @@ MOZ_BEGIN_EXTERN_C
+  * to skip to MozStackWalk or MozWalkTheStack, which fell short in more cases
+  * (inlining of intermediaries, tail call optimization).
+  */
+-#define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#if defined(__wasi__)
++// wasm code cannot read return addresses; stack walking starts at the top.
++#  define CallerPC() nullptr
++#else
++#  define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#endif
+ 
+ /**
+  * The callback for MozStackWalk and MozStackWalkThread.
 diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
-index 23a1d35e89..662d84f174 100644
+index 23a1d35e89..462c639d85 100644
 --- a/nsprpub/pr/include/md/_linux.h
 +++ b/nsprpub/pr/include/md/_linux.h
-@@ -97,7 +97,7 @@
+@@ -95,9 +95,12 @@
+ /*
+  * Elf linux supports dl* functions
   */
++#if !defined(__wasi__)
++/* WASI has no dynamic linking; NSPR's linker only knows the static program. */
  #define HAVE_DLL
  #define USE_DLFCN
 -#if defined(ANDROID) || defined(__EMSCRIPTEN__)
++#endif
 +#if defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__wasi__)
  // emscripten has no dlopen; NSPR's _PR_InitLinker must not dlopen(0) for the
  // main-program handle (it would abort). Everything is statically linked, so the
  // null executable loadmap is fine.
-@@ -350,7 +350,15 @@ static inline PRInt32 _MD_ATOMIC_SET(PRInt32 *ptr, PRInt32 nv)
+@@ -350,7 +353,15 @@ static inline PRInt32 _MD_ATOMIC_SET(PRInt32 *ptr, PRInt32 nv)
  #define _PR_HAVE_GETADDRINFO
  #define _PR_INET6_PROBE
  #endif
@@ -338,6 +361,183 @@ index 23a1d35e89..662d84f174 100644
  #define _PR_HAVE_SYSV_SEMAPHORES
  #define PR_HAVE_SYSV_NAMED_SHARED_MEMORY
  #endif
+diff --git a/nsprpub/pr/src/md/unix/unix_errors.c b/nsprpub/pr/src/md/unix/unix_errors.c
+index 972bef1e56..894a198792 100644
+--- a/nsprpub/pr/src/md/unix/unix_errors.c
++++ b/nsprpub/pr/src/md/unix/unix_errors.c
+@@ -78,7 +78,9 @@ void _MD_unix_map_default_error(int err) {
+       prError = PR_FILE_TOO_BIG_ERROR;
+       break;
+     case EHOSTUNREACH:
++#ifdef EHOSTDOWN
+     case EHOSTDOWN:
++#endif
+       prError = PR_HOST_UNREACHABLE_ERROR;
+       break;
+     case EINPROGRESS:
+diff --git a/nsprpub/pr/src/md/unix/uxproces.c b/nsprpub/pr/src/md/unix/uxproces.c
+index 30375203b7..3ce7df0e47 100644
+--- a/nsprpub/pr/src/md/unix/uxproces.c
++++ b/nsprpub/pr/src/md/unix/uxproces.c
+@@ -10,6 +10,10 @@
+ #include <signal.h>
+ #include <sys/wait.h>
+ #include <string.h>
++#if defined(__wasi__)
++#  include <spawn.h>
++extern char** environ;
++#endif
+ #if defined(AIX)
+ #  include <dlfcn.h> /* For dlopen, dlsym, dlclose */
+ #endif
+@@ -229,6 +233,44 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+       close(fd_map[2]);
+     }
+   }
++#elif defined(__wasi__)
++  /*
++   * WASI has no fork(). BrowserOS's libc spawns the child with the
++   * redirections and working directory as file actions.
++   */
++  {
++    posix_spawn_file_actions_t actions;
++    int err;
++    pid_t pid;
++
++    posix_spawn_file_actions_init(&actions);
++    if (attr) {
++      if (attr->stdinFd && attr->stdinFd->secret->md.osfd != 0) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stdinFd->secret->md.osfd, 0);
++      }
++      if (attr->stdoutFd && attr->stdoutFd->secret->md.osfd != 1) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stdoutFd->secret->md.osfd, 1);
++      }
++      if (attr->stderrFd && attr->stderrFd->secret->md.osfd != 2) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stderrFd->secret->md.osfd, 2);
++      }
++      if (attr->currentDirectory) {
++        posix_spawn_file_actions_addchdir_np(&actions,
++                                             attr->currentDirectory);
++      }
++    }
++    err = posix_spawn(&pid, path, &actions, NULL, argv,
++                      childEnvp ? childEnvp : environ);
++    posix_spawn_file_actions_destroy(&actions);
++    if (err) {
++      errno = err;
++      pid = -1;
++    }
++    process->md.pid = pid;
++  }
+ #else
+   process->md.pid = fork();
+ #endif
+@@ -248,7 +290,7 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+                                * the parent process's standard I/O data structures.
+                                */
+ 
+-#if !defined(NTO)
++#if !defined(NTO) && !defined(__wasi__)
+     if (attr) {
+       /* the osfd's to redirect stdin, stdout, and stderr to */
+       int in_osfd = -1, out_osfd = -1, err_osfd = -1;
+@@ -307,7 +349,7 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+     }
+     /* Whoops! It returned. That's a bad sign. */
+     _exit(1);
+-#endif /* !NTO */
++#endif /* !NTO && !__wasi__ */
+   }
+ 
+   if (newEnvp) {
+diff --git a/nsprpub/pr/src/pthreads/ptio.c b/nsprpub/pr/src/pthreads/ptio.c
+index 5a26c04f77..62e491d1da 100644
+--- a/nsprpub/pr/src/pthreads/ptio.c
++++ b/nsprpub/pr/src/pthreads/ptio.c
+@@ -148,6 +148,35 @@ static ssize_t (*pt_aix_sendfile_fptr)() = NULL;
+  * provides sendfile(); declare it ourselves. */
+ #      include <sys/types.h>
+ extern ssize_t sendfile(int, int, off_t*, size_t);
++#    elif defined(__wasi__)
++/* WASI has no sendfile(); copy through a buffer with Linux's semantics: read
++ * from *offset (leaving the file position alone) and advance it by what was
++ * written. */
++#      include <sys/types.h>
++#      include <unistd.h>
++static ssize_t sendfile(int out_fd, int in_fd, off_t* offset, size_t count) {
++  char buf[65536];
++  off_t pos = offset ? *offset : lseek(in_fd, 0, SEEK_CUR);
++  ssize_t n;
++  ssize_t written;
++  if (count > sizeof(buf)) {
++    count = sizeof(buf);
++  }
++  n = pread(in_fd, buf, count, pos);
++  if (n <= 0) {
++    return n;
++  }
++  written = write(out_fd, buf, n);
++  if (written <= 0) {
++    return written;
++  }
++  if (offset) {
++    *offset = pos + written;
++  } else {
++    lseek(in_fd, pos + written, SEEK_SET);
++  }
++  return written;
++}
+ #    else
+ #      include <sys/sendfile.h>
+ #    endif
+@@ -4153,7 +4182,7 @@ PR_IMPLEMENT(PRStatus) PR_UnlockFile(PRFileDesc* fd) {
+  */
+ 
+ PR_IMPLEMENT(PRInt32) PR_GetSysfdTableMax(void) {
+-#  if defined(AIX)
++#  if defined(AIX) || defined(__wasi__)
+   return sysconf(_SC_OPEN_MAX);
+ #  else
+   struct rlimit rlim;
+@@ -4167,7 +4196,7 @@ PR_IMPLEMENT(PRInt32) PR_GetSysfdTableMax(void) {
+ }
+ 
+ PR_IMPLEMENT(PRInt32) PR_SetSysfdTableSize(PRIntn table_size) {
+-#  if defined(AIX)
++#  if defined(AIX) || defined(__wasi__)
+   return -1;
+ #  else
+   struct rlimit rlim;
+diff --git a/nsprpub/pr/src/pthreads/ptthread.c b/nsprpub/pr/src/pthreads/ptthread.c
+index dcb707cca0..8a7f6f232a 100644
+--- a/nsprpub/pr/src/pthreads/ptthread.c
++++ b/nsprpub/pr/src/pthreads/ptthread.c
+@@ -1327,7 +1327,13 @@ static void pt_SuspendSet(PRThread* thred) {
+   PR_LOG(_pr_gc_lm, PR_LOG_ALWAYS,
+          ("doing pthread_kill in pt_SuspendSet thred %p tid = %X\n", thred,
+           thred->id));
++#  if defined(__wasi__)
++  /* WASI cannot signal a single thread; PR_SuspendAll is unsupported. */
++  PR_NOT_REACHED("pt_SuspendSet on WASI");
++  rv = 0;
++#  else
+   rv = pthread_kill(thred->id, SIGUSR2);
++#  endif
+   PR_ASSERT(0 == rv);
+ }
+ 
+@@ -1372,7 +1378,7 @@ static void pt_ResumeSet(PRThread* thred) {
+ 
+   thred->suspend &= ~PT_THREAD_SUSPENDED;
+ 
+-#  if defined(PT_NO_SIGTIMEDWAIT)
++#  if defined(PT_NO_SIGTIMEDWAIT) && !defined(__wasi__)
+   pthread_kill(thred->id, SIGUSR1);
+ #  endif
+ 
 diff --git a/security/moz.build b/security/moz.build
 index 02007bbc07..6e6f55ba04 100644
 --- a/security/moz.build
