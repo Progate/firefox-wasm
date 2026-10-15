@@ -315,11 +315,16 @@ static bool xul_chrome_load_content(const char* url, int width, int height) {
   js.AppendLiteral(
       "setTimeout(function(){try{"
       "var sp=Services.scriptSecurityManager.getSystemPrincipal();"
+      // The window starts with one empty tab; replace it instead of keeping it.
+      "var blank=gBrowser.tabs.length==1&&"
+      "['about:blank','about:newtab','about:home'].includes("
+      "gBrowser.selectedBrowser.currentURI.spec)?gBrowser.selectedTab:null;"
       "var t=gBrowser.addTab(\"");
   js.Append(safe);
   js.AppendLiteral(
       "\",{triggeringPrincipal:sp,forceNotRemote:true,inBackground:false});"
       "gBrowser.selectedTab=t;"
+      "if(blank)gBrowser.removeTab(blank);"
       // One-shot progress listener on the selected tab: notify when the top-level
       // network load stops, then detach. Single quotes avoid escaping in the C++
       // string; Ci/Services/ChromeUtils/gBrowser are chrome-window globals.

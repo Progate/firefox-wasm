@@ -106,17 +106,27 @@ uint8_t* xul_paint(int width, int height) {
     free(buf);
     return nullptr;
   }
-  int32_t appPerCss = AppUnitsPerCSSPixel();  // 60
-  nsRect r(0, 0, width * appPerCss, height * appPerCss);
+  // The buffer is in device pixels; with layout.css.devPixelsPerPx (HiDPI) a
+  // device pixel is smaller than a CSS pixel, so size the rect in device units.
+  nsPresContext* pc = ps->GetPresContext();
+  int32_t appPerDev = pc ? pc->AppUnitsPerDevPixel() : AppUnitsPerCSSPixel();
+  nsRect r(0, 0, width * appPerDev, height * appPerDev);
   // DrawCaret: RenderDocument force-hides the text caret by default. We want it
   // visible in focused <input>/<textarea>/contenteditable. (Blinking is disabled
   // via ui.caretBlinkTime=0 in xul_init so a single snapshot never catches the
   // caret in its "off" phase.)
+  // RenderDocument draws in CSS pixels (like canvas drawWindow); scale the
+  // context so a CSS pixel covers devPixelsPerPx device pixels.
+  if (appPerDev != AppUnitsPerCSSPixel()) {
+    float cssToDev = float(AppUnitsPerCSSPixel()) / float(appPerDev);
+    ctx->SetMatrix(Matrix::Scaling(cssToDev, cssToDev));
+  }
   ps->RenderDocument(r, RenderDocumentFlags::DrawCaret, NS_RGB(255, 255, 255),
                      ctx.get());
+  ctx->SetMatrix(Matrix());
 
   // Composite open popups onto the same buffer (no-op when nothing is open).
-  composite_visible_popups(ctx.get(), ps, width, height, appPerCss);
+  composite_visible_popups(ctx.get(), ps, width, height, appPerDev);
   return buf;  // BGRA8, width*height*4 bytes
 }
 

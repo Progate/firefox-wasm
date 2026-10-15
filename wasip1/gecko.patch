@@ -310,6 +310,40 @@ index 9ea8063a62..0b788709fb 100644
          // WASM toolchains expose a Unix-like compilation environment, but it is
          // not Unix (e.g. posix signals are not supported).
          #define SK_BUILD_FOR_WASM
+diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
+index a1e7c49d18..24868923d8 100644
+--- a/gfx/thebes/gfxFT2FontList.cpp
++++ b/gfx/thebes/gfxFT2FontList.cpp
+@@ -1633,6 +1633,29 @@ void gfxFT2FontList::FindFonts() {
+         FindFontsInDir(localPath, mFontNameCache.get());
+       }
+     }
++#ifdef MOZ_WIDGET_HEADLESS
++    // The headless-only toolkit ships its fonts with the GRE. When the
++    // application directory is not the GRE (Firefox's front-end lives in
++    // <GRE>/browser), look there too.
++    nsCOMPtr<nsIFile> greDir;
++    if (NS_SUCCEEDED(dirSvc->Get(NS_GRE_DIR, NS_GET_IID(nsIFile),
++                                 getter_AddRefs(greDir)))) {
++      bool same = false;
++      nsCOMPtr<nsIFile> processDir;
++      if (NS_SUCCEEDED(dirSvc->Get(NS_XPCOM_CURRENT_PROCESS_DIR,
++                                   NS_GET_IID(nsIFile),
++                                   getter_AddRefs(processDir)))) {
++        greDir->Equals(processDir, &same);
++      }
++      if (!same) {
++        greDir->AppendNative("fonts"_ns);
++        nsCString grePath;
++        if (NS_SUCCEEDED(greDir->GetNativePath(grePath))) {
++          FindFontsInDir(grePath, mFontNameCache.get());
++        }
++      }
++    }
++#endif
+   }
+ 
+   // look for locally-added fonts in a "fonts" subdir of the profile
 diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
 index cc508f74d6..9e55161c8e 100644
 --- a/gfx/webrender_bindings/src/bindings.rs

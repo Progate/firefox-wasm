@@ -2,6 +2,7 @@
 // Gecko's application thread owns its event loop and windowserver connection.
 #include "../gecko.js/src/embed-xul.h"
 #include "windowserver.h"
+#include "nsPrintfCString.h"
 #include <chrono>
 
 XulCmd* g_cmd = nullptr;
@@ -66,7 +67,7 @@ static bool dispatch(WindowServer& window, const std::string& line) {
 }
 
 // Without a URL argument, open browser.startup.homepage like Firefox does.
-// Distributions set it in /usr/lib/firefox/defaults/pref/*.js. about:home and
+// Distributions set it in /usr/lib/firefox/browser/defaults/preferences/*.js. about:home and
 // about:newtab need the Firefox front-end, which this window does not have yet.
 static std::string startUrl(const char* argument) {
   if (argument && *argument) return argument;
@@ -92,11 +93,22 @@ int main(int argc, char** argv) {
   setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
   setenv("MOZ_HEADLESS", "1", 1);
   setenv("GECKO_NOWASMJIT", "1", 1);
+  // The firefox command shows Firefox's own front-end (tabs, address bar).
+  setenv("GECKO_CHROME", "1", 0);
+  // The desktop runs at GDK_SCALE device pixels per CSS pixel, like GTK.
+  const char* scaleEnv = getenv("GDK_SCALE");
+  int scale = scaleEnv ? atoi(scaleEnv) : 1;
+  if (scale < 1) scale = 1;
   WindowServer window;
-  if (!window.open(1000, 720)) { perror("firefox: windowserver"); return 1; }
+  if (!window.open(1120 * scale, 720 * scale)) { perror("firefox: windowserver"); return 1; }
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
-  if (!xul_load(startUrl(argc > 1 ? argv[1] : nullptr).c_str(), window.width, window.height)) return 1;
+  mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
+  const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
+  // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
+  if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
+  const std::string url = startUrl(argc > 1 ? argv[1] : nullptr);
+  if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
   fprintf(stderr, "firefox: page loading, entering the event loop\n");
   bool firstFrame = true;
   while (window.connected()) {
