@@ -16,4 +16,9 @@ elif ! patch -p1 --dry-run --reverse < "$HERE/wasip1/gecko.patch" >/dev/null 2>&
   echo 'Gecko source does not match the WASIp1 patch' >&2
   exit 1
 fi
+# Re-checksum the vendored Rust crates the patch edits.
+crates=$(grep -o '^+++ b/third_party/rust/[^/]*' "$HERE/wasip1/gecko.patch" | cut -d/ -f2-4 | sort -u)
+if [ -n "$crates" ]; then
+  python3 "$HERE/wasip1/rehash-vendored.py" $crates
+fi
 ./mach configure

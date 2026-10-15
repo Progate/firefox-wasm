@@ -1,6 +1,780 @@
+diff --git a/build/moz.configure/bindgen.configure b/build/moz.configure/bindgen.configure
+index 450d6927c9..a210b1b0e2 100644
+--- a/build/moz.configure/bindgen.configure
++++ b/build/moz.configure/bindgen.configure
+@@ -345,6 +345,11 @@ def basic_bindgen_cflags(
+         # matches the emscripten sysroot.
+         args += ["--target=wasm32-unknown-emscripten", "-fvisibility=default"]
+ 
++    if target.os == "WASI":
++        # Same reason as emscripten: parse with the wasm target the C++ side is
++        # compiled for. The sysroot comes from BINDGEN_CFLAGS.
++        args += ["--target=wasm32-wasip1-threads", "-pthread", "-fvisibility=default"]
++
+     args += {
+         "WINNT": [
+             "-DWIN32=1",
+diff --git a/build/moz.configure/rust.configure b/build/moz.configure/rust.configure
+index a89585f6f8..e847b6fee4 100644
+--- a/build/moz.configure/rust.configure
++++ b/build/moz.configure/rust.configure
+@@ -262,7 +262,11 @@ def rust_supported_targets(rustc):
+     data = {}
+     for t in out:
+         try:
+-            info = split_triplet(t, allow_wasi=True)
++            if t == "wasm32-wasip1-threads":
++                # Rust omits the vendor here, so the third field is not an OS.
++                info = split_triplet("wasm32-unknown-wasip1", allow_wasi=True)
++            else:
++                info = split_triplet(t, allow_wasi=True)
+         except ValueError:
+             if t.startswith("thumb"):
+                 cpu, rest = t.split("-", 1)
+@@ -300,6 +304,12 @@ def detect_rustc_target(
+         elif not candidates:
+             return None
+ 
++        # BrowserOS runs Gecko with wasi-threads.
++        if host_or_target.kernel == "WASI":
++            for c in candidates:
++                if c.rust_target == "wasm32-wasip1-threads":
++                    return c.rust_target
++
+         # We have multiple candidates. There are two cases where we can try to
+         # narrow further down using extra information from the build system.
+         # - For windows targets, correlate with the C compiler type
+diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
+index 3623a892f2..39d6aa38ad 100644
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -2220,7 +2220,9 @@ set_define("_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", True, when=using_libcxx)
+ @depends(target, build_environment)
+ def visibility_flags(target, env):
+     if target.os != "WINNT":
+-        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD"):
++        # WASI: wasi-sdk's libc++ declares its exported classes with default
++        # visibility, which conflicts with gcc_hidden.h's pragma.
++        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD", "WASI"):
+             return ("-fvisibility=hidden", "-fvisibility-inlines-hidden")
+         return (
+             "-I%s/system_wrappers" % os.path.join(env.dist),
+@@ -2231,7 +2233,7 @@ def visibility_flags(target, env):
+ 
+ @depends(target, visibility_flags)
+ def wrap_system_includes(target, visibility_flags):
+-    if visibility_flags and target.kernel != "Darwin":
++    if visibility_flags and target.kernel not in ("Darwin", "WASI"):
+         return True
+ 
+ 
+diff --git a/config/external/nspr/pr/moz.build b/config/external/nspr/pr/moz.build
+index 003cf4e481..9f5c0b5072 100644
+--- a/config/external/nspr/pr/moz.build
++++ b/config/external/nspr/pr/moz.build
+@@ -75,7 +75,7 @@ elif CONFIG["OS_TARGET"] == "SunOS":
+         # macros (ENTRY/SET_SIZE); without preprocessing it won't build.
+         ASFLAGS += ["-x", "assembler-with-cpp"]
+         SOURCES += ["/nsprpub/pr/src/md/unix/os_SunOS_sparcv9.s"]
+-elif CONFIG["OS_TARGET"] == "EMSCRIPTEN":
++elif CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI"):
+     # emscripten presents a Linux-like POSIX environment. Single-threaded wasm,
+     # so no thread-context-switch assembly; use the generic unix md source.
+     DEFINES["LINUX"] = True
+diff --git a/config/external/nspr/prcpucfg.h b/config/external/nspr/prcpucfg.h
+index 8ce3236647..fb1e60ea03 100644
+--- a/config/external/nspr/prcpucfg.h
++++ b/config/external/nspr/prcpucfg.h
+@@ -21,7 +21,7 @@
+ #  include "md/_openbsd.cfg"
+ #elif defined(__linux__)
+ #  include "md/_linux.cfg"
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ /* emscripten is Linux-like; _linux.cfg has a __wasm32__ data-model branch. */
+ #  include "md/_linux.cfg"
+ #elif defined(__sun__)
+diff --git a/gfx/wgpu_bindings/Cargo.toml b/gfx/wgpu_bindings/Cargo.toml
+index e56d413fdd..f3a075ff42 100644
+--- a/gfx/wgpu_bindings/Cargo.toml
++++ b/gfx/wgpu_bindings/Cargo.toml
+@@ -83,8 +83,14 @@ serde_json = "1"
+ nsstring = { path = "../../xpcom/rust/nsstring" }
+ static_prefs = { path = "../../modules/libpref/init/static_prefs" }
+ arrayvec = "0.7"
+-ash = "0.38"
+ glean = { workspace = true }
+ firefox-on-glean = { path = "../../toolkit/components/glean/api" }
+ moz_task = { path = "../../xpcom/rust/moz_task" }
+ futures-channel = "0.3"
++
++[target.'cfg(not(target_os = "wasi"))'.dependencies]
++ash = "0.38"
++
++# WASI has no dlopen, so leave out ash's Vulkan loader.
++[target.'cfg(target_os = "wasi")'.dependencies]
++ash = { version = "0.38", default-features = false, features = ["debug", "std"] }
+diff --git a/ipc/chromium/moz.build b/ipc/chromium/moz.build
+index b17bba0adb..355f8df333 100644
+--- a/ipc/chromium/moz.build
++++ b/ipc/chromium/moz.build
+@@ -129,7 +129,7 @@ if CONFIG["TARGET_KERNEL"] == "Linux":
+ # built and base::Time/TimeTicks::Now are undefined. time_posix.cc uses
+ # gettimeofday + clock_gettime(CLOCK_MONOTONIC) (the mach path is XP_DARWIN-only),
+ # both available under emscripten.
+-if CONFIG["OS_TARGET"] == "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI"):
+     SOURCES += [
+         "src/base/time_posix.cc",
+     ]
+diff --git a/ipc/chromium/src/base/platform_thread.h b/ipc/chromium/src/base/platform_thread.h
+index bb5c1525a3..c1e4ac7026 100644
+--- a/ipc/chromium/src/base/platform_thread.h
++++ b/ipc/chromium/src/base/platform_thread.h
+@@ -32,7 +32,7 @@ typedef lwpid_t PlatformThreadId;
+ #  elif defined(XP_DARWIN)
+ #    include <mach/mach.h>
+ typedef mach_port_t PlatformThreadId;
+-#  elif defined(__EMSCRIPTEN__)
++#  elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #    include <unistd.h>
+ typedef pid_t PlatformThreadId;
+ #  endif
+diff --git a/ipc/chromium/src/base/platform_thread_posix.cc b/ipc/chromium/src/base/platform_thread_posix.cc
+index 87e6af4154..58eb2ea264 100644
+--- a/ipc/chromium/src/base/platform_thread_posix.cc
++++ b/ipc/chromium/src/base/platform_thread_posix.cc
+@@ -58,7 +58,7 @@ PlatformThreadId PlatformThread::CurrentId() {
+   return lwp_gettid();
+ #elif defined(XP_FREEBSD)
+   return pthread_getthreadid_np();
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // Single-threaded wasm: no kernel TID; pthread_self() is a stable identifier.
+   return (PlatformThreadId)(intptr_t)(pthread_self());
+ #endif
+diff --git a/ipc/chromium/src/base/process_util_posix.cc b/ipc/chromium/src/base/process_util_posix.cc
+index 8d1c17c768..79f0240897 100644
+--- a/ipc/chromium/src/base/process_util_posix.cc
++++ b/ipc/chromium/src/base/process_util_posix.cc
+@@ -123,7 +123,8 @@ void CloseSuperfluousFds(void* aCtx, bool (*aShouldPreserve)(void*, int)) {
+ #if defined(ANDROID)
+   static const rlim_t kSystemDefaultMaxFds = 1024;
+   static const char kFDDir[] = "/proc/self/fd";
+-#elif defined(XP_LINUX) || defined(XP_SOLARIS) || defined(__EMSCRIPTEN__)
++#elif defined(XP_LINUX) || defined(XP_SOLARIS) || defined(__EMSCRIPTEN__) || \
++    defined(__wasi__)
+   static const rlim_t kSystemDefaultMaxFds = 8192;
+   static const char kFDDir[] = "/proc/self/fd";
+ #elif defined(XP_DARWIN)
+diff --git a/ipc/chromium/src/third_party/libeventcommon.mozbuild b/ipc/chromium/src/third_party/libeventcommon.mozbuild
+index 0b6f044937..95b659c899 100644
+--- a/ipc/chromium/src/third_party/libeventcommon.mozbuild
++++ b/ipc/chromium/src/third_party/libeventcommon.mozbuild
+@@ -10,7 +10,7 @@ elif CONFIG['TARGET_KERNEL'] == 'SunOS':
+     libevent_include_suffix = 'solaris'
+ elif CONFIG['TARGET_OS'] == 'Android':
+     libevent_include_suffix = 'android'
+-elif CONFIG['TARGET_KERNEL'] == 'EMSCRIPTEN':
++elif CONFIG['TARGET_KERNEL'] in ('EMSCRIPTEN', 'WASI'):
+     # wasm: linux-like but without epoll/eventfd/sendfile/timerfd; poll/select only.
+     libevent_include_suffix = 'emscripten'
+ else:
+diff --git a/ipc/glue/SharedMemoryPlatform_posix.cpp b/ipc/glue/SharedMemoryPlatform_posix.cpp
+index e9ee2054b2..987ab0ff8f 100644
+--- a/ipc/glue/SharedMemoryPlatform_posix.cpp
++++ b/ipc/glue/SharedMemoryPlatform_posix.cpp
+@@ -37,7 +37,7 @@
+ #include "prenv.h"
+ #include "nsXULAppAPI.h"  // for XRE_IsParentProcess
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #  include "mozilla/StaticMutex.h"
+ #  include <map>
+ #  include <stdlib.h>
+@@ -46,7 +46,7 @@
+ 
+ namespace mozilla::ipc::shared_memory {
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // emscripten has broken primitives for IPC shared memory:
+ //   - mmap(fd, MAP_SHARED) does NOT map the object; it returns private zero-filled
+ //     memory, so writes via one mapping are invisible to another.
+@@ -443,7 +443,7 @@ bool Platform::Freeze(FreezableHandle& aHandle) {
+ 
+ Maybe<void*> Platform::Map(const HandleBase& aHandle, uint64_t aOffset,
+                            size_t aSize, void* aFixedAddress, bool aReadOnly) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // See the note at EmShmHeader: the shared object's data lives in one heap buffer
+   // whose pointer is stored in an 8-byte header at the start of the shm file.
+   int fd = aHandle.mHandle.get();
+@@ -494,7 +494,7 @@ Maybe<void*> Platform::Map(const HandleBase& aHandle, uint64_t aOffset,
+ }
+ 
+ void Platform::Unmap(void* aMemory, size_t aSize) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // The data buffer is shared live across all mappings of the object (its pointer
+   // lives in the shm file header), so a single Unmap must not free it. Leave it
+   // alive for the object's lifetime. (Minor leak; WebRender recycles shmem.)
+@@ -514,7 +514,7 @@ bool Platform::Protect(char* aAddr, size_t aSize, Access aAccess) {
+ }
+ 
+ void* Platform::FindFreeAddressSpace(size_t aSize) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // emscripten's mmap(PROT_NONE, MAP_ANONYMOUS) does NOT cheaply reserve address
+   // space like a real OS -- it allocates and zero-fills the whole region (here
+   // 2*512MiB = 1GiB for the UA sheet cache), a multi-hundred-ms memset plus a huge
+diff --git a/ipc/moz.build b/ipc/moz.build
+index 861f39b49d..5e506de30a 100644
+--- a/ipc/moz.build
++++ b/ipc/moz.build
+@@ -12,7 +12,7 @@ DIRS += [
+ # ipc/app builds plugin-container, the e10s child-process executable. We run
+ # single-process, and under wasm it fails to link against libxul.so (benign
+ # duplicate symbols vs libpure_virtual.a / NSPR). Not needed for the engine.
+-if CONFIG["OS_TARGET"] != "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
+     DIRS += ["app"]
+ 
+ if CONFIG["OS_ARCH"] == "WINNT":
+diff --git a/js/xpconnect/moz.build b/js/xpconnect/moz.build
+index 77bda3959e..69df1c499d 100644
+--- a/js/xpconnect/moz.build
++++ b/js/xpconnect/moz.build
+@@ -9,6 +9,6 @@ DIRS += ["public", "idl", "wrappers", "loader", "src"]
+ # js/xpconnect/shell builds xpcshell (a JS dev/test shell); not needed for the
+ # engine, and under wasm it fails to link against libxul.so (benign duplicate
+ # symbols vs libpure_virtual.a / NSPR).
+-if CONFIG["OS_TARGET"] != "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
+     DIRS += ["shell"]
+ TEST_DIRS += ["tests"]
+diff --git a/mfbt/UniquePtrExtensions.cpp b/mfbt/UniquePtrExtensions.cpp
+index 84e0f7e0e4..f14922fb59 100644
+--- a/mfbt/UniquePtrExtensions.cpp
++++ b/mfbt/UniquePtrExtensions.cpp
+@@ -46,7 +46,7 @@ void SetCloseOnExec(detail::FileHandleType aFile) {
+ }
+ #endif
+ 
+-#if !defined(__wasm__) || defined(__EMSCRIPTEN__)
++#if !defined(__wasm__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ UniqueFileHandle DuplicateFileHandle(detail::FileHandleType aFile) {
+ #  ifdef XP_WIN
+   if (aFile != INVALID_HANDLE_VALUE && aFile != NULL) {
+diff --git a/mfbt/UniquePtrExtensions.h b/mfbt/UniquePtrExtensions.h
+index 732f6ca0a5..95a7b8b9f3 100644
+--- a/mfbt/UniquePtrExtensions.h
++++ b/mfbt/UniquePtrExtensions.h
+@@ -226,8 +226,8 @@ using UniqueFreePtr = UniquePtr<T, detail::FreePolicy<T>>;
+ using UniqueFileHandle =
+     UniquePtr<detail::FileHandleType, detail::FileHandleDeleter>;
+ 
+-#if !defined(__wasm__) || defined(__EMSCRIPTEN__)
+-// WASI does not have `dup`, but emscripten does.
++#if !defined(__wasm__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
++// Plain WASI does not have `dup`; emscripten and BrowserOS's libc do.
+ // On Unix, these set the close-on-exec flag for the new fd.
+ MFBT_API UniqueFileHandle DuplicateFileHandle(detail::FileHandleType aFile);
+ inline UniqueFileHandle DuplicateFileHandle(const UniqueFileHandle& aFile) {
+diff --git a/mozglue/misc/PerfStats.h b/mozglue/misc/PerfStats.h
+index 8c4000fd97..a3924beafc 100644
+--- a/mozglue/misc/PerfStats.h
++++ b/mozglue/misc/PerfStats.h
+@@ -222,7 +222,7 @@ class PerfStats {
+   // std::atomic<double>::fetch_add is a C++20 feature missing from the libc++
+   // shipped with emscripten 3.1.56; fall back to a portable CAS loop there.
+   static void AtomicAddDouble(std::atomic<double>& aTarget, double aValue) {
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+     double expected = aTarget.load(std::memory_order_relaxed);
+     while (!aTarget.compare_exchange_weak(expected, expected + aValue,
+                                           std::memory_order_relaxed,
+diff --git a/mozglue/misc/SSE.h b/mozglue/misc/SSE.h
+index f2a65c4a3f..835b4dc639 100644
+--- a/mozglue/misc/SSE.h
++++ b/mozglue/misc/SSE.h
+@@ -208,7 +208,7 @@
+ #    define MOZILLA_PRESUME_SSE2
+ #  endif
+ 
+-#elif defined(__wasm_simd128__)
++#elif defined(__wasm_simd128__) && defined(__EMSCRIPTEN__)
+ 
+ // Emscripten/WebAssembly: SSE intrinsics are provided by emscripten's shim headers
+ // (emmintrin.h, tmmintrin.h, ...) and lowered to wasm 128-bit SIMD. The engine is
+diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
+index 23a1d35e89..662d84f174 100644
+--- a/nsprpub/pr/include/md/_linux.h
++++ b/nsprpub/pr/include/md/_linux.h
+@@ -97,7 +97,7 @@
+  */
+ #define HAVE_DLL
+ #define USE_DLFCN
+-#if defined(ANDROID) || defined(__EMSCRIPTEN__)
++#if defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // emscripten has no dlopen; NSPR's _PR_InitLinker must not dlopen(0) for the
+ // main-program handle (it would abort). Everything is statically linked, so the
+ // null executable loadmap is fine.
+@@ -350,7 +350,15 @@ static inline PRInt32 _MD_ATOMIC_SET(PRInt32 *ptr, PRInt32 nv)
+ #define _PR_HAVE_GETADDRINFO
+ #define _PR_INET6_PROBE
+ #endif
+-#ifndef ANDROID
++#if defined(__wasi__)
++/* BrowserOS's libc (wasi-libc) is not glibc but has the resolver and IPv6. It
++ * has no System V IPC. */
++#define _PR_INET6
++#define _PR_HAVE_INET_NTOP
++#define _PR_HAVE_GETHOSTBYNAME2
++#define _PR_HAVE_GETADDRINFO
++#define _PR_INET6_PROBE
++#elif !defined(ANDROID)
+ #define _PR_HAVE_SYSV_SEMAPHORES
+ #define PR_HAVE_SYSV_NAMED_SHARED_MEMORY
+ #endif
+diff --git a/security/moz.build b/security/moz.build
+index 02007bbc07..6e6f55ba04 100644
+--- a/security/moz.build
++++ b/security/moz.build
+@@ -77,7 +77,7 @@ gyp_vars["mozilla_client"] = 1
+ # engine. Under wasm they also fail to link (wasm-ld rejects the duplicate
+ # symbols between each tool's own objects and the shared NSS libs they link).
+ # Skip them entirely for the emscripten build.
+-gyp_vars["build_nss_cmds"] = 0 if CONFIG["OS_TARGET"] == "EMSCRIPTEN" else 1
++gyp_vars["build_nss_cmds"] = 0 if CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI") else 1
+ 
+ # This builds NSS tools in COMM applications that Firefox doesn't build.
+ if CONFIG["MOZ_BUILD_APP"].startswith("comm/"):
+diff --git a/security/nss/lib/softoken/fipstokn.c b/security/nss/lib/softoken/fipstokn.c
+index a68c9c799a..640ce34d4b 100644
+--- a/security/nss/lib/softoken/fipstokn.c
++++ b/security/nss/lib/softoken/fipstokn.c
+@@ -27,9 +27,11 @@
+ 
+ #include <ctype.h>
+ 
+-#ifdef XP_UNIX
++#if defined(XP_UNIX) && !defined(__wasi__)
+ #define NSS_AUDIT_WITH_SYSLOG 1
+ #include <syslog.h>
++#endif
++#ifdef XP_UNIX
+ #include <unistd.h>
+ #endif
+ 
+diff --git a/security/nss/lib/ssl/sslsnce.c b/security/nss/lib/ssl/sslsnce.c
+index 99a3a58a40..cb522bd2cb 100644
+--- a/security/nss/lib/ssl/sslsnce.c
++++ b/security/nss/lib/ssl/sslsnce.c
+@@ -62,7 +62,9 @@
+ 
+ #if defined(XP_UNIX)
+ 
++#if !defined(__wasi__)
+ #include <syslog.h>
++#endif
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <errno.h>
+diff --git a/third_party/rust/glean-core/src/fd_logger.rs b/third_party/rust/glean-core/src/fd_logger.rs
+index e885c596b2..a06e3a863d 100644
+--- a/third_party/rust/glean-core/src/fd_logger.rs
++++ b/third_party/rust/glean-core/src/fd_logger.rs
+@@ -13,7 +13,7 @@ use std::os::windows::io::FromRawHandle;
+ use std::ffi::c_void;
+ 
+ #[cfg(not(target_os = "windows"))]
+-use std::os::unix::io::FromRawFd;
++use std::os::fd::FromRawFd;
+ 
+ use serde::Serialize;
+ 
+diff --git a/third_party/rust/libc/src/wasi/browseros.rs b/third_party/rust/libc/src/wasi/browseros.rs
+new file mode 100644
+index 0000000000..b162e9b6ef
+--- /dev/null
++++ b/third_party/rust/libc/src/wasi/browseros.rs
+@@ -0,0 +1,29 @@
++//! POSIX functions that BrowserOS's libc (a wasi-libc fork) provides on
++//! wasm32-wasip1 beyond plain wasi-libc. Values match its headers when built
++//! with `-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID`.
++
++use crate::prelude::*;
++
++pub const PATH_MAX: c_int = 4096;
++
++pub const AF_UNIX: c_int = 3;
++pub const SOCK_CLOEXEC: c_int = 0x00002000;
++pub const MSG_DONTWAIT: c_int = 0x0040;
++
++pub const SIGINT: c_int = 2;
++pub const SIGABRT: c_int = 6;
++pub const SIGKILL: c_int = 9;
++pub const SIGTERM: c_int = 15;
++
++use crate::pid_t;
++
++extern "C" {
++    pub fn getpid() -> pid_t;
++    pub fn getppid() -> pid_t;
++    pub fn kill(pid: pid_t, sig: c_int) -> c_int;
++    pub fn pipe(fds: *mut c_int) -> c_int;
++    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
++    pub fn dup(fd: c_int) -> c_int;
++    pub fn dup2(src: c_int, dst: c_int) -> c_int;
++    pub fn socketpair(domain: c_int, type_: c_int, protocol: c_int, sv: *mut c_int) -> c_int;
++}
+diff --git a/third_party/rust/libc/src/wasi/mod.rs b/third_party/rust/libc/src/wasi/mod.rs
+index cd4f508459..59ffe0c1fe 100644
+--- a/third_party/rust/libc/src/wasi/mod.rs
++++ b/third_party/rust/libc/src/wasi/mod.rs
+@@ -951,9 +951,14 @@ extern "C" {
+     pub fn pthread_rwlockattr_destroy(attr: *mut pthread_rwlockattr_t) -> c_int;
+ }
+ 
++// BrowserOS's libc implements the wasi-libc socket API (the p2 definitions) on
++// wasip1 as well, plus the POSIX process and signal calls in `browseros`.
++mod p2;
++pub use self::p2::*;
++
+ cfg_if! {
+-    if #[cfg(not(target_env = "p1"))] {
+-        mod p2;
+-        pub use self::p2::*;
++    if #[cfg(target_env = "p1")] {
++        mod browseros;
++        pub use self::browseros::*;
+     }
+ }
+diff --git a/third_party/rust/mls-rs-core/src/time.rs b/third_party/rust/mls-rs-core/src/time.rs
+index 96cb22936c..a95677bf56 100644
+--- a/third_party/rust/mls-rs-core/src/time.rs
++++ b/third_party/rust/mls-rs-core/src/time.rs
+@@ -5,7 +5,7 @@
+ use core::time::Duration;
+ use mls_rs_codec::{MlsDecode, MlsEncode, MlsSize};
+ 
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten"), not(target_os = "wasi")))]
+ use wasm_bindgen::prelude::*;
+ 
+ /// Wasm-compatible representation of a timestamp.
+@@ -61,7 +61,7 @@ impl core::ops::Add<Duration> for MlsTime {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl MlsTime {
+     /// Current system time.
+     pub fn now() -> Self {
+@@ -94,13 +94,13 @@ impl From<MlsTime> for Duration {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ #[derive(Debug, thiserror::Error)]
+ #[error("Overflow while adding {0:?}")]
+ /// Overflow in time conversion.
+ pub struct TimeOverflow(Duration);
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl TryFrom<MlsTime> for std::time::SystemTime {
+     type Error = TimeOverflow;
+ 
+@@ -112,7 +112,7 @@ impl TryFrom<MlsTime> for std::time::SystemTime {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl TryFrom<std::time::SystemTime> for MlsTime {
+     type Error = std::time::SystemTimeError;
+ 
+@@ -122,7 +122,7 @@ impl TryFrom<std::time::SystemTime> for MlsTime {
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten"), not(target_os = "wasi")))]
+ #[wasm_bindgen(inline_js = r#"
+ export function date_now() {
+   return Date.now();
+@@ -137,7 +137,7 @@ extern "C" {
+     fn date_now() -> f64;
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+ impl MlsTime {
+     pub fn now() -> Self {
+         Self {
+diff --git a/third_party/rust/mtu/src/lib.rs b/third_party/rust/mtu/src/lib.rs
+index a724971ba7..d7d7aa14d3 100644
+--- a/third_party/rust/mtu/src/lib.rs
++++ b/third_party/rust/mtu/src/lib.rs
+@@ -75,7 +75,7 @@ mod linux;
+ #[cfg(target_os = "windows")]
+ mod windows;
+ 
+-#[cfg(not(target_os = "windows"))]
++#[cfg(not(any(target_os = "windows", target_os = "wasi")))]
+ mod routesocket;
+ 
+ #[cfg(any(target_os = "macos", bsd))]
+@@ -115,7 +115,8 @@ const fn aligned_by(size: usize, align: usize) -> usize {
+     target_os = "tvos",
+     target_os = "visionos",
+     target_os = "redox",
+-    target_os = "emscripten"
++    target_os = "emscripten",
++    target_os = "wasi"
+ ))]
+ pub fn interface_and_mtu_impl(remote: IpAddr) -> Result<(String, usize)> {
+     return Err(default_err());
+diff --git a/third_party/rust/socket2/src/lib.rs b/third_party/rust/socket2/src/lib.rs
+index b846288f72..333ea00632 100644
+--- a/third_party/rust/socket2/src/lib.rs
++++ b/third_party/rust/socket2/src/lib.rs
+@@ -109,7 +109,7 @@ macro_rules! from {
+     ($from: ty, $for: ty) => {
+         impl From<$from> for $for {
+             fn from(socket: $from) -> $for {
+-                #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 unsafe {
+                     <$for>::from_raw_fd(socket.into_raw_fd())
+                 }
+@@ -177,13 +177,13 @@ mod socket;
+ mod sockref;
+ 
+ #[cfg_attr(
+-    any(unix, all(target_os = "wasi", not(target_env = "p1"))),
++    any(unix, target_os = "wasi"),
+     path = "sys/unix.rs"
+ )]
+ #[cfg_attr(windows, path = "sys/windows.rs")]
+ mod sys;
+ 
+-#[cfg(not(any(windows, unix, all(target_os = "wasi", not(target_env = "p1")))))]
++#[cfg(not(any(windows, unix, target_os = "wasi")))]
+ compile_error!("Socket2 doesn't support the compile target");
+ 
+ use sys::c_int;
+@@ -528,7 +528,7 @@ impl TcpKeepalive {
+         target_os = "watchos",
+         target_os = "windows",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     ))]
+     pub const fn with_interval(self, interval: Duration) -> Self {
+         Self {
+@@ -558,7 +558,7 @@ impl TcpKeepalive {
+             target_os = "watchos",
+             target_os = "cygwin",
+             target_os = "windows",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub const fn with_retries(self, retries: u32) -> Self {
+diff --git a/third_party/rust/socket2/src/sockaddr.rs b/third_party/rust/socket2/src/sockaddr.rs
+index 120a546649..a5bd4cf370 100644
+--- a/third_party/rust/socket2/src/sockaddr.rs
++++ b/third_party/rust/socket2/src/sockaddr.rs
+@@ -298,7 +298,7 @@ impl SockAddr {
+                 ip,
+                 port,
+                 addr.sin6_flowinfo,
+-                #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 addr.sin6_scope_id,
+                 #[cfg(windows)]
+                 unsafe {
+@@ -393,7 +393,7 @@ impl From<SocketAddrV6> for SockAddr {
+             storage.sin6_port = addr.port().to_be();
+             storage.sin6_addr = crate::sys::to_in6_addr(addr.ip());
+             storage.sin6_flowinfo = addr.flowinfo();
+-            #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++            #[cfg(any(unix, target_os = "wasi"))]
+             {
+                 storage.sin6_scope_id = addr.scope_id();
+             }
+diff --git a/third_party/rust/socket2/src/socket.rs b/third_party/rust/socket2/src/socket.rs
+index b258c93c33..af6aacdc68 100644
+--- a/third_party/rust/socket2/src/socket.rs
++++ b/third_party/rust/socket2/src/socket.rs
+@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
+ #[cfg(not(target_os = "nto"))]
+ use std::net::Ipv6Addr;
+ use std::net::{self, Ipv4Addr, Shutdown};
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::{FromRawFd, IntoRawFd};
+ #[cfg(windows)]
+ use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+@@ -220,7 +220,7 @@ impl Socket {
+         match res {
+             Ok(()) => return Ok(()),
+             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+-            #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++            #[cfg(any(unix, target_os = "wasi"))]
+             Err(ref e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {}
+             Err(e) => return Err(e),
+         }
+@@ -367,7 +367,7 @@ impl Socket {
+     /// On Windows it is not possible retrieve the nonblocking mode status.
+     #[cfg(all(
+         feature = "all",
+-        any(unix, all(target_os = "wasi", not(target_env = "p1")))
++        any(unix, target_os = "wasi")
+     ))]
+     pub fn nonblocking(&self) -> io::Result<bool> {
+         sys::nonblocking(self.as_raw())
+@@ -2241,7 +2241,7 @@ impl Socket {
+             target_os = "tvos",
+             target_os = "watchos",
+             target_os = "cygwin",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub fn tcp_keepalive_interval(&self) -> io::Result<Duration> {
+@@ -2273,7 +2273,7 @@ impl Socket {
+             target_os = "watchos",
+             target_os = "cygwin",
+             target_os = "windows",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub fn tcp_keepalive_retries(&self) -> io::Result<u32> {
+diff --git a/third_party/rust/socket2/src/sockref.rs b/third_party/rust/socket2/src/sockref.rs
+index b07a031f70..b938b62d6c 100644
+--- a/third_party/rust/socket2/src/sockref.rs
++++ b/third_party/rust/socket2/src/sockref.rs
+@@ -2,7 +2,7 @@ use std::fmt;
+ use std::marker::PhantomData;
+ use std::mem::ManuallyDrop;
+ use std::ops::Deref;
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+ #[cfg(windows)]
+ use std::os::windows::io::{AsRawSocket, AsSocket, FromRawSocket};
+@@ -77,7 +77,7 @@ impl<'s> Deref for SockRef<'s> {
+ }
+ 
+ /// On Windows, a corresponding `From<&impl AsSocket>` implementation exists.
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ impl<'s, S> From<&'s S> for SockRef<'s>
+ where
+     S: AsFd,
+diff --git a/third_party/rust/socket2/src/sys/unix.rs b/third_party/rust/socket2/src/sys/unix.rs
+index 5162e8310e..cc696a1eb0 100644
+--- a/third_party/rust/socket2/src/sys/unix.rs
++++ b/third_party/rust/socket2/src/sys/unix.rs
+@@ -267,7 +267,7 @@ pub(crate) use libc::{IPV6_ADD_MEMBERSHIP, IPV6_DROP_MEMBERSHIP};
+     target_os = "solaris",
+     target_os = "tvos",
+     target_os = "watchos",
+-    all(target_os = "wasi", not(target_env = "p1")),
++    target_os = "wasi",
+ ))]
+ pub(crate) use libc::{
+     IPV6_JOIN_GROUP as IPV6_ADD_MEMBERSHIP, IPV6_LEAVE_GROUP as IPV6_DROP_MEMBERSHIP,
+@@ -290,7 +290,7 @@ pub(crate) use libc::{IPV6_MULTICAST_HOPS, IPV6_MULTICAST_IF, IP_MULTICAST_IF, M
+         target_os = "tvos",
+         target_os = "watchos",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     )
+ ))]
+ pub(crate) use libc::{TCP_KEEPCNT, TCP_KEEPINTVL};
+@@ -452,7 +452,7 @@ impl Type {
+             target_os = "netbsd",
+             target_os = "openbsd",
+             target_os = "cygwin",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub const fn nonblocking(self) -> Type {
+@@ -1002,7 +1002,7 @@ pub(crate) fn try_clone(fd: RawSocket) -> io::Result<RawSocket> {
+ 
+ #[cfg(all(
+     feature = "all",
+-    any(unix, all(target_os = "wasi", not(target_env = "p1"))),
++    any(unix, target_os = "wasi"),
+     not(target_os = "vita")
+ ))]
+ pub(crate) fn nonblocking(fd: RawSocket) -> io::Result<bool> {
+@@ -1263,7 +1263,7 @@ pub(crate) fn set_tcp_keepalive(fd: RawSocket, keepalive: &TcpKeepalive) -> io::
+         target_os = "tvos",
+         target_os = "watchos",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     ))]
+     {
+         if let Some(interval) = keepalive.interval {
+diff --git a/toolkit/components/kvstore/src/fs.rs b/toolkit/components/kvstore/src/fs.rs
+index 37ac203c85..bcd70253b4 100644
+--- a/toolkit/components/kvstore/src/fs.rs
++++ b/toolkit/components/kvstore/src/fs.rs
+@@ -57,7 +57,23 @@ impl WidePathBuf {
+             }
+             Ok(OsString::from_vec(unsafe { CStr::from_ptr(ptr) }.to_bytes().into()).into())
+         }
+-        #[cfg(all(not(unix), not(windows)))]
++        // std::fs::canonicalize is unsupported on wasip1; BrowserOS's libc
++        // has realpath.
++        #[cfg(target_os = "wasi")]
++        {
++            use std::{
++                ffi::{CStr, CString, OsString},
++                os::wasi::ffi::OsStringExt,
++            };
++            let path = CString::new(String::from_utf16(&*self.0).map_err(io::Error::other)?)?;
++            let mut bytes = [0 as libc::c_char; libc::PATH_MAX as usize];
++            let ptr = unsafe { libc::realpath(path.as_ptr(), bytes[..].as_mut_ptr()) };
++            if ptr.is_null() {
++                return Err(io::Error::last_os_error());
++            }
++            Ok(OsString::from_vec(unsafe { CStr::from_ptr(ptr) }.to_bytes().into()).into())
++        }
++        #[cfg(all(not(unix), not(windows), not(target_os = "wasi")))]
+         compile_error!("`WidePathBuf::canonicalize` requires Windows or Unix")
+     }
+ }
+diff --git a/toolkit/components/processtools/Cargo.toml b/toolkit/components/processtools/Cargo.toml
+index c78cdb3383..fd50ac5cf0 100644
+--- a/toolkit/components/processtools/Cargo.toml
++++ b/toolkit/components/processtools/Cargo.toml
+@@ -12,6 +12,6 @@ xpcom = { path = "../../../xpcom/rust/xpcom" }
+ [target.'cfg(windows)'.dependencies]
+ winapi = "0.3.7"
+ 
+-[target.'cfg(unix)'.dependencies]
++[target.'cfg(any(unix, target_os = "wasi"))'.dependencies]
+ libc = "0.2"
+ log = "0.4"
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index b8c8a03c3d..0bc2cf1294 100644
 --- a/toolkit/moz.configure
 +++ b/toolkit/moz.configure
-@@ -166,7 +166,7 @@
+@@ -166,7 +166,7 @@ def fold_libs(target):
      # separate objects collide on shared symbols (libVersionPoint, etc.) when
      # statically linked into one wasm module, and wasm-ld has no
      # --allow-multiple-definition. Folding is also what Android does.
@@ -9,7 +783,17 @@
  
  
  set_config("MOZ_FOLD_LIBS", fold_libs)
-@@ -534,7 +534,7 @@
+@@ -280,6 +280,9 @@ def audio_backends_default(target):
+         return ("sunaudio",)
+     elif target.os == "WINNT":
+         return ("wasapi",)
++    elif target.os == "WASI":
++        # BrowserOS has no audio device for cubeb yet.
++        return False
+     else:
+         return ("pulseaudio",)
+ 
+@@ -534,7 +537,7 @@ def toolkit_choices(target):
          return ("cairo-uikit",)
      elif target.os == "Android":
          return ("cairo-android",)
@@ -18,7 +802,7 @@
          # No native widget toolkit in wasm; use the offscreen headless backend
          # (widget/headless) as the sole widget toolkit.
          return ("cairo-headless",)
-@@ -796,7 +796,7 @@
+@@ -796,7 +799,7 @@ def freetype2_combined_info(fontconfig_info, freetype2_info):
  @depends(freetype2_info, target)
  def have_freetype2(freetype2_info, target):
      # emscripten provides FreeType via its port (-sUSE_FREETYPE).
@@ -27,7 +811,7 @@
          return True
  
  
-@@ -1328,7 +1328,7 @@
+@@ -1328,7 +1331,7 @@ def tree_freetype(target):
      # emscripten's bundled FreeType port is ancient (2.6.0) and missing many
      # APIs Gecko's font code needs (FT_Done_MM_Var, variable fonts, COLRv1...).
      # Build the modern in-tree FreeType instead.
@@ -36,7 +820,7 @@
          return True
  
  
-@@ -1360,7 +1360,7 @@
+@@ -1360,7 +1363,7 @@ def enable_cairo_ft(target, tree_freetype, freetype2_info):
      return (
          freetype2_info
          or (tree_freetype and target.os != "WINNT")
@@ -45,3 +829,703 @@
      )
  
  
+diff --git a/xpcom/build/BinaryPath.h b/xpcom/build/BinaryPath.h
+index ff17e195cf..66f8029727 100644
+--- a/xpcom/build/BinaryPath.h
++++ b/xpcom/build/BinaryPath.h
+@@ -278,6 +278,13 @@ class BinaryPath {
+     strcpy(aResult, "/firefox");
+     return NS_OK;
+   }
++#elif defined(__wasi__)
++  // WASI has no executable path. BrowserOS's browser-firefox package installs
++  // the engine and its resources (omni.ja, defaults/) in /usr/lib/firefox.
++  static nsresult Get(char aResult[MAXPATHLEN]) {
++    strcpy(aResult, "/usr/lib/firefox/firefox");
++    return NS_OK;
++  }
+ #else
+ #  error Oops, you need platform-specific code here
+ #endif
+diff --git a/xpcom/reflect/xptcall/md/unix/moz.build b/xpcom/reflect/xptcall/md/unix/moz.build
+index 20729d8251..43e714c361 100644
+--- a/xpcom/reflect/xptcall/md/unix/moz.build
++++ b/xpcom/reflect/xptcall/md/unix/moz.build
+@@ -10,6 +10,14 @@ if CONFIG["OS_ARCH"] == "EMSCRIPTEN":
+         "xptcstubs_wasm.cpp",
+     ]
+ 
++if CONFIG["OS_ARCH"] == "WASI":
++    # Same marshaling as the emscripten port, but dispatched through tables
++    # that xptcodegen.py generates into xptdata.cpp (no JS function table).
++    SOURCES += [
++        "xptcinvoke_wasi.cpp",
++        "xptcstubs_wasi.cpp",
++    ]
++
+ if CONFIG["OS_ARCH"] == "Darwin":
+     SOURCES += [
+         "xptcinvoke_darwin.cpp",
+diff --git a/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp b/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp
+new file mode 100644
+index 0000000000..35ae8d985a
+--- /dev/null
++++ b/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp
+@@ -0,0 +1,107 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// wasm32-wasi xptcall, JS->C++ direction: NS_InvokeByIndex.
++//
++// wasm call_indirect needs the exact function type at the call site. The
++// arguments are packed into 8-byte slots, and the call is made by the invoker
++// that xptcodegen.py generated for this signature.
++
++#include "xptcprivate.h"
++#include "xptcall_wasi.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++static const xptcall_wasi::InvokeEntry* FindInvoker(const char* aSig) {
++  size_t lo = 0;
++  size_t hi = xptcall_wasi::kInvokerCount;
++  while (lo < hi) {
++    size_t mid = (lo + hi) / 2;
++    int cmp = strcmp(xptcall_wasi::kInvokers[mid].mSig, aSig);
++    if (cmp == 0) {
++      return &xptcall_wasi::kInvokers[mid];
++    }
++    if (cmp < 0) {
++      lo = mid + 1;
++    } else {
++      hi = mid;
++    }
++  }
++  return nullptr;
++}
++
++extern "C" nsresult NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
++                                     uint32_t paramCount,
++                                     nsXPTCVariant* params) {
++  void** vtable = *reinterpret_cast<void***>(that);
++  void* fp = vtable[methodIndex];
++
++  char sig[PARAM_BUFFER_COUNT + 8];
++  size_t sn = 0;
++  sig[sn++] = 'i';  // nsresult
++  sig[sn++] = 'i';  // this
++  uint8_t argbuf[PARAM_BUFFER_COUNT * 8];
++  if (paramCount > PARAM_BUFFER_COUNT) {
++    return NS_ERROR_ILLEGAL_VALUE;
++  }
++
++  for (uint32_t i = 0; i < paramCount; i++) {
++    nsXPTCVariant& s = params[i];
++    uint8_t* a = argbuf + size_t(i) * 8;
++    memset(a, 0, 8);
++    if (s.IsIndirect()) {
++      sig[sn++] = 'i';
++      void* p = &s.val;
++      memcpy(a, &p, sizeof(p));
++      continue;
++    }
++    int32_t i32 = 0;
++    switch (s.type) {
++      case nsXPTType::T_DOUBLE:
++        sig[sn++] = 'd';
++        memcpy(a, &s.val.d, sizeof(double));
++        continue;
++      case nsXPTType::T_FLOAT:
++        sig[sn++] = 'f';
++        memcpy(a, &s.val.f, sizeof(float));
++        continue;
++      case nsXPTType::T_I64:
++        sig[sn++] = 'j';
++        memcpy(a, &s.val.i64, sizeof(int64_t));
++        continue;
++      case nsXPTType::T_U64:
++        sig[sn++] = 'j';
++        memcpy(a, &s.val.u64, sizeof(uint64_t));
++        continue;
++      case nsXPTType::T_I8: i32 = s.val.i8; break;
++      case nsXPTType::T_I16: i32 = s.val.i16; break;
++      case nsXPTType::T_I32: i32 = s.val.i32; break;
++      case nsXPTType::T_U8: i32 = s.val.u8; break;
++      case nsXPTType::T_U16: i32 = s.val.u16; break;
++      case nsXPTType::T_U32: i32 = int32_t(s.val.u32); break;
++      case nsXPTType::T_BOOL: i32 = s.val.b ? 1 : 0; break;
++      case nsXPTType::T_CHAR: i32 = s.val.c; break;
++      case nsXPTType::T_WCHAR: i32 = s.val.wc; break;
++      default:
++        i32 = int32_t(reinterpret_cast<intptr_t>(s.val.p));
++        break;
++    }
++    sig[sn++] = 'i';
++    memcpy(a, &i32, sizeof(i32));
++  }
++  sig[sn] = '\0';
++
++  const xptcall_wasi::InvokeEntry* entry = FindInvoker(sig);
++  if (!entry) {
++    // Every signature reachable from XPIDL is generated; reaching this means
++    // the generator and the caller disagree about the C++ ABI.
++    fprintf(stderr, "xptcall: no invoker for signature %s (method %u)\n", sig,
++            methodIndex);
++    abort();
++  }
++  return entry->mInvoke(fp, that, argbuf);
++}
+diff --git a/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp b/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp
+new file mode 100644
+index 0000000000..ae7836739b
+--- /dev/null
++++ b/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp
+@@ -0,0 +1,279 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// wasm32-wasi xptcall, C++->JS direction (the nsXPTCStubBase replacement).
++//
++// wasm call_indirect enforces an exact function type at every call site, so the
++// native "one Stub# entry, marshal registers in asm" trick can't be ported. We
++// instead build, per interface, a vtable whose slots are real wasm functions of
++// the right type:
++//   slot 0/1/2 -> QueryInterface/AddRef/Release (fixed-signature C++ funcs)
++//   slot N>=3  -> the function xptcodegen.py generated for (signature, N). It
++//                 packs its arguments into 8-byte slots and forwards to
++//                 WasmXPTCStubDispatch, which rebuilds an nsXPTCMiniVariant[]
++//                 and calls mOuter->CallMethod.
++// Vtables are cached per nsXPTInterfaceInfo.
++
++#include "xptcprivate.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <unordered_map>
++#include <cstdio>
++
++#include "xptcall_wasi.h"
++
++#include "mozilla/StaticMutex.h"
++
++// The synthetic proxy object. The vtable pointer MUST be first so that an
++// interface pointer to this object dispatches through our table.
++struct WasmStub {
++  void** vtable;
++  nsIXPTCProxy* mOuter;
++  const nsXPTInterfaceInfo* mEntry;
++};
++
++extern "C" {
++
++// nsISupports slots, implemented directly (fixed signatures, no marshaling).
++nsresult WasmStub_QueryInterface(WasmStub* self, const nsID& aIID,
++                                 void** aInstancePtr) {
++  if (aIID.Equals(self->mEntry->IID())) {
++    self->mOuter->AddRef();
++    *aInstancePtr = static_cast<void*>(self);
++    return NS_OK;
++  }
++  return self->mOuter->QueryInterface(aIID, aInstancePtr);
++}
++
++MozExternalRefCountType WasmStub_AddRef(WasmStub* self) {
++  return self->mOuter->AddRef();
++}
++
++MozExternalRefCountType WasmStub_Release(WasmStub* self) {
++  return self->mOuter->Release();
++}
++
++// Called by every method shim. argbuf holds one 8-byte slot per incoming C++
++// argument (excluding 'this'): integers/pointers in the low bytes, i64 as 8
++// bytes, float as 4 bytes, double as 8 bytes -- matching how the JS shim wrote
++// them per the signature. We walk the XPT params (skipping the implicit
++// JSContext slot, ignoring a trailing optional-argc slot) into a mini-variant
++// array, then dispatch.
++nsresult WasmXPTCStubDispatch(void* aSelf, uint32_t methodIndex,
++                              uint8_t* argbuf, uint32_t /*nargs*/) {
++  WasmStub* self = static_cast<WasmStub*>(aSelf);
++  const nsXPTMethodInfo* info = nullptr;
++  self->mEntry->GetMethodInfo(uint16_t(methodIndex), &info);
++  if (!info) {
++    return NS_ERROR_UNEXPECTED;
++  }
++
++  nsXPTCMiniVariant paramBuffer[PARAM_BUFFER_COUNT];
++  uint32_t paramCount = info->ParamCount();
++  const uint8_t indexOfJSContext = info->IndexOfJSContext();
++
++  uint32_t slot = 0;  // index into argbuf's 8-byte slots
++  for (uint32_t i = 0; i < paramCount; i++) {
++    if (i == indexOfJSContext) {
++      slot++;  // skip the implicit JSContext* argument
++    }
++    const nsXPTParamInfo& param = info->Param(i);
++    const nsXPTType& type = param.GetType();
++    nsXPTCMiniVariant* dp = &paramBuffer[i];
++    uint8_t* a = argbuf + size_t(slot) * 8;
++    slot++;
++
++    if (param.IsOut() || !type.IsArithmetic()) {
++      dp->val.p = *reinterpret_cast<void**>(a);
++      continue;
++    }
++    switch (type) {
++      case nsXPTType::T_I8:    dp->val.i8  = int8_t(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_I16:   dp->val.i16 = int16_t(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_I32:   dp->val.i32 = *reinterpret_cast<int32_t*>(a); break;
++      case nsXPTType::T_I64:   dp->val.i64 = *reinterpret_cast<int64_t*>(a); break;
++      case nsXPTType::T_U8:    dp->val.u8  = uint8_t(*reinterpret_cast<uint32_t*>(a)); break;
++      case nsXPTType::T_U16:   dp->val.u16 = uint16_t(*reinterpret_cast<uint32_t*>(a)); break;
++      case nsXPTType::T_U32:   dp->val.u32 = *reinterpret_cast<uint32_t*>(a); break;
++      case nsXPTType::T_U64:   dp->val.u64 = *reinterpret_cast<uint64_t*>(a); break;
++      case nsXPTType::T_FLOAT: dp->val.f   = *reinterpret_cast<float*>(a); break;
++      case nsXPTType::T_DOUBLE:dp->val.d   = *reinterpret_cast<double*>(a); break;
++      case nsXPTType::T_BOOL:  dp->val.b   = bool(uint8_t(*reinterpret_cast<uint32_t*>(a))); break;
++      case nsXPTType::T_CHAR:  dp->val.c   = char(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_WCHAR: dp->val.wc  = char16_t(*reinterpret_cast<uint32_t*>(a)); break;
++      default:
++        dp->val.p = *reinterpret_cast<void**>(a);
++        break;
++    }
++  }
++
++  return self->mOuter->CallMethod(uint16_t(methodIndex), info, paramBuffer);
++}
++
++}  // extern "C"
++
++// Compute the signature string for a method: return type
++// first ('i' = nsresult), then 'this', then each argument in C++ order.
++static char WasmTypeChar(const nsXPTParamInfo& aParam) {
++  if (aParam.IsOut()) {
++    return 'i';  // out params are pointers
++  }
++  const nsXPTType& type = aParam.GetType();
++  if (!type.IsArithmetic()) {
++    return 'i';  // complex types passed by pointer
++  }
++  switch (type) {
++    case nsXPTType::T_I64:
++    case nsXPTType::T_U64:
++      return 'j';
++    case nsXPTType::T_FLOAT:
++      return 'f';
++    case nsXPTType::T_DOUBLE:
++      return 'd';
++    default:
++      return 'i';
++  }
++}
++
++static void WasmComputeSig(const nsXPTMethodInfo* aInfo, char* aOut,
++                           size_t aMax) {
++  size_t n = 0;
++  auto put = [&](char c) {
++    if (n + 1 < aMax) aOut[n++] = c;
++  };
++  put('i');  // nsresult return
++  put('i');  // this
++  uint32_t paramCount = aInfo->ParamCount();
++  uint8_t indexOfJSContext = aInfo->IndexOfJSContext();
++  for (uint32_t i = 0; i < paramCount; i++) {
++    if (aInfo->WantsContext() && i == indexOfJSContext) {
++      put('i');  // implicit JSContext*
++    }
++    put(WasmTypeChar(aInfo->Param(i)));
++  }
++  if (aInfo->WantsContext() && indexOfJSContext == paramCount) {
++    put('i');  // JSContext* after all params (no retval case)
++  }
++  if (aInfo->WantsOptArgc()) {
++    put('i');  // trailing uint8_t argc
++  }
++  aOut[n] = '\0';
++}
++
++// Find the generated method shim for (signature, method index).
++static void* WasmFindStub(uint32_t aMethodIndex, const char* aSig) {
++  size_t lo = 0;
++  size_t hi = xptcall_wasi::kStubCount;
++  while (lo < hi) {
++    size_t mid = (lo + hi) / 2;
++    const xptcall_wasi::StubEntry& e = xptcall_wasi::kStubs[mid];
++    int cmp = strcmp(e.mSig, aSig);
++    if (cmp == 0) {
++      cmp = int(e.mMethodIndex) - int(aMethodIndex);
++    }
++    if (cmp == 0) {
++      return e.mFunc;
++    }
++    if (cmp < 0) {
++      lo = mid + 1;
++    } else {
++      hi = mid;
++    }
++  }
++  return nullptr;
++}
++
++// Slots without a generated shim ([notxpcom] methods) cannot be called on a
++// JS-implemented object.
++static nsresult WasmStub_Unsupported(WasmStub* self) {
++  fprintf(stderr, "xptcall: unsupported method on %s\n", self->mEntry->Name());
++  abort();
++}
++
++static mozilla::StaticMutex sVtableMutex MOZ_UNANNOTATED;
++
++static std::unordered_map<const nsXPTInterfaceInfo*, void**>* sVtableCache =
++    nullptr;
++
++static void** WasmGetOrBuildVtable(const nsXPTInterfaceInfo* aEntry) {
++  mozilla::StaticMutexAutoLock lock(sVtableMutex);
++  if (!sVtableCache) {
++    sVtableCache = new std::unordered_map<const nsXPTInterfaceInfo*, void**>();
++  }
++  auto it = sVtableCache->find(aEntry);
++  if (it != sVtableCache->end()) {
++    return it->second;
++  }
++
++  uint32_t methodCount = aEntry->MethodCount();
++  void** vtable = static_cast<void**>(malloc(sizeof(void*) * methodCount));
++  vtable[0] = reinterpret_cast<void*>(&WasmStub_QueryInterface);
++  vtable[1] = reinterpret_cast<void*>(&WasmStub_AddRef);
++  vtable[2] = reinterpret_cast<void*>(&WasmStub_Release);
++  for (uint32_t mi = 3; mi < methodCount; mi++) {
++    const nsXPTMethodInfo* info = nullptr;
++    aEntry->GetMethodInfo(uint16_t(mi), &info);
++    char sig[PARAM_BUFFER_COUNT + 8];
++    if (info) {
++      WasmComputeSig(info, sig, sizeof(sig));
++    } else {
++      strcpy(sig, "ii");
++    }
++    void* fn = info ? WasmFindStub(mi, sig) : nullptr;
++    vtable[mi] = fn ? fn : reinterpret_cast<void*>(&WasmStub_Unsupported);
++  }
++
++  (*sVtableCache)[aEntry] = vtable;
++  return vtable;
++}
++
++EXPORT_XPCOM_API(nsresult)
++NS_GetXPTCallStub(REFNSIID aIID, nsIXPTCProxy* aOuter,
++                  nsISomeInterface** aResult) {
++  if (NS_WARN_IF(!aOuter) || NS_WARN_IF(!aResult)) {
++    return NS_ERROR_INVALID_ARG;
++  }
++  const nsXPTInterfaceInfo* iie = nsXPTInterfaceInfo::ByIID(aIID);
++  if (!iie || iie->IsBuiltinClass()) {
++    return NS_ERROR_FAILURE;
++  }
++  void** vtable = WasmGetOrBuildVtable(iie);
++  WasmStub* stub = static_cast<WasmStub*>(malloc(sizeof(WasmStub)));
++  stub->vtable = vtable;
++  stub->mOuter = aOuter;
++  stub->mEntry = iie;
++  *aResult = reinterpret_cast<nsISomeInterface*>(stub);
++  return NS_OK;
++}
++
++EXPORT_XPCOM_API(void)
++NS_DestroyXPTCallStub(nsISomeInterface* aStub) {
++  // The vtable is cached/shared per interface; only the per-proxy object is
++  // freed here.
++  free(static_cast<void*>(aStub));
++}
++
++EXPORT_XPCOM_API(size_t)
++NS_SizeOfIncludingThisXPTCallStub(const nsISomeInterface* aStub,
++                                  mozilla::MallocSizeOf aMallocSizeOf) {
++  return aMallocSizeOf(aStub);
++}
++
++// nsXPTCStubBase is still a complete type elsewhere; its Stub#/Sentinel# bodies
++// are never reached on wasm (we don't instantiate it) but must be defined so the
++// class links. Keep them as traps.
++#define STUB_ENTRY(n) \
++  nsresult nsXPTCStubBase::Stub##n() { abort(); }
++
++#define SENTINEL_ENTRY(n)                        \
++  nsresult nsXPTCStubBase::Sentinel##n() {       \
++    NS_ERROR("nsXPTCStubBase::Sentinel called"); \
++    return NS_ERROR_NOT_IMPLEMENTED;             \
++  }
++
++#include "xptcstubsdef.inc"
++
++#undef STUB_ENTRY
++#undef SENTINEL_ENTRY
+diff --git a/xpcom/reflect/xptcall/xptcall.cpp b/xpcom/reflect/xptcall/xptcall.cpp
+index 3cd129d4c3..d10e482c54 100644
+--- a/xpcom/reflect/xptcall/xptcall.cpp
++++ b/xpcom/reflect/xptcall/xptcall.cpp
+@@ -29,7 +29,7 @@ nsXPTCStubBase::Release() { return mOuter->Release(); }
+ // xptcstubs_wasm.cpp, which builds a synthetic addFunction()-based vtable
+ // instead of relying on nsXPTCStubBase's compiled vtable (the latter can't work
+ // under wasm's call_indirect signature checks).
+-#ifndef __EMSCRIPTEN__
++#if !defined(__EMSCRIPTEN__) && !defined(__wasi__)
+ EXPORT_XPCOM_API(nsresult)
+ NS_GetXPTCallStub(REFNSIID aIID, nsIXPTCProxy* aOuter,
+                   nsISomeInterface** aResult) {
+@@ -57,4 +57,4 @@ NS_SizeOfIncludingThisXPTCallStub(const nsISomeInterface* aStub,
+   // anything, so just measure the size of the object itself.
+   return aMallocSizeOf(aStub);
+ }
+-#endif  // !__EMSCRIPTEN__
++#endif  // !__EMSCRIPTEN__ && !__wasi__
+diff --git a/xpcom/reflect/xptinfo/moz.build b/xpcom/reflect/xptinfo/moz.build
+index 5e3d62bcc4..9d065db153 100644
+--- a/xpcom/reflect/xptinfo/moz.build
++++ b/xpcom/reflect/xptinfo/moz.build
+@@ -14,6 +14,11 @@ EXPORTS += [
+     "xptinfo.h",
+ ]
+ 
++if CONFIG["OS_ARCH"] == "WASI":
++    EXPORTS += [
++        "xptcall_wasi.h",
++    ]
++
+ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+ FINAL_LIBRARY = "xul"
+diff --git a/xpcom/reflect/xptinfo/xptcall_wasi.h b/xpcom/reflect/xptinfo/xptcall_wasi.h
+new file mode 100644
+index 0000000000..6bba9adad9
+--- /dev/null
++++ b/xpcom/reflect/xptinfo/xptcall_wasi.h
+@@ -0,0 +1,44 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Tables generated by xptcodegen.py for xptcall on wasm32-wasi. A signature is
++// "ii" (nsresult return, this) followed by one character per C++ argument:
++// i = i32, j = i64, f = f32, d = f64. Arguments are passed in 8-byte slots.
++
++#ifndef xptcall_wasi_h
++#define xptcall_wasi_h
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "nsError.h"
++
++extern "C" nsresult WasmXPTCStubDispatch(void* aSelf, uint32_t aMethodIndex,
++                                         uint8_t* aArgs, uint32_t aCount);
++
++namespace xptcall_wasi {
++
++typedef nsresult (*Invoker)(void* aFunc, void* aThis, const uint8_t* aArgs);
++
++struct InvokeEntry {
++  const char* mSig;
++  Invoker mInvoke;
++};
++
++struct StubEntry {
++  const char* mSig;
++  uint16_t mMethodIndex;
++  void* mFunc;
++};
++
++// Sorted by signature.
++extern const InvokeEntry kInvokers[];
++extern const size_t kInvokerCount;
++// Sorted by (signature, method index).
++extern const StubEntry kStubs[];
++extern const size_t kStubCount;
++
++}  // namespace xptcall_wasi
++
++#endif  // xptcall_wasi_h
+diff --git a/xpcom/reflect/xptinfo/xptcodegen.py b/xpcom/reflect/xptinfo/xptcodegen.py
+index d089e84807..b9d46fb458 100644
+--- a/xpcom/reflect/xptinfo/xptcodegen.py
++++ b/xpcom/reflect/xptinfo/xptcodegen.py
+@@ -588,6 +588,162 @@ const uint16_t sInterfacesSize = std::size(sInterfaces);
+ """
+     )
+ 
++    write_wasi_xptcall(interfaces, ancestors, fd)
++
++
++# wasm call_indirect checks the exact function type, so xptcall cannot use one
++# assembly trampoline for every method on WASI. Emit a C++ function for every
++# signature used by the interfaces (invoke) and for every (signature, method
++# index) a JS-implemented interface can be called through (stubs).
++WASI_ARITHMETIC_SIG = {
++    "TD_INT64": "j",
++    "TD_UINT64": "j",
++    "TD_FLOAT": "f",
++    "TD_DOUBLE": "d",
++}
++WASI_ARITHMETIC_TAGS = {
++    "TD_INT8",
++    "TD_INT16",
++    "TD_INT32",
++    "TD_INT64",
++    "TD_UINT8",
++    "TD_UINT16",
++    "TD_UINT32",
++    "TD_UINT64",
++    "TD_FLOAT",
++    "TD_DOUBLE",
++    "TD_BOOL",
++    "TD_CHAR",
++    "TD_WCHAR",
++}
++WASI_CTYPE = {"i": "int32_t", "j": "int64_t", "f": "float", "d": "double"}
++
++
++def wasi_method_sig(method):
++    """Return the wasm signature of the C++ method (nsresult, this, args...),
++    matching WasmComputeSig in xptcall/md/unix/xptcstubs_wasi.cpp."""
++
++    def param_char(param):
++        if "out" in param["flags"]:
++            return "i"
++        tag = param["type"]["tag"]
++        if tag not in WASI_ARITHMETIC_TAGS:
++            return "i"
++        return WASI_ARITHMETIC_SIG.get(tag, "i")
++
++    flags = method["flags"]
++    params = method["params"]
++    sig = "ii"
++    context = None
++    if "jscontext" in flags:
++        if "getter" in flags or "setter" in flags:
++            context = 0
++        else:
++            context = len(params) - (1 if "hasretval" in flags else 0)
++    for i, param in enumerate(params):
++        if i == context:
++            sig += "i"
++        sig += param_char(param)
++    if context is not None and context == len(params):
++        sig += "i"
++    if "optargc" in flags:
++        sig += "i"
++    return sig
++
++
++def write_wasi_xptcall(interfaces, ancestors, fd):
++    invoke_sigs = set()
++    stubs = set()
++    for iface in interfaces:
++        chain = list(ancestors(iface))
++        chain.reverse()
++        methods = [m for i in chain for m in i["methods"]]
++        builtinclass = "builtinclass" in iface["flags"]
++        for index, method in enumerate(methods):
++            if "notxpcom" in method["flags"]:
++                continue
++            sig = wasi_method_sig(method)
++            if "hidden" not in method["flags"]:
++                invoke_sigs.add(sig)
++            if not builtinclass and index >= 3:
++                stubs.add((sig, index))
++
++    def args(sig):
++        return [WASI_CTYPE[c] for c in sig[2:]]
++
++    fd.write(
++        """
++#if defined(__wasi__)
++#include <string.h>
++#include "xptcall_wasi.h"
++
++namespace xptcall_wasi {
++
++"""
++    )
++    invokers = sorted(invoke_sigs)
++    for sig in invokers:
++        types = args(sig)
++        loads = []
++        for n, ty in enumerate(types):
++            loads.append(
++                "%s a%d; memcpy(&a%d, aArgs + %d, sizeof(a%d));" % (ty, n, n, n * 8, n)
++            )
++        fd.write(
++            "static nsresult Invoke_%s(void* aFunc, void* aThis, const uint8_t* aArgs) {\n"
++            "  %s\n"
++            "  return reinterpret_cast<nsresult (*)(void*%s)>(aFunc)(aThis%s);\n"
++            "}\n"
++            % (
++                sig,
++                "\n  ".join(loads) if loads else "(void)aArgs;",
++                "".join(", " + t for t in types),
++                "".join(", a%d" % n for n in range(len(types))),
++            )
++        )
++    fd.write("\nconst InvokeEntry kInvokers[] = {\n")
++    for sig in invokers:
++        fd.write('  {"%s", Invoke_%s},\n' % (sig, sig))
++    fd.write("};\nconst size_t kInvokerCount = std::size(kInvokers);\n\n")
++
++    stub_list = sorted(stubs)
++    for sig, index in stub_list:
++        types = args(sig)
++        stores = [
++            "memcpy(buf + %d, &a%d, sizeof(a%d));" % (n * 8, n, n)
++            for n in range(len(types))
++        ]
++        fd.write(
++            "static nsresult Stub_%s_%d(void* aSelf%s) {\n"
++            "  uint8_t buf[%d] = {};\n"
++            "  %s\n"
++            "  return WasmXPTCStubDispatch(aSelf, %d, buf, %d);\n"
++            "}\n"
++            % (
++                sig,
++                index,
++                "".join(", %s a%d" % (t, n) for n, t in enumerate(types)),
++                max(len(types), 1) * 8,
++                "\n  ".join(stores),
++                index,
++                len(types),
++            )
++        )
++    fd.write("\nconst StubEntry kStubs[] = {\n")
++    for sig, index in stub_list:
++        fd.write(
++            '  {"%s", %d, reinterpret_cast<void*>(Stub_%s_%d)},\n'
++            % (sig, index, sig, index)
++        )
++    fd.write(
++        """};
++const size_t kStubCount = std::size(kStubs);
++
++}  // namespace xptcall_wasi
++#endif  // __wasi__
++"""
++    )
++
+ 
+ def link_and_write(files, outfile, outheader):
+     interfaces = []
+diff --git a/xpcom/threads/nsThreadManager.cpp b/xpcom/threads/nsThreadManager.cpp
+index 42ba00ad3c..a7bcc97782 100644
+--- a/xpcom/threads/nsThreadManager.cpp
++++ b/xpcom/threads/nsThreadManager.cpp
+@@ -274,7 +274,7 @@ NS_IMPL_CI_INTERFACE_GETTER(nsThreadManager, nsIThreadManager)
+   // 2MB huge page for the stack on first access.  ASan and TSan builds are
+   // given a larger stack size due to extra data and red-zones which consume
+   // stack space.
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // The in-process wasm interpreter (GECKO_WASM_INTERP) recurses one C++ frame
+   // per guest wasm call, so worker threads running guest wasm (e.g.
+   // embed-demo-in-embed-demo) need a much deeper physical stack than the JS

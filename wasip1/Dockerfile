@@ -12,5 +12,6 @@ ENV WASI_SDK_PATH=/opt/wasi-sdk
 ENV PATH=/root/.cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh && \
     sh /tmp/rustup.sh -y --profile minimal --default-toolchain 1.95.0 && \
-    rustup component add rust-src && rustup target add wasm32-wasip1-threads && rm /tmp/rustup.sh
+    rustup component add rust-src rustfmt && rustup target add wasm32-wasip1-threads && rm /tmp/rustup.sh && \
+    cargo install cbindgen --version 0.29.4 --locked
 WORKDIR /src
