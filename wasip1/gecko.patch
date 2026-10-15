@@ -1,3 +1,32 @@
+diff --git a/accessible/other/Platform.cpp b/accessible/other/Platform.cpp
+index bbb60f5f49..0ee021016d 100644
+--- a/accessible/other/Platform.cpp
++++ b/accessible/other/Platform.cpp
+@@ -36,4 +36,8 @@ void a11y::PlatformAnnouncementEvent(Accessible* aTarget,
+                                      const nsAString& aAnnouncement,
+                                      uint16_t aPriority) {}
+ 
++uint64_t a11y::GetCacheDomainsForKnownClients(uint64_t aCacheDomains) {
++  return aCacheDomains;
++}
++
+ void a11y::GetHumanReadableInstantiatorStr(nsAString& aResult) {}
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index 83e52b260c..d44baebdd3 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -407,7 +407,11 @@ bin/libfreebl_64int_3.so
+ 
+ ; [ Ping Sender ]
+ ;
++; The headless-only toolkit (the wasm builds) runs without the separate
++; pingsender program.
++#ifndef MOZ_WIDGET_HEADLESS
+ @BINPATH@/pingsender@BIN_SUFFIX@
++#endif
+ 
+ ; [ Native Messaging Host Proxy ]
+ ;
 diff --git a/build/moz.configure/bindgen.configure b/build/moz.configure/bindgen.configure
 index 450d6927c9..a210b1b0e2 100644
 --- a/build/moz.configure/bindgen.configure
@@ -175,6 +204,66 @@ index ab0faee0bc..6e9bd96efc 100644
  }
  
  void *OpenPosixLibrary(const std::string &fullPath, int extraFlags, std::string *errorOut)
+diff --git a/gfx/cairo/cairo/src/cairo-ft-font.c b/gfx/cairo/cairo/src/cairo-ft-font.c
+index 02481e8b06..01465da267 100644
+--- a/gfx/cairo/cairo/src/cairo-ft-font.c
++++ b/gfx/cairo/cairo/src/cairo-ft-font.c
+@@ -44,6 +44,14 @@
+ #include "cairo-error-private.h"
+ #include "cairo-image-surface-private.h"
+ #include "cairo-ft-private.h"
++
++/* Optional FreeType functions are looked up at run time where FreeType is a
++ * shared library. WASI has no dlsym; the in-tree FreeType is linked in. */
++#ifdef __wasi__
++#define CAIRO_FT_FUNC(name) ((void *) &name)
++#else
++#define CAIRO_FT_FUNC(name) dlsym (RTLD_DEFAULT, #name)
++#endif
+ #include "cairo-list-inline.h"
+ #include "cairo-path-private.h"
+ #include "cairo-pattern-private.h"
+@@ -520,9 +528,9 @@ _cairo_ft_unscaled_font_init (cairo_ft_unscaled_font_t *unscaled,
+ 
+         static int firstTime = 1;
+         if (firstTime) {
+-            getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-            doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-            getVarDesignCoords = (GetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Design_Coordinates");
++            getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++            doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++            getVarDesignCoords = (GetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Design_Coordinates);
+             firstTime = 0;
+         }
+ 
+@@ -2393,10 +2401,10 @@ cairo_ft_apply_variations (FT_Face                 face,
+ 
+     static int firstTime = 1;
+     if (firstTime) {
+-        getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-        doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-        getVarDesignCoords = (GetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Design_Coordinates");
+-        setVarDesignCoords = (SetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Set_Var_Design_Coordinates");
++        getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++        doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++        getVarDesignCoords = (GetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Design_Coordinates);
++        setVarDesignCoords = (SetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Set_Var_Design_Coordinates);
+         firstTime = 0;
+     }
+ 
+@@ -3738,9 +3746,9 @@ _cairo_ft_is_synthetic (void	        *abstract_font,
+ 
+     static int firstTime = 1;
+     if (firstTime) {
+-        getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-        doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-        getVarBlendCoords = (GetVarBlendCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Blend_Coordinates");
++        getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++        doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++        getVarBlendCoords = (GetVarBlendCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Blend_Coordinates);
+         firstTime = 0;
+     }
+ 
 diff --git a/gfx/harfbuzz/src/hb.hh b/gfx/harfbuzz/src/hb.hh
 index 7e2837f99a..fa83a0f2ec 100644
 --- a/gfx/harfbuzz/src/hb.hh
@@ -342,10 +431,10 @@ index 586893df59..7342960b64 100644
      ($($proto:tt)+) => { extern "C" { fn $($proto)+; } }
  }
 diff --git a/ipc/chromium/moz.build b/ipc/chromium/moz.build
-index b17bba0adb..355f8df333 100644
+index b17bba0adb..9931f1aef1 100644
 --- a/ipc/chromium/moz.build
 +++ b/ipc/chromium/moz.build
-@@ -129,7 +129,7 @@ if CONFIG["TARGET_KERNEL"] == "Linux":
+@@ -129,11 +129,16 @@ if CONFIG["TARGET_KERNEL"] == "Linux":
  # built and base::Time/TimeTicks::Now are undefined. time_posix.cc uses
  # gettimeofday + clock_gettime(CLOCK_MONOTONIC) (the mach path is XP_DARWIN-only),
  # both available under emscripten.
@@ -354,6 +443,15 @@ index b17bba0adb..355f8df333 100644
      SOURCES += [
          "src/base/time_posix.cc",
      ]
+ 
++if CONFIG["OS_TARGET"] == "WASI":
++    SOURCES += [
++        "src/base/process_util_wasi.cc",
++    ]
++
+ if CONFIG["TARGET_KERNEL"] == "SunOS":
+     SOURCES += [
+         "src/base/process_util_linux.cc",
 diff --git a/ipc/chromium/src/base/platform_thread.h b/ipc/chromium/src/base/platform_thread.h
 index bb5c1525a3..c1e4ac7026 100644
 --- a/ipc/chromium/src/base/platform_thread.h
@@ -553,8 +651,61 @@ index 861f39b49d..5e506de30a 100644
      DIRS += ["app"]
  
  if CONFIG["OS_ARCH"] == "WINNT":
+diff --git a/js/src/threading/ConditionVariable.h b/js/src/threading/ConditionVariable.h
+index 9905af415e..8e8ac33803 100644
+--- a/js/src/threading/ConditionVariable.h
++++ b/js/src/threading/ConditionVariable.h
+@@ -9,7 +9,7 @@
+ #include "mozilla/TimeStamp.h"
+ 
+ #include <utility>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && (!defined(__wasi__) || defined(_REENTRANT))
+ #  include <pthread.h>
+ #endif
+ 
+diff --git a/js/src/threading/moz.build b/js/src/threading/moz.build
+index 3e8713e4a0..f3499459df 100644
+--- a/js/src/threading/moz.build
++++ b/js/src/threading/moz.build
+@@ -25,8 +25,9 @@ if CONFIG["OS_ARCH"] == "WINNT":
+         "windows/CpuCount.cpp",
+         "windows/WindowsThread.cpp",
+     ]
+-# WASI hasn't supported thread yet so noop implementation is used.
+-elif CONFIG["OS_ARCH"] == "WASI":
++# WASI without wasi-threads has no threads, so the noop implementation is used;
++# wasm32-wasip1-threads uses pthreads below.
++elif CONFIG["OS_ARCH"] == "WASI" and CONFIG["RUST_TARGET"] != "wasm32-wasip1-threads":
+     UNIFIED_SOURCES += [
+         "noop/CpuCount.cpp",
+         "noop/NoopThread.cpp",
+diff --git a/js/src/threading/posix/PosixThread.cpp b/js/src/threading/posix/PosixThread.cpp
+index 8340ead455..d8df0e8f87 100644
+--- a/js/src/threading/posix/PosixThread.cpp
++++ b/js/src/threading/posix/PosixThread.cpp
+@@ -88,14 +88,16 @@ ThreadId ThreadId::ThisThreadId() {
+ void ThisThread::SetName(const char* name) {
+   MOZ_RELEASE_ASSERT(name);
+ 
+-#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__)
++#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__) || \
++    defined(__wasi__)
+ #  if defined(XP_DARWIN)
+   // Mac OS X has a length limit of 63 characters, but there is no API
+   // exposing it.
+ #    define SETNAME_LENGTH_CONSTRAINT 63
+ #  else
+-  // On linux the name may not be longer than 16 bytes, including
+-  // the null terminator. Truncate the name to 15 characters.
++  // On linux (and BrowserOS's libc on WASI) the name may not be longer than
++  // 16 bytes, including the null terminator. Truncate the name to 15
++  // characters.
+ #    define SETNAME_LENGTH_CONSTRAINT 15
+ #  endif
+   char nameBuf[SETNAME_LENGTH_CONSTRAINT + 1];
 diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselineInterpret.cpp
-index e33137a4ba..7577b51f7b 100644
+index e33137a4ba..07a3beed6e 100644
 --- a/js/src/vm/PortableBaselineInterpret.cpp
 +++ b/js/src/vm/PortableBaselineInterpret.cpp
 @@ -129,12 +129,19 @@ static JSObject* gPBLResumeEnclosingEnv = nullptr;
@@ -577,6 +728,19 @@ index e33137a4ba..7577b51f7b 100644
  }
  // GECKO_WJ_RESUMETRACE=<n>: trace the first n ops of the FIRST JIT-deopt-resumed
  // frame (op name + pc offset + stack top) -- diagnosing resume misexecution.
+@@ -174,9 +181,9 @@ static bool gPBLUnwindHaveExc = false;
+ #endif
+ 
+ // Whether to compile in interrupt checks in the main interpreter loop.
+-#ifndef __wasi__
+-// On WASI, with a single thread, there is no possibility for an
+-// interrupt to come asynchronously.
++#if !defined(__wasi__) || defined(_REENTRANT)
++// On WASI without wasi-threads there is a single thread, so no interrupt can
++// come asynchronously.
+ #  define ENABLE_INTERRUPT_CHECKS
+ #endif
+ 
 diff --git a/js/xpconnect/moz.build b/js/xpconnect/moz.build
 index 77bda3959e..69df1c499d 100644
 --- a/js/xpconnect/moz.build
@@ -589,6 +753,31 @@ index 77bda3959e..69df1c499d 100644
 +if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
      DIRS += ["shell"]
  TEST_DIRS += ["tests"]
+diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
+index d4cf9a295e..0049cd8aaf 100644
+--- a/mfbt/ThreadLocal.h
++++ b/mfbt/ThreadLocal.h
+@@ -7,7 +7,7 @@
+ #ifndef mozilla_ThreadLocal_h
+ #define mozilla_ThreadLocal_h
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && (!defined(__wasi__) || defined(_REENTRANT))
+ #  include <pthread.h>
+ #endif
+ 
+@@ -118,8 +118,9 @@ class ThreadLocalKeyStorage {
+   unsigned long mKey;
+ };
+ #  endif
+-#elif defined(__wasi__)
+-// There are no threads on WASI, so we just use a global variable.
++#elif defined(__wasi__) && !defined(_REENTRANT)
++// There are no threads on WASI without wasi-threads, so we just use a global
++// variable.
+ template <typename T>
+ class ThreadLocalKeyStorage {
+  public:
 diff --git a/mfbt/UniquePtrExtensions.cpp b/mfbt/UniquePtrExtensions.cpp
 index 84e0f7e0e4..f14922fb59 100644
 --- a/mfbt/UniquePtrExtensions.cpp
@@ -659,6 +848,50 @@ index 8c4000fd97..a3924beafc 100644
      double expected = aTarget.load(std::memory_order_relaxed);
      while (!aTarget.compare_exchange_weak(expected, expected + aValue,
                                            std::memory_order_relaxed,
+diff --git a/mozglue/misc/PlatformConditionVariable.h b/mozglue/misc/PlatformConditionVariable.h
+index 3cb363bf37..fefa385d0d 100644
+--- a/mozglue/misc/PlatformConditionVariable.h
++++ b/mozglue/misc/PlatformConditionVariable.h
+@@ -10,7 +10,7 @@
+ 
+ #if defined(XP_WIN)
+ #  include "mozilla/Futex.h"
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -48,7 +48,7 @@ class ConditionVariableImpl {
+ 
+ #if defined(XP_WIN)
+   Futex mFutex;
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+   pthread_cond_t mCond;
+ #endif
+ };
+diff --git a/mozglue/misc/PlatformMutex.h b/mozglue/misc/PlatformMutex.h
+index 0e4aef7e01..246c0d5b98 100644
+--- a/mozglue/misc/PlatformMutex.h
++++ b/mozglue/misc/PlatformMutex.h
+@@ -9,7 +9,7 @@
+ 
+ #if defined(XP_WIN)
+ #  include "mozilla/Futex.h"
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -43,7 +43,7 @@ class MutexImpl {
+ 
+ #if defined(XP_WIN)
+   SmallFutex mFutex;
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+   pthread_mutex_t mMutex;
+ #endif
+ 
 diff --git a/mozglue/misc/SSE.h b/mozglue/misc/SSE.h
 index f2a65c4a3f..835b4dc639 100644
 --- a/mozglue/misc/SSE.h
@@ -690,6 +923,22 @@ index 34112f14e2..cc0179dfc7 100644
  
  /**
   * The callback for MozStackWalk and MozStackWalkThread.
+diff --git a/mozglue/misc/moz.build b/mozglue/misc/moz.build
+index 4d46e151c8..33b2bbf6a9 100644
+--- a/mozglue/misc/moz.build
++++ b/mozglue/misc/moz.build
+@@ -119,8 +119,9 @@ if CONFIG["OS_ARCH"] == "WINNT":
+         "Mutex_futex.cpp",
+         "RWLock_windows.cpp",
+     ]
+-# WASI hasn't supported cond vars and mutexes yet so noop implementation is used.
+-elif CONFIG["OS_ARCH"] == "WASI":
++# WASI without wasi-threads has no cond vars and mutexes, so the noop
++# implementation is used; wasm32-wasip1-threads uses pthreads below.
++elif CONFIG["OS_ARCH"] == "WASI" and CONFIG["RUST_TARGET"] != "wasm32-wasip1-threads":
+     SOURCES += [
+         "ConditionVariable_noop.cpp",
+         "Mutex_noop.cpp",
 diff --git a/netwerk/socket/neqo_glue/src/lib.rs b/netwerk/socket/neqo_glue/src/lib.rs
 index ba8b9bb7d5..038f4bdc89 100644
 --- a/netwerk/socket/neqo_glue/src/lib.rs
@@ -880,7 +1129,7 @@ index 5a26c04f77..4551653660 100644
  #      include <sys/sendfile.h>
  #    endif
 diff --git a/nsprpub/pr/src/pthreads/ptthread.c b/nsprpub/pr/src/pthreads/ptthread.c
-index dcb707cca0..8a7f6f232a 100644
+index dcb707cca0..4f0a32dac7 100644
 --- a/nsprpub/pr/src/pthreads/ptthread.c
 +++ b/nsprpub/pr/src/pthreads/ptthread.c
 @@ -1327,7 +1327,13 @@ static void pt_SuspendSet(PRThread* thred) {
@@ -906,6 +1155,15 @@ index dcb707cca0..8a7f6f232a 100644
    pthread_kill(thred->id, SIGUSR1);
  #  endif
  
+@@ -1530,6 +1536,8 @@ PR_IMPLEMENT(PRStatus) PR_SetCurrentThreadName(const char* name) {
+   prctl(PR_SET_NAME, (unsigned long)(name));
+ #  elif defined(NETBSD)
+   result = pthread_setname_np(thread->id, "%s", (void*)name);
++#  elif defined(__wasi__)
++  /* WASI threads have no OS-level name; NSPR keeps it in thread->name. */
+ #  else /* not BSD */
+   /*
+    * On OSX, pthread_setname_np is only available in 10.6 or later, so test
 diff --git a/python/mozbuild/mozbuild/frontend/data.py b/python/mozbuild/mozbuild/frontend/data.py
 index cb0492f67c..b1c83598b2 100644
 --- a/python/mozbuild/mozbuild/frontend/data.py
@@ -983,6 +1241,20 @@ index 8f689950e7..c385f7a21f 100644
              handles.push(handle);
          }
      }
+diff --git a/third_party/abseil-cpp/absl/base/config.h b/third_party/abseil-cpp/absl/base/config.h
+index 753bce4700..25c3cb3710 100644
+--- a/third_party/abseil-cpp/absl/base/config.h
++++ b/third_party/abseil-cpp/absl/base/config.h
+@@ -377,7 +377,8 @@ static_assert(ABSL_INTERNAL_INLINE_NAMESPACE_STR[0] != 'h' ||
+     defined(__asmjs__) || defined(__EMSCRIPTEN__) || defined(__Fuchsia__) || \
+     defined(__sun) || defined(__myriad2__) || defined(__HAIKU__) ||          \
+     defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) ||       \
+-    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__)
++    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__) || \
++    defined(__wasi__)
+ #define ABSL_HAVE_MMAP 1
+ #endif
+ 
 diff --git a/third_party/msgpack/include/msgpack/vrefbuffer.h b/third_party/msgpack/include/msgpack/vrefbuffer.h
 index 139869aa6b..b691032123 100644
 --- a/third_party/msgpack/include/msgpack/vrefbuffer.h
@@ -1444,6 +1716,22 @@ index 5162e8310e..cc696a1eb0 100644
      ))]
      {
          if let Some(interval) = keepalive.interval {
+diff --git a/third_party/sqlite3/src/moz.build b/third_party/sqlite3/src/moz.build
+index da931832e0..212ea90337 100644
+--- a/third_party/sqlite3/src/moz.build
++++ b/third_party/sqlite3/src/moz.build
+@@ -27,6 +27,11 @@ SOURCES += [
+     "sqlite3.c",
+ ]
+ 
++if CONFIG["OS_TARGET"] == "WASI":
++    SOURCES += [
++        "sqlite3_wasi_load_extension.c",
++    ]
++
+ LOCAL_INCLUDES += [
+     "../ext",
+ ]
 diff --git a/toolkit/components/kvstore/src/fs.rs b/toolkit/components/kvstore/src/fs.rs
 index 37ac203c85..bcd70253b4 100644
 --- a/toolkit/components/kvstore/src/fs.rs
@@ -1648,6 +1936,74 @@ index 64e7831e34..c55582c051 100644
  
  #  include <process.h>
  #  include <processthreadsapi.h>
+diff --git a/widget/MediaKeysEventSourceFactory.cpp b/widget/MediaKeysEventSourceFactory.cpp
+index b49ffa8fb7..9278bb2cfc 100644
+--- a/widget/MediaKeysEventSourceFactory.cpp
++++ b/widget/MediaKeysEventSourceFactory.cpp
+@@ -8,7 +8,7 @@
+ 
+ namespace mozilla::widget {
+ 
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ class EmscriptenMediaControlKeySource final
+     : public mozilla::dom::MediaControlKeySource {
+  public:
+diff --git a/widget/headless/moz.build b/widget/headless/moz.build
+index bb7c839554..a9a383568f 100644
+--- a/widget/headless/moz.build
++++ b/widget/headless/moz.build
+@@ -27,6 +27,11 @@ UNIFIED_SOURCES += [
+     "HeadlessWidget.cpp",
+ ]
+ 
++if widget_dir == "headless":
++    UNIFIED_SOURCES += [
++        "HeadlessToolkitWidgets.cpp",
++    ]
++
+ if widget_dir in ("gtk", "headless"):
+     # HeadlessLookAndFeelGTK.cpp is pure hardcoded defaults (no GTK API), so it
+     # also serves as the headless-only toolkit's nsLookAndFeel implementation.
+diff --git a/widget/moz.build b/widget/moz.build
+index 9a4ff13578..5397036aaa 100644
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -337,7 +337,7 @@ EXPORTS.ipc = [
+ if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
+     DIRS += ["x11"]
+ 
+-if toolkit in {"gtk", "cocoa", "windows", "android", "uikit"}:
++if toolkit in {"gtk", "cocoa", "windows", "android", "uikit", "headless"}:
+     UNIFIED_SOURCES += [
+         "nsBaseFilePicker.cpp",
+     ]
+diff --git a/widget/nsContentProcessWidgetFactory.h b/widget/nsContentProcessWidgetFactory.h
+index 134438621b..fa5e093ae7 100644
+--- a/widget/nsContentProcessWidgetFactory.h
++++ b/widget/nsContentProcessWidgetFactory.h
+@@ -21,7 +21,7 @@
+     return inst.forget();                                              \
+   }
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // The cairo-headless toolkit registers no platform clipboard component, so
+ // @mozilla.org/widget/parent/clipboard;1 is absent. Build the headless clipboard
+ // directly (single process => always the parent path). Defined in
+diff --git a/widget/nsTransferable.cpp b/widget/nsTransferable.cpp
+index 40fba76b52..5993e1ac64 100644
+--- a/widget/nsTransferable.cpp
++++ b/widget/nsTransferable.cpp
+@@ -559,7 +559,7 @@ void nsTransferable::SetReferrerInfo(nsIReferrerInfo* aReferrerInfo) {
+   mReferrerInfo = aReferrerInfo;
+ }
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // The cairo-headless toolkit registers no platform widget components -- those live
+ // in widget/{gtk,cocoa,...}/components.conf, none of which is built here. Editor
+ // copy/cut/paste needs @mozilla.org/widget/transferable;1 (and the format
 diff --git a/xpcom/base/nsDumpUtils.cpp b/xpcom/base/nsDumpUtils.cpp
 index 933b15646f..efa6af387d 100644
 --- a/xpcom/base/nsDumpUtils.cpp

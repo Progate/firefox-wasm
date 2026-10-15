@@ -45,11 +45,24 @@ for d in mfbt mozglue/misc mozglue/baseprofiler mozglue/build memory/build memor
 done
 
 # Gecko's libraries are wasm-ld response files listing their objects and
-# archives (see build/wasi-relocatable-link.py in gecko.patch). NSS is folded
-# into libnss3; the codecs live in gkcodecs, lgpllibs and the ffvpx libraries.
-LIBS=()
-for lib in libxul libnss3 libgkcodecs liblgpllibs libmozavutil libmozavcodec; do
-  LIBS+=("@$OBJ/dist/bin/$lib.so")
+# archives (see build/wasi-relocatable-link.py in gecko.patch). libxul goes in
+# whole: its objects register components and run static constructors. The
+# libraries it loads (NSS folded into libnss3, the codecs) carry private copies
+# of code libxul also has (fdlibm in ffvpx, rlbox's thread locals), hidden
+# inside their shared objects natively. In one module they become archives, so
+# only what libxul still needs is taken from them.
+LIBS=("@$OBJ/dist/bin/libxul.so")
+for lib in libnss3 libgkcodecs liblgpllibs libmozavutil libmozavcodec; do
+  objects=()
+  while read -r path; do
+    case "$path" in
+      *.a) LIBS+=("$path") ;;
+      *) objects+=("$path") ;;
+    esac
+  done < "$OBJ/dist/bin/$lib.so"
+  rm -f "$BUILD/$lib.a"
+  "$WASI_SDK_PATH/bin/llvm-ar" rcs "$BUILD/$lib.a" "${objects[@]}"
+  LIBS+=("$BUILD/$lib.a")
 done
 
 # wasi-threads needs the memory to be shared and supplied by the host (every
@@ -62,6 +75,6 @@ done
   -Wl,-z,stack-size=16777216 \
   -lsetjmp -lwasi-emulated-mman -lwasi-emulated-signal \
   -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
-  -Wl,--strip-debug \
+  -Wl,--strip-debug -Wl,--error-limit=0 \
   -o "$OUT"
 ls -la "$OUT"
