@@ -221,6 +221,38 @@ index 9ea8063a62..0b788709fb 100644
          // WASM toolchains expose a Unix-like compilation environment, but it is
          // not Unix (e.g. posix signals are not supported).
          #define SK_BUILD_FOR_WASM
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index cc508f74d6..9e55161c8e 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -16,8 +16,10 @@ use std::ops::Range;
+ #[cfg(target_os = "android")]
+ use std::os::raw::c_int;
+ use std::os::raw::{c_char, c_float, c_void};
+-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
++#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "wasi")))]
+ use std::os::unix::ffi::OsStringExt;
++#[cfg(target_os = "wasi")]
++use std::os::wasi::ffi::OsStringExt;
+ #[cfg(target_os = "windows")]
+ use std::os::windows::ffi::OsStringExt;
+ use std::path::PathBuf;
+diff --git a/gfx/webrender_bindings/src/moz2d_renderer.rs b/gfx/webrender_bindings/src/moz2d_renderer.rs
+index c885ba051e..2cfe02f195 100644
+--- a/gfx/webrender_bindings/src/moz2d_renderer.rs
++++ b/gfx/webrender_bindings/src/moz2d_renderer.rs
+@@ -50,8 +50,10 @@ use winapi::um::errhandlingapi::GetLastError;
+ 
+ #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+ use std::ffi::CString;
+-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
++#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "wasi")))]
+ use std::os::unix::ffi::OsStrExt;
++#[cfg(target_os = "wasi")]
++use std::os::wasi::ffi::OsStrExt;
+ 
+ /// Local print-debugging utility
+ macro_rules! dlog {
 diff --git a/gfx/wgpu_bindings/Cargo.toml b/gfx/wgpu_bindings/Cargo.toml
 index e56d413fdd..f3a075ff42 100644
 --- a/gfx/wgpu_bindings/Cargo.toml
@@ -901,22 +933,43 @@ index 02007bbc07..6e6f55ba04 100644
  
  # This builds NSS tools in COMM applications that Firefox doesn't build.
  if CONFIG["MOZ_BUILD_APP"].startswith("comm/"):
+diff --git a/security/nss/lib/softoken/fipstest.c b/security/nss/lib/softoken/fipstest.c
+index cd444f99b8..b5209a2525 100644
+--- a/security/nss/lib/softoken/fipstest.c
++++ b/security/nss/lib/softoken/fipstest.c
+@@ -790,9 +790,12 @@ sftk_FIPSEntryOK(PRBool rerun)
+ }
+ #else
+ #include "pkcs11t.h"
++/* Same signature as the declaration in softoken.h: wasm traps on a call whose
++ * type does not match the callee. */
+ CK_RV
+-sftk_FIPSEntryOK()
++sftk_FIPSEntryOK(PRBool rerun)
+ {
++    (void)rerun;
+     return CKR_DEVICE_ERROR;
+ }
+ #endif /* NSS_FIPS_DISABLED */
 diff --git a/servo/components/style/global_style_data.rs b/servo/components/style/global_style_data.rs
-index 8f689950e7..1235f69c2c 100644
+index 8f689950e7..c385f7a21f 100644
 --- a/servo/components/style/global_style_data.rs
 +++ b/servo/components/style/global_style_data.rs
-@@ -42,6 +42,10 @@ impl DummyThreadHandle {
+@@ -42,6 +42,13 @@ impl DummyThreadHandle {
  #[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
  /// Platform-specific handle to a thread.
  pub type PlatformThreadHandle = DummyThreadHandle;
-+/// Platform-specific handle to a thread (pthread_t). Rust's std cannot hand out
-+/// the pthread of a thread on WASI, so no handles are reported there.
++/// wasi-libc's pthread_t (cbindgen maps RawPthread to pthread_t).
 +#[cfg(all(target_os = "wasi", feature = "gecko"))]
-+pub type PlatformThreadHandle = *mut std::ffi::c_void;
++pub type RawPthread = std::os::raw::c_ulong;
++/// Platform-specific handle to a thread. Rust's std cannot hand out the pthread
++/// of a thread on WASI, so no handles are reported there.
++#[cfg(all(target_os = "wasi", feature = "gecko"))]
++pub type PlatformThreadHandle = RawPthread;
  
  /// Global style data
  pub struct GlobalStyleData {
-@@ -151,7 +155,13 @@ impl StyleThreadPool {
+@@ -151,7 +158,13 @@ impl StyleThreadPool {
                  let _ = join_handle;
                  DummyThreadHandle { _x: 0 }
              };
@@ -1490,6 +1543,20 @@ index 91ae53839b..d9f0f53feb 100644
  
  DEFINES["MOZ_APP_VERSION"] = '"%s"' % CONFIG["MOZ_APP_VERSION"]
  
+diff --git a/toolkit/library/build/dependentlibs.py b/toolkit/library/build/dependentlibs.py
+index dce55a123f..fb2efbb2a6 100644
+--- a/toolkit/library/build/dependentlibs.py
++++ b/toolkit/library/build/dependentlibs.py
+@@ -147,7 +147,8 @@ def dependentlibs(lib, libpaths, func):
+ def gen_list(output, lib):
+     libpaths = [os.path.join(substs["DIST"], "bin")]
+     binary_type = get_type(lib)
+-    is_wasm = substs.get("OS_TARGET") == "EMSCRIPTEN"
++    # WASI links every library into one module as well (see MKSHLIB).
++    is_wasm = substs.get("OS_TARGET") in ("EMSCRIPTEN", "WASI")
+     if is_wasm:
+         func = dependentlibs_wasm
+     elif binary_type == ELF:
 diff --git a/toolkit/moz.configure b/toolkit/moz.configure
 index b8c8a03c3d..0bc2cf1294 100644
 --- a/toolkit/moz.configure
@@ -1548,20 +1615,6 @@ index b8c8a03c3d..0bc2cf1294 100644
 +        or target.os in ("EMSCRIPTEN", "WASI")
      )
  
- 
-diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
-index 18c0f69889..6b40ad64da 100644
---- a/toolkit/xre/nsAppRunner.cpp
-+++ b/toolkit/xre/nsAppRunner.cpp
-@@ -2650,7 +2650,8 @@ nsresult LaunchChild(bool aBlankCommandLine, bool aTryExec) {
-   rv = lf->GetNativePath(exePath);
-   if (NS_FAILED(rv)) return rv;
- 
--#      if defined(XP_UNIX)
-+#      if defined(XP_UNIX) && !defined(__wasi__)
-+  // WASI has no exec; the restart below spawns a new process instead.
-   if (aTryExec) {
-     execv(exePath.get(), gRestartArgv);
  
 diff --git a/tools/profiler/core/ProfilerUtils.cpp b/tools/profiler/core/ProfilerUtils.cpp
 index 64e7831e34..c55582c051 100644

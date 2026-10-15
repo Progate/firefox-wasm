@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Link the BrowserOS Firefox program: the windowserver entry point (main.cpp),
 # the gecko.js embedder (embed-*.cpp except the emscripten mailbox loop in
-# embed-xul.cpp) and Gecko's relocatable libxul into one wasm32-wasip1-threads
-# module. Run after `mach build` inside the toolchain image.
+# embed-xul.cpp) and Gecko's libraries into one wasm32-wasip1-threads module.
+# Run after `mach build` inside the toolchain image.
 set -euo pipefail
 : "${WASI_SDK_PATH:?set WASI_SDK_PATH}"
 : "${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT}"
@@ -44,11 +44,19 @@ for d in mfbt mozglue/misc mozglue/baseprofiler mozglue/build memory/build memor
   for f in "$OBJ/$d"/*.o; do [ -e "$f" ] && GLUE+=("$f"); done
 done
 
+# Gecko's libraries are wasm-ld response files listing their objects and
+# archives (see build/wasi-relocatable-link.py in gecko.patch). NSS is folded
+# into libnss3; the codecs live in gkcodecs, lgpllibs and the ffvpx libraries.
+LIBS=()
+for lib in libxul libnss3 libgkcodecs liblgpllibs libmozavutil libmozavcodec; do
+  LIBS+=("@$OBJ/dist/bin/$lib.so")
+done
+
 # wasi-threads needs the memory to be shared and supplied by the host (every
 # thread instance imports the same memory). Gecko's main thread recurses deeply
 # (layout, the JS interpreter), so it gets a 16 MiB stack.
 "${CXX[@]}" "${WASI_FLAGS[@]}" -O2 \
-  "${OBJS[@]}" "$OBJ/dist/bin/libxul.so" "${GLUE[@]}" \
+  "${OBJS[@]}" "${LIBS[@]}" "${GLUE[@]}" \
   -Wl,--import-memory,--export-memory,--shared-memory \
   -Wl,--max-memory=4294967296 -Wl,--initial-memory=268435456 \
   -Wl,-z,stack-size=16777216 \
