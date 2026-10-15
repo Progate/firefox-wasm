@@ -23,45 +23,110 @@ static std::string decode(const std::string& value) {
   return out;
 }
 
+// Device pixels per CSS pixel (GDK_SCALE); windowserver speaks device pixels.
+static int g_scale = 1;
+// DOM button state (bit 1 left, 2 right, 4 middle) and modifier state
+// (nsIDOMWindowUtils MODIFIER_ALT 1, CONTROL 2, SHIFT 4, META 8).
+static int g_buttons = 0;
+static int g_modifiers = 0;
+
+// Linux input-event key codes (the windowserver protocol) for keys without
+// text, as DOM key names and key codes.
+struct NamedKey { int code; const char* key; int keyCode; };
+static const NamedKey kNamedKeys[] = {
+    {1, "Escape", 27},     {14, "Backspace", 8},  {15, "Tab", 9},
+    {28, "Enter", 13},     {57, " ", 32},         {102, "Home", 36},
+    {103, "ArrowUp", 38},  {104, "PageUp", 33},   {105, "ArrowLeft", 37},
+    {106, "ArrowRight", 39}, {107, "End", 35},    {108, "ArrowDown", 40},
+    {109, "PageDown", 34}, {110, "Insert", 45},   {111, "Delete", 46},
+};
+// US layout characters for codes, so shortcuts (Ctrl+L, Ctrl+T) work when the
+// windowserver sends no text for a modified key.
+static char usCharacter(int code, bool shift) {
+  static const char* rows[] = {"1234567890-=", "qwertyuiop[]", "asdfghjkl;'`", "\\zxcvbnm,./"};
+  static const char* shifted[] = {"!@#$%^&*()_+", "QWERTYUIOP{}", "ASDFGHJKL:\"~", "|ZXCVBNM<>?"};
+  static const int starts[] = {2, 16, 30, 43};
+  for (int r = 0; r < 4; r++) {
+    int n = (int)strlen(rows[r]);
+    if (code >= starts[r] && code < starts[r] + n) {
+      return (shift ? shifted : rows)[r][code - starts[r]];
+    }
+  }
+  return 0;
+}
+static int modifierBit(int code) {
+  switch (code) {
+    case 42: case 54: return 4;    // Shift
+    case 29: case 97: return 2;    // Control
+    case 56: case 100: return 1;   // Alt
+    case 125: case 126: return 8;  // Meta
+  }
+  return 0;
+}
+
+static void key(int down, int code, const std::string& text) {
+  if (int bit = modifierBit(code)) {
+    g_modifiers = down ? (g_modifiers | bit) : (g_modifiers & ~bit);
+    return;
+  }
+  for (const auto& named : kNamedKeys) {
+    if (named.code == code) {
+      do_key(down ? 0 : 1, named.key, named.keyCode, code == 57 ? ' ' : 0, g_modifiers);
+      return;
+    }
+  }
+  std::string character = text;
+  if (character.empty()) {
+    char c = usCharacter(code, g_modifiers & 4);
+    if (!c) return;
+    character.assign(1, c);
+  }
+  unsigned char first = character[0];
+  int keyCode = 0;
+  if (first >= 'a' && first <= 'z') keyCode = first - 'a' + 'A';
+  else if ((first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) keyCode = first;
+  // charCode only for a single ASCII character; other text keeps keyCode 0.
+  int charCode = (character.size() == 1 && first >= 0x20 && first < 0x7f) ? first : 0;
+  do_key(down ? 0 : 1, character.c_str(), keyCode, charCode, g_modifiers);
+}
+
 static bool dispatch(WindowServer& window, const std::string& line) {
-  int id, x, y, dx, dy, code;
+  int id, x, y, dx, dy, code, button = 0;
   char state[16], text[4096];
   if (sscanf(line.c_str(), "close %d", &id) == 1) return false;
   if (sscanf(line.c_str(), "configure %d %d %d", &id, &x, &y) == 3) {
     if (!window.resize(x, y)) return false;
     EnsureSize(x, y);
-  } else if (sscanf(line.c_str(), "pointer %d %15s %d %d", &id, state, &x, &y) == 4) {
-    int phase = strcmp(state, "down") == 0 ? 1 : strcmp(state, "up") == 0 ? 2 : 0;
-    do_mouse(phase, x, y, 0, phase == 1 ? 1 : 0, -1, 0);
-  } else if (sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5) {
-    do_wheel(x, y, dx, dy, 0);
-  } else if (sscanf(line.c_str(), "text %d %4095s", &id, text) == 2) {
-    // Native Gecko paste also handles multi-byte text and IME commits.
+    return true;
+  }
+  int fields = sscanf(line.c_str(), "pointer %d %15s %d %d %d", &id, state, &x, &y, &button);
+  if (fields >= 4) {
+    // X numbers buttons 1 left, 2 middle, 3 right; DOM uses 0, 1, 2.
+    int domButton = button == 3 ? 2 : (button == 2 ? 1 : 0);
+    int bit = domButton == 2 ? 2 : (domButton == 1 ? 4 : 1);
+    int phase = 0;
+    if (strcmp(state, "down") == 0) { phase = 1; g_buttons |= bit; }
+    else if (strcmp(state, "up") == 0) { phase = 2; g_buttons &= ~bit; }
+    do_mouse(phase, x / g_scale, y / g_scale, domButton, phase ? 1 : 0, g_buttons, g_modifiers);
+    return true;
+  }
+  if (sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5) {
+    do_wheel(x / g_scale, y / g_scale, double(dx) / g_scale, double(dy) / g_scale, g_modifiers);
+    return true;
+  }
+  text[0] = 0;
+  fields = sscanf(line.c_str(), "key %d %15s %d %4095s", &id, state, &code, text);
+  if (fields >= 3) {
+    key(strcmp(state, "up") != 0, code, decode(text));  // down and repeat press
+    return true;
+  }
+  if (sscanf(line.c_str(), "text %d %4095s", &id, text) == 2) {
+    // Committed text (IME): paste it through Gecko's own clipboard.
     const auto value = decode(text);
     if (set_clipboard_text(value.c_str())) {
       do_key(0, "v", 86, 'v', 2);
       do_key(1, "v", 86, 'v', 2);
     }
-  } else if (sscanf(line.c_str(), "key %d %15s %d", &id, state, &code) == 3) {
-    // Linux input-event key codes (windowserver protocol).
-    const char* key = nullptr;
-    int domCode = 0;
-    switch (code) {
-      case 1: key = "Escape"; domCode = 27; break;
-      case 14: key = "Backspace"; domCode = 8; break;
-      case 15: key = "Tab"; domCode = 9; break;
-      case 28: key = "Enter"; domCode = 13; break;
-      case 102: key = "Home"; domCode = 36; break;
-      case 103: key = "ArrowUp"; domCode = 38; break;
-      case 104: key = "PageUp"; domCode = 33; break;
-      case 105: key = "ArrowLeft"; domCode = 37; break;
-      case 106: key = "ArrowRight"; domCode = 39; break;
-      case 107: key = "End"; domCode = 35; break;
-      case 108: key = "ArrowDown"; domCode = 40; break;
-      case 109: key = "PageDown"; domCode = 34; break;
-      case 111: key = "Delete"; domCode = 46; break;
-    }
-    if (key) do_key(strcmp(state, "up") == 0 ? 1 : 0, key, domCode, 0, 0);
   }
   return true;
 }
@@ -99,6 +164,7 @@ int main(int argc, char** argv) {
   const char* scaleEnv = getenv("GDK_SCALE");
   int scale = scaleEnv ? atoi(scaleEnv) : 1;
   if (scale < 1) scale = 1;
+  g_scale = scale;
   WindowServer window;
   if (!window.open(1120 * scale, 720 * scale)) { perror("firefox: windowserver"); return 1; }
   int result = xul_init(gre);
@@ -111,10 +177,23 @@ int main(int argc, char** argv) {
   if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
   fprintf(stderr, "firefox: page loading, entering the event loop\n");
   bool firstFrame = true;
+  auto lastPaint = std::chrono::steady_clock::now();
   while (window.connected()) {
+    // Take every notice that is waiting before painting, so a click's down and
+    // up are not separated by a whole frame.
+    bool active = false;
     std::string line;
-    if (window.next(line, 16) && !dispatch(window, line)) break;
+    int timeout = 16;
+    while (window.next(line, timeout)) {
+      if (!dispatch(window, line)) return 0;
+      active = true;
+      timeout = 0;
+    }
     NS_ProcessPendingEvents(nullptr, 0);
+    // Repaint after input; otherwise a few times a second for page updates.
+    const auto now = std::chrono::steady_clock::now();
+    if (!active && !firstFrame && now - lastPaint < std::chrono::milliseconds(100)) continue;
+    lastPaint = now;
     uint8_t* pixels = xul_paint(window.width, window.height);
     if (!pixels) continue;
     bool shown = window.present(pixels);
