@@ -311,10 +311,10 @@ index 9ea8063a62..0b788709fb 100644
          // not Unix (e.g. posix signals are not supported).
          #define SK_BUILD_FOR_WASM
 diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
-index a1e7c49d18..24868923d8 100644
+index a1e7c49d18..82f35c0e2f 100644
 --- a/gfx/thebes/gfxFT2FontList.cpp
 +++ b/gfx/thebes/gfxFT2FontList.cpp
-@@ -1633,6 +1633,29 @@ void gfxFT2FontList::FindFonts() {
+@@ -1633,6 +1633,34 @@ void gfxFT2FontList::FindFonts() {
          FindFontsInDir(localPath, mFontNameCache.get());
        }
      }
@@ -340,10 +340,65 @@ index a1e7c49d18..24868923d8 100644
 +        }
 +      }
 +    }
++    // The system's fonts, where fontconfig looks on Linux (fonts for other
++    // scripts, such as Japanese, are installed there by the OS).
++    for (const char* root : {"/usr/share/fonts", "/usr/local/share/fonts"}) {
++      FindFontsInTree(nsCString(root), mFontNameCache.get(), 4);
++    }
 +#endif
    }
  
    // look for locally-added fonts in a "fonts" subdir of the profile
+@@ -1675,6 +1703,34 @@ void gfxFT2FontList::WriteCache() {
+   LOG(("Done with writecache"));
+ }
+ 
++#ifdef MOZ_WIDGET_HEADLESS
++void gfxFT2FontList::FindFontsInTree(const nsCString& aDir,
++                                     FontNameCache* aFNC, int aDepth) {
++  FindFontsInDir(aDir, aFNC);
++  if (aDepth <= 0) {
++    return;
++  }
++  DIR* d = opendir(aDir.get());
++  if (!d) {
++    return;
++  }
++  struct dirent* ent = nullptr;
++  while ((ent = readdir(d)) != nullptr) {
++    if (ent->d_name[0] == '.') {
++      continue;
++    }
++    nsAutoCString path(aDir);
++    path.Append('/');
++    path.Append(ent->d_name);
++    struct stat info;
++    if (stat(path.get(), &info) == 0 && S_ISDIR(info.st_mode)) {
++      FindFontsInTree(path, aFNC, aDepth - 1);
++    }
++  }
++  closedir(d);
++}
++#endif
++
+ void gfxFT2FontList::FindFontsInDir(const nsCString& aDir,
+                                     FontNameCache* aFNC) {
+   static const char* sStandardFonts[] = {"DroidSans.ttf",
+diff --git a/gfx/thebes/gfxFT2FontList.h b/gfx/thebes/gfxFT2FontList.h
+index c2ccbc203c..ce3aa561c7 100644
+--- a/gfx/thebes/gfxFT2FontList.h
++++ b/gfx/thebes/gfxFT2FontList.h
+@@ -254,6 +254,10 @@ class gfxFT2FontList final : public gfxPlatformFontList {
+ 
+   void FindFontsInOmnijar(FontNameCache* aCache) MOZ_REQUIRES(mLock);
+ 
++#ifdef MOZ_WIDGET_HEADLESS
++  // FindFontsInDir for aDir and the directories below it, aDepth levels deep.
++  void FindFontsInTree(const nsCString& aDir, FontNameCache* aFNC, int aDepth);
++#endif
+   void FindFontsInDir(const nsCString& aDir, FontNameCache* aFNC)
+       MOZ_REQUIRES(mLock);
+ 
 diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
 index cc508f74d6..9e55161c8e 100644
 --- a/gfx/webrender_bindings/src/bindings.rs
