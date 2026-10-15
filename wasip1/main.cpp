@@ -65,6 +65,23 @@ static bool dispatch(WindowServer& window, const std::string& line) {
   return true;
 }
 
+// Without a URL argument, open browser.startup.homepage like Firefox does.
+// Distributions set it in /usr/lib/firefox/defaults/pref/*.js. about:home and
+// about:newtab need the Firefox front-end, which this window does not have yet.
+static std::string startUrl(const char* argument) {
+  if (argument && *argument) return argument;
+  nsAutoCString home;
+  if (NS_SUCCEEDED(mozilla::Preferences::GetCString("browser.startup.homepage", home))) {
+    int32_t bar = home.FindChar('|');  // several pages are separated by |
+    if (bar >= 0) home.Truncate(bar);
+    if (!home.IsEmpty() && !StringBeginsWith(home, "about:home"_ns) &&
+        !StringBeginsWith(home, "about:newtab"_ns)) {
+      return home.get();
+    }
+  }
+  return "about:blank";
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--help") == 0) {
     puts("usage: firefox [URL]\nUses DISPLAY and PROFILE_DIR inside BrowserOS.");
@@ -79,7 +96,7 @@ int main(int argc, char** argv) {
   if (!window.open(1000, 720)) { perror("firefox: windowserver"); return 1; }
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
-  if (!xul_load(argc > 1 ? argv[1] : "about:blank", window.width, window.height)) return 1;
+  if (!xul_load(startUrl(argc > 1 ? argv[1] : nullptr).c_str(), window.width, window.height)) return 1;
   fprintf(stderr, "firefox: page loading, entering the event loop\n");
   bool firstFrame = true;
   while (window.connected()) {
