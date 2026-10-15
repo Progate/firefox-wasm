@@ -45,7 +45,7 @@ index a89585f6f8..e847b6fee4 100644
          # narrow further down using extra information from the build system.
          # - For windows targets, correlate with the C compiler type
 diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
-index 3623a892f2..45d084e1c0 100644
+index 3623a892f2..ce7ad26b43 100644
 --- a/build/moz.configure/toolchain.configure
 +++ b/build/moz.configure/toolchain.configure
 @@ -2220,7 +2220,9 @@ set_define("_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", True, when=using_libcxx)
@@ -68,7 +68,7 @@ index 3623a892f2..45d084e1c0 100644
          return True
  
  
-@@ -3431,6 +3433,15 @@ def make_shared_library(target, compiler):
+@@ -3431,6 +3433,18 @@ def make_shared_library(target, compiler):
      flags = ["$(DSO_LDOPTS)"]
      output = ["-o", "$@"]
  
@@ -76,9 +76,12 @@ index 3623a892f2..45d084e1c0 100644
 +        # wasm-ld has no shared libraries for WASI. Libraries are relocatable
 +        # objects that the embedder links into one module, so libc and the
 +        # emulation libraries are left for that final link.
++        # rules.mk appends the program link flags (-pthread and ELF -z flags);
++        # the wrapper drops them, since wasm-ld refuses shared memory for -r.
++        link = ["$(PYTHON3)", "$(topsrcdir)/build/wasi-relocatable-link.py"]
 +        return namespace(
-+            mkshlib=cxx + ["-r", "-nostdlib"] + output,
-+            mkcshlib=cc + ["-r", "-nostdlib"] + output,
++            mkshlib=link + ['"$(CXX)"'] + output,
++            mkcshlib=link + ['"$(CC)"'] + output,
 +        )
 +
      if target.kernel == "Darwin":
@@ -110,6 +113,18 @@ index 8ce3236647..fb1e60ea03 100644
  /* emscripten is Linux-like; _linux.cfg has a __wasm32__ data-model branch. */
  #  include "md/_linux.cfg"
  #elif defined(__sun__)
+diff --git a/extensions/auth/nsAuthSambaNTLM.cpp b/extensions/auth/nsAuthSambaNTLM.cpp
+index c5581eb618..97a98af6bb 100644
+--- a/extensions/auth/nsAuthSambaNTLM.cpp
++++ b/extensions/auth/nsAuthSambaNTLM.cpp
+@@ -14,6 +14,7 @@
+ #include <stdlib.h>
+ #include <signal.h>
+ #include <sys/wait.h>
++#include <unistd.h>
+ 
+ nsAuthSambaNTLM::nsAuthSambaNTLM() = default;
+ 
 diff --git a/gfx/angle/checkout/include/EGL/eglplatform.h b/gfx/angle/checkout/include/EGL/eglplatform.h
 index 777e985588..aaf8d5f6ca 100644
 --- a/gfx/angle/checkout/include/EGL/eglplatform.h
@@ -136,6 +151,46 @@ index fd0a009b5e..1f6957d099 100644
  #    define ANGLE_PLATFORM_LINUX 1
  #    define ANGLE_PLATFORM_POSIX 1
  #elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) ||              \
+diff --git a/gfx/angle/checkout/src/common/system_utils_posix.cpp b/gfx/angle/checkout/src/common/system_utils_posix.cpp
+index ab0faee0bc..6e9bd96efc 100644
+--- a/gfx/angle/checkout/src/common/system_utils_posix.cpp
++++ b/gfx/angle/checkout/src/common/system_utils_posix.cpp
+@@ -40,6 +40,11 @@ namespace
+ {
+ std::string GetModulePath(void *moduleOrSymbol)
+ {
++#if defined(__wasi__)
++    // WASI has no dynamic loader; the program is one module without a path.
++    (void)moduleOrSymbol;
++    return "";
++#else
+     Dl_info dlInfo;
+     if (dladdr(moduleOrSymbol, &dlInfo) == 0)
+     {
+@@ -47,6 +52,7 @@ std::string GetModulePath(void *moduleOrSymbol)
+     }
+ 
+     return dlInfo.dli_fname;
++#endif
+ }
+ 
+ void *OpenPosixLibrary(const std::string &fullPath, int extraFlags, std::string *errorOut)
+diff --git a/gfx/harfbuzz/src/hb.hh b/gfx/harfbuzz/src/hb.hh
+index 7e2837f99a..fa83a0f2ec 100644
+--- a/gfx/harfbuzz/src/hb.hh
++++ b/gfx/harfbuzz/src/hb.hh
+@@ -94,6 +94,11 @@
+ #pragma GCC diagnostic error   "-Wunused-local-typedefs"
+ #pragma GCC diagnostic error   "-Wunused-value"
+ #pragma GCC diagnostic error   "-Wunused-variable"
++#ifdef __clang__
++/* clang 23 counts unused function templates in -Wunused; HarfBuzz's generic
++ * function objects leave some unused by design. */
++#pragma GCC diagnostic ignored "-Wunused-template"
++#endif
+ #pragma GCC diagnostic error   "-Wvla"
+ #pragma GCC diagnostic error   "-Wwrite-strings"
+ #endif
 diff --git a/gfx/layers/wr/WebRenderBridgeParent.cpp b/gfx/layers/wr/WebRenderBridgeParent.cpp
 index 05436c28bf..df1a3bf3b2 100644
 --- a/gfx/layers/wr/WebRenderBridgeParent.cpp
@@ -186,6 +241,74 @@ index e56d413fdd..f3a075ff42 100644
 +# WASI has no dlopen, so leave out ash's Vulkan loader.
 +[target.'cfg(target_os = "wasi")'.dependencies]
 +ash = { version = "0.38", default-features = false, features = ["debug", "std"] }
+diff --git a/gfx/wr/wr_glyph_rasterizer/Cargo.toml b/gfx/wr/wr_glyph_rasterizer/Cargo.toml
+index de3ffa110e..86e098f42b 100644
+--- a/gfx/wr/wr_glyph_rasterizer/Cargo.toml
++++ b/gfx/wr/wr_glyph_rasterizer/Cargo.toml
+@@ -38,7 +38,7 @@ glutin-winit = "0.5"
+ rayon = "1"
+ winit = "0.30"
+ 
+-[target.'cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies]
++[target.'cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies]
+ freetype = { version = "0.7", default-features = false }
+ libc = "0.2"
+ 
+diff --git a/gfx/wr/wr_glyph_rasterizer/src/lib.rs b/gfx/wr/wr_glyph_rasterizer/src/lib.rs
+index e83a95bae5..5e04077481 100644
+--- a/gfx/wr/wr_glyph_rasterizer/src/lib.rs
++++ b/gfx/wr/wr_glyph_rasterizer/src/lib.rs
+@@ -41,7 +41,7 @@ extern crate malloc_size_of;
+ pub mod platform {
+     #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub use crate::platform::macos::font;
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "ios", target_os = "macos")))))]
++    #[cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "ios", target_os = "macos")))))]
+     pub use crate::platform::unix::font;
+     #[cfg(target_os = "windows")]
+     pub use crate::platform::windows::font;
+@@ -50,7 +50,7 @@ pub mod platform {
+     pub mod macos {
+         pub mod font;
+     }
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))]
++    #[cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "macos", target_os = "ios")))))]
+     pub mod unix {
+         pub mod font;
+     }
+diff --git a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs b/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
+index 586893df59..7342960b64 100644
+--- a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
++++ b/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
+@@ -26,7 +26,7 @@ use crate::gamma_lut::{ColorLut, GammaLut};
+ use crate::rasterizer::{FontInstance, GlyphFormat, GlyphKey};
+ use crate::rasterizer::{GlyphRasterError, GlyphRasterResult, RasterizedGlyph};
+ use crate::types::FastHashMap;
+-#[cfg(any(not(target_os = "android"), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_os = "wasi")), feature = "dynamic_freetype"))]
+ use libc::{dlsym, RTLD_DEFAULT};
+ use libc::free;
+ use std::{cmp, mem, ptr, slice};
+@@ -76,7 +76,7 @@ pub fn unimplemented(error: FT_Error) -> bool {
+ }
+ 
+ // Use dlsym to check for symbols. If not available. just return an unimplemented error.
+-#[cfg(any(not(target_os = "android"), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_os = "wasi")), feature = "dynamic_freetype"))]
+ macro_rules! ft_dyn_fn {
+     ($func_name:ident($($arg_name:ident:$arg_type:ty),*) -> FT_Error) => {
+         #[allow(non_snake_case)]
+@@ -98,8 +98,8 @@ macro_rules! ft_dyn_fn {
+     }
+ }
+ 
+-// On Android, just statically link in the symbols...
+-#[cfg(all(target_os = "android", not(feature = "dynamic_freetype")))]
++// On Android and WASI (no dlsym), just statically link in the symbols...
++#[cfg(all(any(target_os = "android", target_os = "wasi"), not(feature = "dynamic_freetype")))]
+ macro_rules! ft_dyn_fn {
+     ($($proto:tt)+) => { extern "C" { fn $($proto)+; } }
+ }
 diff --git a/ipc/chromium/moz.build b/ipc/chromium/moz.build
 index b17bba0adb..355f8df333 100644
 --- a/ipc/chromium/moz.build
@@ -240,10 +363,23 @@ index 8d1c17c768..79f0240897 100644
    static const char kFDDir[] = "/proc/self/fd";
  #elif defined(XP_DARWIN)
 diff --git a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
-index fb146b5dd4..9c46fb64eb 100644
+index fb146b5dd4..65a4dd8fc4 100644
 --- a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
 +++ b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
-@@ -219,7 +219,9 @@
+@@ -42,6 +42,12 @@
+ /* #undef EVENT__HAVE_ARC4RANDOM_BUF */
+ #endif
+ 
++/* wasi-libc has arc4random and arc4random_buf. */
++#ifdef __wasi__
++#define EVENT__HAVE_ARC4RANDOM 1
++#define EVENT__HAVE_ARC4RANDOM_BUF 1
++#endif
++
+ /* Define to 1 if you have the <arpa/inet.h> header file. */
+ #define EVENT__HAVE_ARPA_INET_H 1
+ 
+@@ -219,7 +225,9 @@
  #define EVENT__HAVE_SA_FAMILY_T 1
  
  /* Define to 1 if you have the `select' function. */
@@ -253,6 +389,40 @@ index fb146b5dd4..9c46fb64eb 100644
  
  /* Define to 1 if you have the `sendfile' function. */
  /* #undef EVENT__HAVE_SENDFILE */
+@@ -490,7 +498,7 @@
+ #define EVENT__SIZEOF_LONG_LONG 8
+ 
+ /* The size of `off_t', as computed by sizeof. */
+-#if defined(__LP64__) || defined(__EMSCRIPTEN__) || \
++#if defined(__LP64__) || defined(__EMSCRIPTEN__) || defined(__wasi__) || \
+     (defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS == 64)
+ #define EVENT__SIZEOF_OFF_T 8
+ #else
+@@ -515,7 +523,7 @@
+ #endif
+ 
+ /* The size of `time_t', as computed by sizeof. */
+-#if defined(__LP64__) || defined(__EMSCRIPTEN__)
++#if defined(__LP64__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #define EVENT__SIZEOF_TIME_T 8
+ #else
+ #define EVENT__SIZEOF_TIME_T 4
+diff --git a/ipc/chromium/src/third_party/libevent/time-internal.h b/ipc/chromium/src/third_party/libevent/time-internal.h
+index e79e6a528d..d848e9d7fa 100644
+--- a/ipc/chromium/src/third_party/libevent/time-internal.h
++++ b/ipc/chromium/src/third_party/libevent/time-internal.h
+@@ -43,7 +43,10 @@
+ extern "C" {
+ #endif
+ 
+-#if defined(EVENT__HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
++/* wasi-libc's clockid_t is a pointer, not the int libevent stores; WASI uses
++ * the gettimeofday fallback. */
++#if defined(EVENT__HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC) && \
++    !defined(__wasi__)
+ #define HAVE_POSIX_MONOTONIC
+ #elif defined(EVENT__HAVE_MACH_ABSOLUTE_TIME)
+ #define HAVE_MACH_MONOTONIC
 diff --git a/ipc/chromium/src/third_party/libeventcommon.mozbuild b/ipc/chromium/src/third_party/libeventcommon.mozbuild
 index 0b6f044937..95b659c899 100644
 --- a/ipc/chromium/src/third_party/libeventcommon.mozbuild
@@ -415,6 +585,35 @@ index 732f6ca0a5..95a7b8b9f3 100644
  // On Unix, these set the close-on-exec flag for the new fd.
  MFBT_API UniqueFileHandle DuplicateFileHandle(detail::FileHandleType aFile);
  inline UniqueFileHandle DuplicateFileHandle(const UniqueFileHandle& aFile) {
+diff --git a/mozglue/baseprofiler/core/ProfilerUtils.cpp b/mozglue/baseprofiler/core/ProfilerUtils.cpp
+index 87dafa27cf..76f9cb53b0 100644
+--- a/mozglue/baseprofiler/core/ProfilerUtils.cpp
++++ b/mozglue/baseprofiler/core/ProfilerUtils.cpp
+@@ -12,16 +12,21 @@
+ // --------------------------------------------- WASI process & thread ids
+ #if defined(__wasi__)
+ 
++#  include <pthread.h>
++#  include <unistd.h>
++
+ namespace mozilla::baseprofiler {
+ 
+-// WASI is single-process and single-thread for now.
++// WASI has no thread ids; with wasi-threads, pthread_self() tells live threads
++// apart.
+ 
+ BaseProfilerProcessId profiler_current_process_id() {
+-  return BaseProfilerProcessId::FromNativeId(1u);
++  return BaseProfilerProcessId::FromNativeId(unsigned(getpid()));
+ }
+ 
+ BaseProfilerThreadId profiler_current_thread_id() {
+-  return BaseProfilerThreadId::FromNativeId(1u);
++  return BaseProfilerThreadId::FromNativeId(
++      unsigned(reinterpret_cast<uintptr_t>(pthread_self())));
+ }
+ 
+ }  // namespace mozilla::baseprofiler
 diff --git a/mozglue/misc/PerfStats.h b/mozglue/misc/PerfStats.h
 index 8c4000fd97..a3924beafc 100644
 --- a/mozglue/misc/PerfStats.h
@@ -459,6 +658,28 @@ index 34112f14e2..cc0179dfc7 100644
  
  /**
   * The callback for MozStackWalk and MozStackWalkThread.
+diff --git a/netwerk/socket/neqo_glue/src/lib.rs b/netwerk/socket/neqo_glue/src/lib.rs
+index ba8b9bb7d5..038f4bdc89 100644
+--- a/netwerk/socket/neqo_glue/src/lib.rs
++++ b/netwerk/socket/neqo_glue/src/lib.rs
+@@ -327,7 +327,7 @@ type SendFunc = extern "C" fn(
+ 
+ type SetTimerFunc = extern "C" fn(context: *mut c_void, timeout: u64);
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ type BorrowedSocket = std::os::fd::BorrowedFd<'static>;
+ #[cfg(windows)]
+ type BorrowedSocket = std::os::windows::io::BorrowedSocket<'static>;
+@@ -366,7 +366,7 @@ impl NeqoHttp3Conn {
+ 
+         let socket = socket
+             .map(|socket| {
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 let borrowed = {
+                     use std::os::fd::{BorrowedFd, RawFd};
+                     if socket == -1 {
 diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
 index 23a1d35e89..462c639d85 100644
 --- a/nsprpub/pr/include/md/_linux.h
@@ -680,37 +901,35 @@ index 02007bbc07..6e6f55ba04 100644
  
  # This builds NSS tools in COMM applications that Firefox doesn't build.
  if CONFIG["MOZ_BUILD_APP"].startswith("comm/"):
-diff --git a/security/nss/lib/softoken/fipstokn.c b/security/nss/lib/softoken/fipstokn.c
-index a68c9c799a..640ce34d4b 100644
---- a/security/nss/lib/softoken/fipstokn.c
-+++ b/security/nss/lib/softoken/fipstokn.c
-@@ -27,9 +27,11 @@
+diff --git a/servo/components/style/global_style_data.rs b/servo/components/style/global_style_data.rs
+index 8f689950e7..1235f69c2c 100644
+--- a/servo/components/style/global_style_data.rs
++++ b/servo/components/style/global_style_data.rs
+@@ -42,6 +42,10 @@ impl DummyThreadHandle {
+ #[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
+ /// Platform-specific handle to a thread.
+ pub type PlatformThreadHandle = DummyThreadHandle;
++/// Platform-specific handle to a thread (pthread_t). Rust's std cannot hand out
++/// the pthread of a thread on WASI, so no handles are reported there.
++#[cfg(all(target_os = "wasi", feature = "gecko"))]
++pub type PlatformThreadHandle = *mut std::ffi::c_void;
  
- #include <ctype.h>
+ /// Global style data
+ pub struct GlobalStyleData {
+@@ -151,7 +155,13 @@ impl StyleThreadPool {
+                 let _ = join_handle;
+                 DummyThreadHandle { _x: 0 }
+             };
++            #[cfg(all(target_os = "wasi", feature = "gecko"))]
++            {
++                let _ = join_handle;
++                continue;
++            }
  
--#ifdef XP_UNIX
-+#if defined(XP_UNIX) && !defined(__wasi__)
- #define NSS_AUDIT_WITH_SYSLOG 1
- #include <syslog.h>
-+#endif
-+#ifdef XP_UNIX
- #include <unistd.h>
- #endif
- 
-diff --git a/security/nss/lib/ssl/sslsnce.c b/security/nss/lib/ssl/sslsnce.c
-index 99a3a58a40..cb522bd2cb 100644
---- a/security/nss/lib/ssl/sslsnce.c
-+++ b/security/nss/lib/ssl/sslsnce.c
-@@ -62,7 +62,9 @@
- 
- #if defined(XP_UNIX)
- 
-+#if !defined(__wasi__)
- #include <syslog.h>
-+#endif
- #include <fcntl.h>
- #include <unistd.h>
- #include <errno.h>
++            #[cfg(not(all(target_os = "wasi", feature = "gecko")))]
+             handles.push(handle);
+         }
+     }
 diff --git a/third_party/msgpack/include/msgpack/vrefbuffer.h b/third_party/msgpack/include/msgpack/vrefbuffer.h
 index 139869aa6b..b691032123 100644
 --- a/third_party/msgpack/include/msgpack/vrefbuffer.h
@@ -724,6 +943,38 @@ index 139869aa6b..b691032123 100644
  #include <sys/uio.h>
  #else
  struct iovec {
+diff --git a/third_party/rust/bindgen/ir/ty.rs b/third_party/rust/bindgen/ir/ty.rs
+index a53de31c6a..bb418ad58e 100644
+--- a/third_party/rust/bindgen/ir/ty.rs
++++ b/third_party/rust/bindgen/ir/ty.rs
+@@ -223,7 +223,11 @@ impl Type {
+                 TypeKind::Comp(ref ci) => ci.layout(ctx),
+                 TypeKind::Array(inner, 0) => Some(Layout::new(
+                     0,
+-                    ctx.resolve_type(inner).layout(ctx)?.align,
++                    ctx.resolve_item_fallible(inner)?
++                        .kind()
++                        .as_type()?
++                        .layout(ctx)?
++                        .align,
+                 )),
+                 // FIXME(emilio): This is a hack for anonymous union templates.
+                 // Use the actual pointer size!
+@@ -231,9 +235,11 @@ impl Type {
+                     ctx.target_pointer_size(),
+                     ctx.target_pointer_size(),
+                 )),
+-                TypeKind::ResolvedTypeRef(inner) => {
+-                    ctx.resolve_type(inner).layout(ctx)
+-                }
++                TypeKind::ResolvedTypeRef(inner) => ctx
++                    .resolve_item_fallible(inner)?
++                    .kind()
++                    .as_type()?
++                    .layout(ctx),
+                 _ => None,
+             }
+         })
 diff --git a/third_party/rust/glean-core/src/fd_logger.rs b/third_party/rust/glean-core/src/fd_logger.rs
 index e885c596b2..a06e3a863d 100644
 --- a/third_party/rust/glean-core/src/fd_logger.rs
@@ -1181,6 +1432,18 @@ index c78cdb3383..fd50ac5cf0 100644
 +[target.'cfg(any(unix, target_os = "wasi"))'.dependencies]
  libc = "0.2"
  log = "0.4"
+diff --git a/toolkit/components/processtools/moz.build b/toolkit/components/processtools/moz.build
+index 60da6f2370..70ebb1bf06 100644
+--- a/toolkit/components/processtools/moz.build
++++ b/toolkit/components/processtools/moz.build
+@@ -54,5 +54,7 @@ elif toolkit == "windows":
+     ]
+ elif toolkit in ("cocoa", "uikit"):
+     UNIFIED_SOURCES += ["ProcInfo.mm"]
++elif CONFIG["OS_TARGET"] == "WASI":
++    UNIFIED_SOURCES += ["ProcInfo_wasi.cpp"]
+ 
+ include("/ipc/chromium/chromium-config.mozbuild")
 diff --git a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
 index d641f91719..730a53b3f5 100644
 --- a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
@@ -1301,18 +1564,37 @@ index 18c0f69889..6b40ad64da 100644
      execv(exePath.get(), gRestartArgv);
  
 diff --git a/tools/profiler/core/ProfilerUtils.cpp b/tools/profiler/core/ProfilerUtils.cpp
-index 64e7831e34..ade89bb785 100644
+index 64e7831e34..c55582c051 100644
 --- a/tools/profiler/core/ProfilerUtils.cpp
 +++ b/tools/profiler/core/ProfilerUtils.cpp
-@@ -89,6 +89,8 @@ ProfilerThreadId profiler_current_thread_id() {
- // ------------------------------------------------------- Others
- #  else
+@@ -9,8 +9,26 @@
  
-+#    include <thread>
+ #include "mozilla/ProfilerUtils.h"
+ 
++// --------------------------------------------- WASI process & thread ids
++#if defined(__wasi__)
 +
- ProfilerThreadId profiler_current_thread_id() {
-   return ProfilerThreadId::FromNativeId(std::this_thread::get_id());
- }
++#  include <pthread.h>
++#  include <unistd.h>
++
++// WASI has no thread ids; with wasi-threads, pthread_self() tells live threads
++// apart (same as mozglue/baseprofiler).
++
++ProfilerProcessId profiler_current_process_id() {
++  return ProfilerProcessId::FromNativeId(unsigned(getpid()));
++}
++
++ProfilerThreadId profiler_current_thread_id() {
++  return ProfilerThreadId::FromNativeId(
++      unsigned(reinterpret_cast<uintptr_t>(pthread_self())));
++}
++
+ // --------------------------------------------- Windows process & thread ids
+-#if defined(XP_WIN)
++#elif defined(XP_WIN)
+ 
+ #  include <process.h>
+ #  include <processthreadsapi.h>
 diff --git a/xpcom/base/nsDumpUtils.cpp b/xpcom/base/nsDumpUtils.cpp
 index 933b15646f..efa6af387d 100644
 --- a/xpcom/base/nsDumpUtils.cpp
