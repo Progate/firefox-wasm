@@ -80,15 +80,23 @@ int main(int argc, char** argv) {
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
   if (!xul_load(argc > 1 ? argv[1] : "about:blank", window.width, window.height)) return 1;
+  fprintf(stderr, "firefox: page loading, entering the event loop\n");
+  bool firstFrame = true;
   while (window.connected()) {
     std::string line;
     if (window.next(line, 16) && !dispatch(window, line)) break;
     NS_ProcessPendingEvents(nullptr, 0);
     uint8_t* pixels = xul_paint(window.width, window.height);
-    if (pixels) {
-      bool shown = window.present(pixels);
-      free(pixels);
-      if (!shown) return 1;
+    if (!pixels) continue;
+    bool shown = window.present(pixels);
+    free(pixels);
+    if (!shown) {
+      perror("firefox: windowserver present");
+      return 1;
+    }
+    if (firstFrame) {
+      fprintf(stderr, "firefox: first frame presented (%dx%d)\n", window.width, window.height);
+      firstFrame = false;
     }
   }
   return 0;

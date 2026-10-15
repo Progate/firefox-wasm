@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -59,17 +60,29 @@ bool WindowServer::open(int w, int h) {
   socket_ = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_ < 0 || connect(socket_, reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) return false;
   if (!command("surface " + std::to_string(width) + " " + std::to_string(height))) return false;
+  // Other notices (focus, properties) may arrive before the surface reply;
+  // keep reading until it comes.
   std::string line;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (!next(line, 100)) {
-    if (!connected() || std::chrono::steady_clock::now() >= deadline) return false;
-  }
   char path[4096];
-  int actualWidth, actualHeight;
-  if (sscanf(line.c_str(), "surface %d %4095s %d %d", &id_, path, &actualWidth, &actualHeight) != 4 ||
-      id_ <= 0 || !resize(actualWidth, actualHeight)) return false;
+  int actualWidth = 0, actualHeight = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  for (;;) {
+    if (next(line, 100) &&
+        sscanf(line.c_str(), "surface %d %4095s %d %d", &id_, path, &actualWidth, &actualHeight) == 4) {
+      break;
+    }
+    if (!connected() || std::chrono::steady_clock::now() >= deadline) {
+      fprintf(stderr, "windowserver: no surface reply (last line: %s)\n", line.c_str());
+      return false;
+    }
+  }
+  if (id_ <= 0 || !resize(actualWidth, actualHeight)) return false;
   surface_ = ::open(path, O_WRONLY);
-  return surface_ >= 0 && command("app " + std::to_string(id_) + " firefox") &&
+  if (surface_ < 0) {
+    fprintf(stderr, "windowserver: cannot open %s: %s\n", path, strerror(errno));
+    return false;
+  }
+  return command("app " + std::to_string(id_) + " firefox") &&
       command("title " + std::to_string(id_) + " Firefox");
 }
 

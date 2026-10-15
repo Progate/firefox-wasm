@@ -422,7 +422,9 @@ bool xul_load(const char* url, int width, int height) {
     PresShell* p = ds->GetPresShell();
     Document* d = p ? p->GetDocument() : nullptr;
     int st = d ? (int)d->GetReadyStateEnum() : -1;
-    bool isNew = d && d != oldDoc;
+    // Loading about:blank keeps the initial about:blank document, so no new
+    // document ever replaces it.
+    bool isNew = d && (d != oldDoc || NS_IsAboutBlank(uri));
     return (isNew && st >= (int)Document::READYSTATE_INTERACTIVE) ||
            (++spins > 500000);
   });
