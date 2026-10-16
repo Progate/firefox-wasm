@@ -35,6 +35,9 @@ static const int kAccel = 8;
 // What the system clipboard holds, as far as this window knows. Gecko's
 // clipboard differing from it means the page copied something.
 static std::string g_clipboard;
+// The typing place last told to the windowserver (" x y width height", or
+// empty when nothing editable has the focus).
+static std::string g_cursor;
 
 // Linux input-event key codes (the windowserver protocol) for keys without
 // text, as DOM key names and key codes.
@@ -131,15 +134,15 @@ static bool dispatch(WindowServer& window, const std::string& line) {
     key(strcmp(state, "up") != 0, code, decode(text));  // down and repeat press
     return true;
   }
+  // The input method's text: composed (preedit, shown underlined until it is
+  // converted) and committed. Neither has a key of its own.
+  if (sscanf(line.c_str(), "preedit %d", &id) == 1) {
+    const auto space = line.find(' ', strlen("preedit "));
+    set_composition(space == std::string::npos ? "" : decode(line.substr(space + 1)).c_str());
+    return true;
+  }
   if (sscanf(line.c_str(), "text %d %4095s", &id, text) == 2) {
-    // Committed text (IME): paste it through Gecko's own clipboard, then put
-    // back what the clipboard held.
-    const auto value = decode(text);
-    if (set_clipboard_text(value.c_str())) {
-      do_key(0, "v", 86, 'v', kAccel);
-      do_key(1, "v", 86, 'v', kAccel);
-      set_clipboard_text(g_clipboard.c_str());
-    }
+    commit_text(decode(text).c_str());
     return true;
   }
   // The system clipboard changed or the focus came here: Gecko's clipboard
@@ -192,6 +195,9 @@ int main(int argc, char** argv) {
   if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
   mozilla::Preferences::SetUint("ui.key.accelKey", 224);  // ⌘ (see kAccel)
+  // The window repaints a few times a second, so the caret can blink as on
+  // other desktops (xul_init stops it for one-shot snapshots).
+  mozilla::Preferences::SetInt("ui.caretBlinkTime", 530);
   const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
   // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
@@ -213,6 +219,16 @@ int main(int argc, char** argv) {
     }
     NS_ProcessPendingEvents(nullptr, 0);
     if (active) {
+      // Tell the windowserver where text is typed, so the input method's
+      // candidates open under the caret.
+      int cx = 0, cy = 0, cw = 0, ch = 0;
+      const std::string cursor = caret_rect(&cx, &cy, &cw, &ch)
+          ? nsPrintfCString(" %d %d %d %d", cx, cy, cw, ch).get()
+          : "";
+      if (cursor != g_cursor) {
+        g_cursor = cursor;
+        window.setCursor(cursor);
+      }
       // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
       const auto copied = get_clipboard_text();
       if (!copied.empty() && copied != g_clipboard) {

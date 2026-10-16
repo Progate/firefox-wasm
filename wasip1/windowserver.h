@@ -13,6 +13,8 @@ class WindowServer {
   bool resize(int width, int height);
   // Put text on the system clipboard (only while this window has the focus).
   bool setClipboard(const std::string& text);
+  // Where text is typed (" x y width height" in the window, or empty for none).
+  bool setCursor(const std::string& rectangle);
   bool connected() const { return socket_ >= 0; }
   int width = 1000;
   int height = 720;

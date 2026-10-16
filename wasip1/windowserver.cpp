@@ -53,6 +53,10 @@ bool WindowServer::setClipboard(const std::string& text) {
   return command("clipboard-set " + std::to_string(id_) + " " + encoded);
 }
 
+bool WindowServer::setCursor(const std::string& rectangle) {
+  return command("cursor " + std::to_string(id_) + rectangle);
+}
+
 bool WindowServer::resize(int w, int h) {
   if (w < 1 || h < 1 || w > 8192 || h > 8192) return false;
   width = w;
