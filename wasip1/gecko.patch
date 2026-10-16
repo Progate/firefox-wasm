@@ -142,6 +142,27 @@ index 8ce3236647..fb1e60ea03 100644
  /* emscripten is Linux-like; _linux.cfg has a __wasm32__ data-model branch. */
  #  include "md/_linux.cfg"
  #elif defined(__sun__)
+diff --git a/config/makefiles/rust.mk b/config/makefiles/rust.mk
+index efbccd3..72a8fe4 100644
+--- a/config/makefiles/rust.mk
++++ b/config/makefiles/rust.mk
+@@ -99,6 +99,16 @@ export RUSTC_BOOTSTRAP := 1
+ RUSTFLAGS += -Ctarget-feature=+atomics,+bulk-memory,+mutable-globals
+ endif
+ 
++# BrowserOS (wasm32-wasip1-threads): std is built from source as well. BrowserOS's
++# libc uses the riscv32 Linux values for its constants and structs, and std calls
++# it (open flags, stat, readdir, errno). wasip1/configure.sh vendors std's own
++# dependencies, gives std's libc crate the same values as Gecko's and patches std
++# to report the preview1 calls' errno with the Linux numbers.
++ifneq (,$(findstring wasip1,$(RUST_TARGET)))
++cargo_build_flags += -Zbuild-std=std,panic_abort
++export RUSTC_BOOTSTRAP := 1
++endif
++
+ rustflags_sancov =
+ ifndef MOZ_TSAN
+ ifndef FUZZING_JS_FUZZILLI
 diff --git a/extensions/auth/nsAuthSambaNTLM.cpp b/extensions/auth/nsAuthSambaNTLM.cpp
 index c5581eb618..97a98af6bb 100644
 --- a/extensions/auth/nsAuthSambaNTLM.cpp

@@ -56,6 +56,15 @@ bash /port/wasip1/link.sh           # writes /work/out/firedog.wasm
 It re-checksums the vendored Rust crates the patch edits; cargo treats them as
 registry crates and does not rebuild them otherwise.
 
+Rust's std is built from source (`-Z build-std=std,panic_abort`, set in
+`config/makefiles/rust.mk` by `gecko.patch`). The prebuilt std of
+`wasm32-wasip1-threads` is compiled with the WASI values of the `libc` crate and
+passes them to BrowserOS's libc (open flags, `struct stat`, errno), which uses the
+Linux ones. `configure.sh` therefore vendors std's own dependencies into
+`third_party/rust` (`vendor-std-deps.py`, which needs network), applies
+`std-libc.patch` to std's `libc` crate and applies `std.patch` to the toolchain's
+rust-src. Both are applied once and accepted when already applied.
+
 The program is `/work/out/firedog.wasm`. The resources it reads at run time are
 `application.ini`, `platform.ini`, `omni.ja`, `browser/omni.ja` and
 `defaults/pref/channel-prefs.js` from `obj-full-wasip1/dist/firefox`, installed
@@ -78,5 +87,11 @@ next to the program in `/usr/lib/firedog`.
   services Mozilla runs for Firefox (updates, telemetry, studies, accounts,
   remote settings, Safe Browsing); `gecko.patch` replaces the bundled search
   configuration with one that has no partner codes.
+- `std-libc.patch`: the same `wasi` values as `gecko.patch` gives Gecko's
+  `libc` crate, for the `libc` crate std depends on (0.2.178 for Rust 1.95).
+- `std.patch`: std (rust-src `library/`) reports the errno that its preview1
+  calls (`wasi::*`) return with the Linux numbers, so that `io::Error::kind()`
+  classifies every error the same way; `MetadataExt::nlink` widens the Linux
+  `nlink_t`.
 - `Dockerfile`, `configure.sh`, `rehash-vendored.py`: the toolchain and the
   configure step.
