@@ -66,20 +66,35 @@ bool WindowServer::resize(int w, int h) {
 
 bool WindowServer::open(int w, int h) {
   if (!resize(w, h)) return false;
+  // DISPLAY is host:port[.screen], the X form host:display.screen with the
+  // listening port in place of the display number. The screen picks the
+  // screen the window goes on (X's DefaultScreen); without it, screen 0.
   const char* display = getenv("DISPLAY");
   std::string address = display ? display : "127.0.0.1:6000";
   const auto colon = address.rfind(':');
   if (colon == std::string::npos) return false;
   char* end = nullptr;
   long port = strtol(address.c_str() + colon + 1, &end, 10);
-  if (!end || *end || port < 1 || port > 65535) return false;
+  if (!end || port < 1 || port > 65535) return false;
+  long screen = 0;
+  if (*end == '.') {
+    char* screenEnd = nullptr;
+    screen = strtol(end + 1, &screenEnd, 10);
+    if (!screenEnd || *screenEnd || screenEnd == end + 1 || screen < 0) return false;
+  } else if (*end) {
+    return false;
+  }
   sockaddr_in target{};
   target.sin_family = AF_INET;
   target.sin_port = htons(port);
   if (inet_pton(AF_INET, address.substr(0, colon).c_str(), &target.sin_addr) != 1) return false;
   socket_ = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_ < 0 || connect(socket_, reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) return false;
-  if (!command("surface " + std::to_string(width) + " " + std::to_string(height))) return false;
+  // Name the screen like X's CreateWindow names the root of that screen as the
+  // parent. Screen 0 is left unsaid so the line stays the same as before.
+  std::string request = "surface " + std::to_string(width) + " " + std::to_string(height);
+  if (screen != 0) request += " screen=" + std::to_string(screen);
+  if (!command(request)) return false;
   // Other notices (focus, properties) may arrive before the surface reply;
   // keep reading until it comes.
   std::string line;
