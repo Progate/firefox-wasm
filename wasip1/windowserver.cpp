@@ -102,8 +102,8 @@ bool WindowServer::open(int w, int h) {
     fprintf(stderr, "windowserver: cannot open %s: %s\n", path, strerror(errno));
     return false;
   }
-  return command("app " + std::to_string(id_) + " firefox") &&
-      command("title " + std::to_string(id_) + " Firefox");
+  return command("app " + std::to_string(id_) + " firedog") &&
+      command("title " + std::to_string(id_) + " FireDog");
 }
 
 bool WindowServer::next(std::string& line, int timeoutMs) {

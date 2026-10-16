@@ -174,11 +174,11 @@ static std::string startUrl(const char* argument) {
 
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--help") == 0) {
-    puts("usage: firefox [URL]\nUses DISPLAY and PROFILE_DIR inside BrowserOS.");
+    puts("usage: firedog [URL]\nUses DISPLAY and PROFILE_DIR inside BrowserOS.");
     return 0;
   }
   const char* gre = getenv("GRE_DIR");
-  if (!gre) gre = "/usr/lib/firefox";
+  if (!gre) gre = "/usr/lib/firedog";
   setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
   setenv("MOZ_HEADLESS", "1", 1);
   setenv("GECKO_NOWASMJIT", "1", 1);
@@ -190,9 +190,9 @@ int main(int argc, char** argv) {
   if (scale < 1) scale = 1;
   g_scale = scale;
   WindowServer window;
-  if (!window.open(1120 * scale, 720 * scale)) { perror("firefox: windowserver"); return 1; }
+  if (!window.open(1120 * scale, 720 * scale)) { perror("firedog: windowserver"); return 1; }
   int result = xul_init(gre);
-  if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
+  if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
   mozilla::Preferences::SetUint("ui.key.accelKey", 224);  // ⌘ (see kAccel)
   // The window repaints a few times a second, so the caret can blink as on
@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
   const std::string url = startUrl(argc > 1 ? argv[1] : nullptr);
   if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
-  fprintf(stderr, "firefox: page loading, entering the event loop\n");
+  fprintf(stderr, "firedog: page loading, entering the event loop\n");
   bool firstFrame = true;
   auto lastPaint = std::chrono::steady_clock::now();
   while (window.connected()) {
@@ -245,11 +245,11 @@ int main(int argc, char** argv) {
     bool shown = window.present(pixels);
     free(pixels);
     if (!shown) {
-      perror("firefox: windowserver present");
+      perror("firedog: windowserver present");
       return 1;
     }
     if (firstFrame) {
-      fprintf(stderr, "firefox: first frame presented (%dx%d)\n", window.width, window.height);
+      fprintf(stderr, "firedog: first frame presented (%dx%d)\n", window.width, window.height);
       firstFrame = false;
     }
   }

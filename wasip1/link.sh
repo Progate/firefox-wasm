@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Link the BrowserOS Firefox program: the windowserver entry point (main.cpp),
+# Link the BrowserOS FireDog program: the windowserver entry point (main.cpp),
 # the gecko.js embedder (embed-*.cpp except the emscripten mailbox loop in
 # embed-xul.cpp) and Gecko's libraries into one wasm32-wasip1-threads module.
 # Run after `mach build` inside the toolchain image.
@@ -8,7 +8,7 @@ set -euo pipefail
 : "${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT}"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OBJ=${GECKO_OBJDIR:-/work/obj-full-wasip1}
-OUT=${1:-/work/out/firefox.wasm}
+OUT=${1:-/work/out/firedog.wasm}
 BUILD=$(dirname "$OUT")/link
 mkdir -p "$BUILD"
 
