@@ -17,11 +17,13 @@ which pins the commit of this repository it was built from.
 - Gecko: https://github.com/HeyPuter/firefox at
   `2e1e835a5da5907e5ceef19aade58a7493f1e34d`, with `gecko.patch` applied.
 - wasi-sdk 34.0, Rust 1.95.0, Ubuntu 24.04; see `Dockerfile`.
-- BrowserOS libc: Progate/libc `cd20c0e67af80e7e09e817ab0610160f14c6d3d3`
-  (branch `browseros-rlimit`, which adds `getrlimit`/`setrlimit`, `syslog`,
-  `shm_open` and thread names), built with
-  `packages/browser-libc/build.mjs` using `targets: ['wasm32-wasip1-threads']`
-  and `BROWSER_LIBC_SOURCE` pointing at a checkout of that commit.
+- BrowserOS libc: the Progate/libc commit that
+  `packages/browser-libc/build.mjs` pins as `LIBC_COMMIT` (branch
+  `browseros-linux-syscall`), built with `buildSysroot` using
+  `targets: ['wasm32-wasip1-threads']`. Its constants and structs (errno,
+  `O_*`, `AT_*`, sockets, `POLL*`, `struct stat`, `struct dirent`, the
+  `CLOCK_*` numbers) are the riscv32 Linux ones, and `gecko.patch` gives the
+  vendored `libc` crate's `wasi` module the same values.
 
 ## Building
 
