@@ -1324,6 +1324,2560 @@ index cd444f99b8..b5209a2525 100644
      return CKR_DEVICE_ERROR;
  }
  #endif /* NSS_FIPS_DISABLED */
+diff --git a/services/settings/dumps/main/search-config-v2.json b/services/settings/dumps/main/search-config-v2.json
+index b8b72adcb7..a4797ef15e 100644
+--- a/services/settings/dumps/main/search-config-v2.json
++++ b/services/settings/dumps/main/search-config-v2.json
+@@ -258,12 +258,7 @@
+         "urls": {
+           "search": {
+             "base": "https://allegro.pl/listing",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "string"
+           }
+         }
+@@ -393,20 +388,10 @@
+         ],
+         "classification": "general",
+         "name": "Bing",
+-        "partnerCode": "MOZI",
+         "urls": {
+           "search": {
+             "base": "https://www.bing.com/search",
+-            "params": [
+-              {
+-                "name": "pc",
+-                "value": "{partnerCode}"
+-              },
+-              {
+-                "name": "form",
+-                "value": "MOZLBR"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -446,7 +431,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "MOZR",
+               "telemetrySuffix": "esr"
+             },
+             {
+@@ -455,19 +439,9 @@
+                   "firefox-android"
+                 ]
+               },
+-              "partnerCode": "MOZB",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MOZMBA"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -478,19 +452,9 @@
+                   "firefox-ios"
+                 ]
+               },
+-              "partnerCode": "MOZW",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MOZWSB"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -504,20 +468,10 @@
+                   "dt-001"
+                 ]
+               },
+-              "partnerCode": "MZTOF",
+               "telemetrySuffix": "MZTOF",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MZTOFO"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -531,20 +485,10 @@
+                   "vivo-001"
+                 ]
+               },
+-              "partnerCode": "MZCP",
+               "telemetrySuffix": "MZCP",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MZVIVO"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -553,14 +497,9 @@
+               "environment": {
+                 "experiment": "adblockers"
+               },
+-              "partnerCode": "MZABT",
+               "urls": {
+                 "search": {
+                   "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+                     {
+                       "name": "form",
+                       "value": "ABT"
+@@ -581,12 +520,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ordbok.uib.no/perl/ordbok.cgi",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "OPP"
+           }
+         }
+@@ -643,7 +577,6 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Cốc Cốc",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://coccoc.com/search",
+@@ -651,10 +584,6 @@
+               {
+                 "name": "s",
+                 "value": "ff"
+-              },
+-              {
+-                "name": "utm_source",
+-                "value": "{partnerCode}"
+               }
+             ],
+             "searchTermParamName": "query"
+@@ -696,8 +625,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ffmobile"
++              }
+             }
+           ]
+         }
+@@ -772,16 +700,10 @@
+         ],
+         "classification": "general",
+         "name": "DuckDuckGo",
+-        "partnerCode": "ffab",
+         "urls": {
+           "search": {
+             "base": "https://duckduckgo.com/",
+-            "params": [
+-              {
+-                "name": "t",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -813,7 +735,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "ftsa",
+               "telemetrySuffix": "esr"
+             }
+           ]
+@@ -825,8 +746,7 @@
+               "firefox-android",
+               "focus-android"
+             ]
+-          },
+-          "partnerCode": "fpas"
++          }
+         },
+         {
+           "environment": {
+@@ -835,8 +755,7 @@
+               "firefox-ios",
+               "focus-ios"
+             ]
+-          },
+-          "partnerCode": "ffip"
++          }
+         },
+         {
+           "environment": {
+@@ -844,7 +763,6 @@
+               "mint-001"
+             ]
+           },
+-          "partnerCode": "lm",
+           "telemetrySuffix": "lm"
+         }
+       ]
+@@ -856,7 +774,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.com/sch/",
+@@ -865,10 +782,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -922,8 +835,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -936,7 +848,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.at/sch/",
+@@ -945,10 +856,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1004,8 +911,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1018,7 +924,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.com.au/sch/",
+@@ -1027,10 +932,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1087,8 +988,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1101,7 +1001,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.befr.ebay.be/sch/",
+@@ -1110,10 +1009,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1172,8 +1067,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1186,7 +1080,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ca/sch/",
+@@ -1195,10 +1088,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1255,8 +1144,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1276,8 +1164,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1290,7 +1177,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ch/sch/",
+@@ -1299,10 +1185,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1362,8 +1244,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1383,8 +1264,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1397,7 +1277,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.de/sch/",
+@@ -1406,10 +1285,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1467,8 +1342,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1481,7 +1355,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.es/sch/",
+@@ -1490,10 +1363,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1553,8 +1422,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1567,7 +1435,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.fr/sch/",
+@@ -1576,10 +1443,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1638,8 +1501,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1652,7 +1514,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ie/sch/",
+@@ -1661,10 +1522,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1721,8 +1578,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1742,8 +1598,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1756,7 +1611,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.it/sch/",
+@@ -1765,10 +1619,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1825,8 +1675,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1839,7 +1688,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.nl/sch/",
+@@ -1848,10 +1696,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1907,8 +1751,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1928,8 +1771,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1942,7 +1784,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.pl/sch/",
+@@ -1951,10 +1792,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -2005,8 +1842,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -2019,7 +1855,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.co.uk/sch/",
+@@ -2028,10 +1863,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -2089,8 +1920,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -2111,8 +1941,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -2122,16 +1951,10 @@
+       "base": {
+         "classification": "general",
+         "name": "Ecosia",
+-        "partnerCode": "mzl",
+         "urls": {
+           "search": {
+             "base": "https://www.ecosia.org/search",
+-            "params": [
+-              {
+-                "name": "tt",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -2165,8 +1988,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "813cf1dd"
++              }
+             },
+             {
+               "environment": {
+@@ -2174,8 +1996,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "16eeffc4"
++              }
+             }
+           ]
+         },
+@@ -2199,8 +2020,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "813cf1dd"
++              }
+             },
+             {
+               "environment": {
+@@ -2208,8 +2028,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "16eeffc4"
++              }
+             }
+           ]
+         }
+@@ -2358,10 +2177,6 @@
+                 "name": "brand",
+                 "value": "gmxcouk"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2408,10 +2223,6 @@
+                 "name": "brand",
+                 "value": "gmxes"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2458,10 +2269,6 @@
+                 "name": "brand",
+                 "value": "gmxfr"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2536,31 +2343,13 @@
+           },
+           "suggestions": {
+             "base": "https://www.google.com/complete/search",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "firefox"
+-              },
+-              {
+-                "name": "channel",
+-                "value": "fen"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "trending": {
+             "base": "https://www.google.com/complete/search",
+             "method": "GET",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "firefox"
+-              },
+-              {
+-                "name": "channel",
+-                "value": "ftr"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "visualSearch": {
+@@ -2596,7 +2385,6 @@
+           "environment": {
+             "allRegionsAndLocales": true
+           },
+-          "partnerCode": "firefox-b-d",
+           "subVariants": [
+             {
+               "environment": {
+@@ -2604,7 +2392,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "firefox-b-e",
+               "telemetrySuffix": "b-e"
+             },
+             {
+@@ -2616,7 +2403,6 @@
+                   "focus-ios"
+                 ]
+               },
+-              "partnerCode": "firefox-b-m",
+               "telemetrySuffix": "b-m"
+             }
+           ],
+@@ -2624,14 +2410,6 @@
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2655,7 +2433,6 @@
+               "us"
+             ]
+           },
+-          "partnerCode": "firefox-b-1-d",
+           "subVariants": [
+             {
+               "environment": {
+@@ -2666,7 +2443,6 @@
+                   "us"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-e",
+               "telemetrySuffix": "b-1-e"
+             },
+             {
+@@ -2678,7 +2454,6 @@
+                   "focus-ios"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-m",
+               "telemetrySuffix": "b-1-m"
+             },
+             {
+@@ -2690,7 +2465,6 @@
+                   "aura-001"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-ar",
+               "telemetrySuffix": "b-1-ar"
+             },
+             {
+@@ -2704,7 +2478,6 @@
+                   "xiaomi-001"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-dt",
+               "telemetrySuffix": "b-1-dt"
+             }
+           ],
+@@ -2712,14 +2485,6 @@
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_us",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2735,20 +2500,10 @@
+               "canonical-001"
+             ]
+           },
+-          "partnerCode": "ubuntu",
+           "telemetrySuffix": "canonical",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "name": "channel",
+-                  "value": "fs"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2758,20 +2513,10 @@
+               "canonical-002"
+             ]
+           },
+-          "partnerCode": "ubuntu-sn",
+           "telemetrySuffix": "ubuntu-sn",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "name": "channel",
+-                  "value": "fs"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2785,19 +2530,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-lm",
+           "telemetrySuffix": "b-lm",
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2815,19 +2551,10 @@
+               "us"
+             ]
+           },
+-          "partnerCode": "firefox-b-1-lm",
+           "telemetrySuffix": "b-1-lm",
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2849,20 +2576,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-vv",
+           "telemetrySuffix": "b-vv",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2879,20 +2596,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-tf",
+           "telemetrySuffix": "b-tf",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2910,20 +2617,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-ar",
+           "telemetrySuffix": "b-ar",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2943,20 +2640,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-dt",
+           "telemetrySuffix": "b-dt",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         }
+@@ -2973,10 +2660,6 @@
+               {
+                 "name": "what",
+                 "value": "all"
+-              },
+-              {
+-                "name": "cmpid",
+-                "value": "fre_partner_fire_gssbtop"
+               }
+             ],
+             "searchTermParamName": "q"
+@@ -3056,12 +2739,7 @@
+         "urls": {
+           "search": {
+             "base": "https://dict.longdo.com/",
+-            "params": [
+-              {
+-                "name": "src",
+-                "value": "moz"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -3400,16 +3078,10 @@
+         ],
+         "classification": "general",
+         "name": "Perplexity",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://www.perplexity.ai/search",
+-            "params": [
+-              {
+-                "name": "pc",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3508,16 +3180,10 @@
+         ],
+         "classification": "general",
+         "name": "Qwant",
+-        "partnerCode": "brz-moz",
+         "urls": {
+           "search": {
+             "base": "https://www.qwant.com/",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3551,8 +3217,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "ff_android"
++              }
+             },
+             {
+               "environment": {
+@@ -3560,8 +3225,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ff_ios"
++              }
+             }
+           ]
+         },
+@@ -3583,8 +3247,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "ff_android"
++              }
+             },
+             {
+               "environment": {
+@@ -3592,8 +3255,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ff_ios"
++              }
+             }
+           ]
+         },
+@@ -3604,7 +3266,6 @@
+               "qwant-002"
+             ]
+           },
+-          "partnerCode": "firefoxqwant",
+           "telemetrySuffix": "qwant"
+         }
+       ]
+@@ -3613,16 +3274,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Qwant Junior",
+-        "partnerCode": "firefoxqwant",
+         "urls": {
+           "search": {
+             "base": "https://www.qwantjunior.com/",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3749,16 +3404,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Salidzini.lv",
+-        "partnerCode": "firefox-plugin",
+         "urls": {
+           "search": {
+             "base": "https://www.salidzini.lv/search.php",
+-            "params": [
+-              {
+-                "name": "utm_source",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3789,8 +3438,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "firefox_mobile"
++              }
+             }
+           ]
+         }
+@@ -3800,16 +3448,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Seznam",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://search.seznam.cz/",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3839,8 +3481,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "SearchBox"
++              }
+             }
+           ]
+         }
+@@ -3853,26 +3494,15 @@
+         ],
+         "classification": "general",
+         "name": "Startpage",
+-        "partnerCode": "startpage.apex.desktop",
+         "urls": {
+           "search": {
+             "base": "https://www.startpage.com/sp/search",
+-            "params": [
+-              {
+-                "name": "segment",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+             "base": "https://www.startpage.com/suggestions?partner=apex&format=opensearch",
+-            "params": [
+-              {
+-                "name": "segment",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           }
+         }
+@@ -4009,12 +3639,7 @@
+         "urls": {
+           "search": {
+             "base": "https://en.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4152,12 +3777,7 @@
+         "urls": {
+           "search": {
+             "base": "https://nn.wikipedia.org/wiki/Spesial:Søk",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4197,12 +3817,7 @@
+         "urls": {
+           "search": {
+             "base": "https://no.wikipedia.org/wiki/Spesial:Søk",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4242,12 +3857,7 @@
+         "urls": {
+           "search": {
+             "base": "https://af.wikipedia.org/wiki/Spesiaal:Soek",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4288,12 +3898,7 @@
+         "urls": {
+           "search": {
+             "base": "https://an.wikipedia.org/wiki/Especial:Mirar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4334,12 +3939,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ar.wikipedia.org/wiki/خاص:بحث",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4379,12 +3979,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ast.wikipedia.org/wiki/Especial:Gueta",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4425,12 +4020,7 @@
+         "urls": {
+           "search": {
+             "base": "https://az.wikipedia.org/wiki/Xüsusi:Axtar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4471,12 +4061,7 @@
+         "urls": {
+           "search": {
+             "base": "https://be.wikipedia.org/wiki/Адмысловае:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4516,12 +4101,7 @@
+         "urls": {
+           "search": {
+             "base": "https://be-tarask.wikipedia.org/wiki/Спэцыяльныя:Пошук",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4562,12 +4142,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bg.wikipedia.org/wiki/Специални:Търсене",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4608,12 +4183,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bn.wikipedia.org/wiki/বিশেষ:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4655,12 +4225,7 @@
+         "urls": {
+           "search": {
+             "base": "https://br.wikipedia.org/wiki/Dibar:Klask",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4700,12 +4265,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bs.wikipedia.org/wiki/Posebno:Pretraga",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4746,12 +4306,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ca.wikipedia.org/wiki/Especial:Cerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4793,12 +4348,7 @@
+         "urls": {
+           "search": {
+             "base": "https://cy.wikipedia.org/wiki/Arbennig:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4839,12 +4389,7 @@
+         "urls": {
+           "search": {
+             "base": "https://cs.wikipedia.org/wiki/Speciální:Hledání",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4884,12 +4429,7 @@
+         "urls": {
+           "search": {
+             "base": "https://da.wikipedia.org/wiki/Speciel:Søgning",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4929,12 +4469,7 @@
+         "urls": {
+           "search": {
+             "base": "https://de.wikipedia.org/wiki/Spezial:Suche",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4975,12 +4510,7 @@
+         "urls": {
+           "search": {
+             "base": "https://dsb.wikipedia.org/wiki/Specialne:Pytaś",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5021,12 +4551,7 @@
+         "urls": {
+           "search": {
+             "base": "https://el.wikipedia.org/wiki/Ειδικό:Αναζήτηση",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5067,12 +4592,7 @@
+         "urls": {
+           "search": {
+             "base": "https://eo.wikipedia.org/wiki/Specialaĵo:Serĉi",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5112,12 +4632,7 @@
+         "urls": {
+           "search": {
+             "base": "https://es.wikipedia.org/wiki/Especial:Buscar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5163,12 +4678,7 @@
+         "urls": {
+           "search": {
+             "base": "https://et.wikipedia.org/wiki/Eri:Otsimine",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5208,12 +4718,7 @@
+         "urls": {
+           "search": {
+             "base": "https://eu.wikipedia.org/wiki/Berezi:Bilatu",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5254,12 +4759,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fa.wikipedia.org/wiki/ویژه:جستجو",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5299,12 +4799,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fi.wikipedia.org/wiki/Toiminnot:Haku",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5345,12 +4840,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fr.wikipedia.org/wiki/Spécial:Recherche",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5393,12 +4883,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fy.wikipedia.org/wiki/Wiki:Sykje",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5439,12 +4924,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ga.wikipedia.org/wiki/Speisialta:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5485,12 +4965,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gd.wikipedia.org/wiki/Sònraichte:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5530,12 +5005,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gl.wikipedia.org/wiki/Especial:Procurar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5576,12 +5046,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gn.wikipedia.org/wiki/Mba'echĩchĩ:Buscar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5622,12 +5087,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gu.wikipedia.org/wiki/વિશેષ:શોધ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5668,12 +5128,7 @@
+         "urls": {
+           "search": {
+             "base": "https://he.wikipedia.org/wiki/מיוחד:חיפוש",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5714,12 +5169,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hi.wikipedia.org/wiki/विशेष:खोज",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5760,12 +5210,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hr.wikipedia.org/wiki/Posebno:Traži",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5806,12 +5251,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hsb.wikipedia.org/wiki/Specialnje:Pytać",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5852,12 +5292,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hu.wikipedia.org/wiki/Speciális:Keresés",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5898,12 +5333,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hy.wikipedia.org/wiki/Սպասարկող:Որոնել",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5943,12 +5373,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ia.wikipedia.org/wiki/Special:Recerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5988,12 +5413,7 @@
+         "urls": {
+           "search": {
+             "base": "https://id.wikipedia.org/wiki/Istimewa:Pencarian",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6033,12 +5453,7 @@
+         "urls": {
+           "search": {
+             "base": "https://is.wikipedia.org/wiki/Kerfissíða:Leit",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6078,12 +5493,7 @@
+         "urls": {
+           "search": {
+             "base": "https://it.wikipedia.org/wiki/Speciale:Ricerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6123,14 +5533,9 @@
+         "classification": "unknown",
+         "name": "Wikipedia (ja)",
+         "urls": {
+-          "search": {
+-            "base": "https://ja.wikipedia.org/wiki/特別:検索",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++          "search": {
++            "base": "https://ja.wikipedia.org/wiki/特別:検索",
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6172,12 +5577,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ka.wikipedia.org/wiki/სპეციალური:ძიება",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6217,12 +5617,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kab.wikipedia.org/wiki/Uslig:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6263,12 +5658,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kk.wikipedia.org/wiki/Арнайы:Іздеу",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6309,12 +5699,7 @@
+         "urls": {
+           "search": {
+             "base": "https://km.wikipedia.org/wiki/ពិសេស:ស្វែងរក",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6355,12 +5740,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kn.wikipedia.org/wiki/ವಿಶೇಷ:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6401,12 +5781,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ko.wikipedia.org/wiki/특수기능:찾기",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6446,12 +5821,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lij.wikipedia.org/wiki/Speçiale:Riçerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6492,12 +5862,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lo.wikipedia.org/wiki/ພິເສດ:ຊອກຫາ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6538,12 +5903,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lt.wikipedia.org/wiki/Specialus:Paieška",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6584,12 +5944,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ltg.wikipedia.org/wiki/Seviškuo:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6630,12 +5985,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lv.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6676,12 +6026,7 @@
+         "urls": {
+           "search": {
+             "base": "https://mk.wikipedia.org/wiki/Специјална:Барај",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6722,12 +6067,7 @@
+         "urls": {
+           "search": {
+             "base": "https://mr.wikipedia.org/wiki/विशेष:शोधा",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6767,12 +6107,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ms.wikipedia.org/wiki/Khas:Gelintar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6813,12 +6148,7 @@
+         "urls": {
+           "search": {
+             "base": "https://my.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6859,12 +6189,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ne.wikipedia.org/wiki/विशेष:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6904,12 +6229,7 @@
+         "urls": {
+           "search": {
+             "base": "https://nl.wikipedia.org/wiki/Speciaal:Zoeken",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6950,12 +6270,7 @@
+         "urls": {
+           "search": {
+             "base": "https://oc.wikipedia.org/wiki/Especial:Recèrca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6996,12 +6311,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pa.wikipedia.org/wiki/ਖ਼ਾਸ:ਖੋਜੋ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7041,12 +6351,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pl.wikipedia.org/wiki/Specjalna:Szukaj",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7088,12 +6393,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pt.wikipedia.org/wiki/Especial:Pesquisar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7134,12 +6434,7 @@
+         "urls": {
+           "search": {
+             "base": "https://rm.wikipedia.org/wiki/Spezial:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7179,12 +6474,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ro.wikipedia.org/wiki/Special:Căutare",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7225,12 +6515,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ru.wikipedia.org/wiki/Служебная:Поиск",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7271,12 +6556,7 @@
+         "urls": {
+           "search": {
+             "base": "https://si.wikipedia.org/wiki/විශේෂ:ගවේෂණය",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7317,12 +6597,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sk.wikipedia.org/wiki/Špeciálne:Hľadanie",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7363,12 +6638,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sl.wikipedia.org/wiki/Posebno:Iskanje",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7408,12 +6678,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sq.wikipedia.org/wiki/Speciale:Kërkim",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7454,12 +6719,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sr.wikipedia.org/wiki/Посебно:Претражи",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7499,12 +6759,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sv.wikipedia.org/wiki/Special:Sök",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7545,12 +6800,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ta.wikipedia.org/wiki/சிறப்பு:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7591,12 +6841,7 @@
+         "urls": {
+           "search": {
+             "base": "https://te.wikipedia.org/wiki/ప్రత్యేక:అన్వేషణ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7637,12 +6882,7 @@
+         "urls": {
+           "search": {
+             "base": "https://th.wikipedia.org/wiki/พิเศษ:ค้นหา",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7682,12 +6922,7 @@
+         "urls": {
+           "search": {
+             "base": "https://tl.wikipedia.org/wiki/Natatangi:Maghanap",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7728,12 +6963,7 @@
+         "urls": {
+           "search": {
+             "base": "https://tr.wikipedia.org/wiki/Özel:Ara",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7774,12 +7004,7 @@
+         "urls": {
+           "search": {
+             "base": "https://uk.wikipedia.org/wiki/Спеціальна:Пошук",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7820,12 +7045,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ur.wikipedia.org/wiki/خاص:تلاش",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7866,12 +7086,7 @@
+         "urls": {
+           "search": {
+             "base": "https://uz.wikipedia.org/wiki/Maxsus:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7911,12 +7126,7 @@
+         "urls": {
+           "search": {
+             "base": "https://vi.wikipedia.org/wiki/Đặc_biệt:Tìm_kiếm",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7956,12 +7166,7 @@
+         "urls": {
+           "search": {
+             "base": "https://wo.wikipedia.org/wiki/Jagleel:Ceet",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -8002,12 +7207,7 @@
+         "urls": {
+           "search": {
+             "base": "https://zh.wikipedia.org/wiki/Special:搜索",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -8049,10 +7249,6 @@
+           "search": {
+             "base": "https://zh.wikipedia.org/wiki/Special:搜索",
+             "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              },
+               {
+                 "name": "variant",
+                 "value": "zh-tw"
+@@ -8288,7 +7484,6 @@
+       "base": {
+         "classification": "general",
+         "name": "Yahoo! JAPAN",
+-        "partnerCode": "mozff",
+         "urls": {
+           "search": {
+             "base": "https://search.yahoo.co.jp/search",
+@@ -8296,10 +7491,6 @@
+               {
+                 "name": "ei",
+                 "value": "UTF-8"
+-              },
+-              {
+-                "name": "fr",
+-                "value": "{partnerCode}"
+               }
+             ],
+             "searchTermParamName": "p"
+@@ -8334,10 +7525,6 @@
+               {
+                 "name": "ei",
+                 "value": "EUC-JP"
+-              },
+-              {
+-                "name": "fr",
+-                "value": "mozff"
+               }
+             ],
+             "searchTermParamName": "p"
 diff --git a/servo/components/style/global_style_data.rs b/servo/components/style/global_style_data.rs
 index 8f689950e7..c385f7a21f 100644
 --- a/servo/components/style/global_style_data.rs

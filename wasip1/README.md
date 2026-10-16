@@ -1,15 +1,21 @@
-# BrowserOS WASIp1 port (work in progress)
+# FireDog: Gecko on WASIp1 for BrowserOS
 
-This is an unfinished source port, not a working Firefox distribution. The goal
-is to build Gecko for WASI preview1 with wasi-threads, use BrowserOS's POSIX libc,
-and present software-rendered frames through its windowserver. The existing
-Emscripten release is not the deliverable for this port.
+FireDog is a browser built from the Firefox source (Gecko) for
+`wasm32-wasip1-threads`. It runs as a program on
+[BrowserOS](https://github.com/Progate/packages/tree/main/packages/browser-os):
+it uses BrowserOS's POSIX libc, opens a window on its windowserver, draws
+Gecko's software-rendered frames into it and fetches pages through the OS's
+sockets. It is not a Mozilla product and does not use Mozilla's trademarks; the
+name and icons are its own (`branding/firedog`).
+
+The package that installs it in BrowserOS is
+[`@progate/browser-gecko`](https://github.com/Progate/packages/tree/main/packages/browser-gecko),
+which pins the commit of this repository it was built from.
 
 ## Source and toolchain
 
 - Gecko: https://github.com/HeyPuter/firefox at
-  `2e1e835a5da5907e5ceef19aade58a7493f1e34d` (the Makefile's engine pin).
-- Harness base: `bc69aaa5e2c5388bcf93a43b975b490bb940f4c0`.
+  `2e1e835a5da5907e5ceef19aade58a7493f1e34d`, with `gecko.patch` applied.
 - wasi-sdk 34.0, Rust 1.95.0, Ubuntu 24.04; see `Dockerfile`.
 - BrowserOS libc: Progate/libc `cd20c0e67af80e7e09e817ab0610160f14c6d3d3`
   (branch `browseros-rlimit`, which adds `getrlimit`/`setrlimit`, `syslog`,
@@ -17,64 +23,58 @@ Emscripten release is not the deliverable for this port.
   `packages/browser-libc/build.mjs` using `targets: ['wasm32-wasip1-threads']`
   and `BROWSER_LIBC_SOURCE` pointing at a checkout of that commit.
 
+## Building
+
 Build the toolchain image from this repository's root:
 
 ```sh
 docker build -t browser-firefox-wasip1:dev -f wasip1/Dockerfile .
 ```
 
-Inside the image, build the BrowserOS sysroot with `buildSysroot`, extract the
-pinned Gecko source, and run:
+Run it with this repository mounted at `/port` and a writable build directory
+at `/work`. A full build takes hours; give the container at least 6 GB of
+memory plus swap and keep `-j` low (2–3), or the linker and rustc run out of
+memory. Inside the container, build the BrowserOS sysroot with `buildSysroot`,
+extract the pinned Gecko source to `/work/firefox`, then:
 
 ```sh
+export WASI_SDK_PATH=/opt/wasi-sdk
 export GECKO_SOURCE=/work/firefox
 export BROWSEROS_SYSROOT=/work/libc/sysroot
-bash /port/wasip1/configure.sh
+export MOZCONFIG=/port/mozconfig.full.wasip1 RUSTC_BOOTSTRAP=1
+
+bash /port/wasip1/configure.sh      # applies gecko.patch and the branding, runs mach configure
+cd /work/firefox
+./mach build --keep-going -j2
+./mach package                      # writes the resources to dist/firefox (omni.ja, …)
+bash /port/wasip1/link.sh           # writes /work/out/firedog.wasm
 ```
 
-Mount this repository at `/port`, and a writable build directory at `/work`.
 `configure.sh` applies `gecko.patch` once and accepts an already-applied patch.
-It intentionally does not run the full build or link the application yet.
+It re-checksums the vendored Rust crates the patch edits; cargo treats them as
+registry crates and does not rebuild them otherwise.
 
-## What exists
+The program is `/work/out/firedog.wasm`. The resources it reads at run time are
+`application.ini`, `platform.ini`, `omni.ja`, `browser/omni.ja` and
+`defaults/pref/channel-prefs.js` from `obj-full-wasip1/dist/firefox`, installed
+next to the program in `/usr/lib/firedog`.
 
-- Linux cross-toolchain image and a WASIp1 configure candidate.
-- Initial Gecko configure patch selecting the headless toolkit and in-tree
-  FreeType for WASI.
-- Guards separating the embedder's WasmFS mounts from non-Emscripten builds.
-- A C++ windowserver client: TCP control, surface-file writes, BGRA-to-RGBA
-  conversion, and resize/close handling.
-- An application entry point intended to call the real Gecko embedder and
-  translate windowserver events. This entry point is not compiled or linked yet.
+## What is here
 
-## Validation so far
-
-- Docker toolchain build completed.
-- BrowserOS pthread sysroot build completed.
-- `windowserver.cpp` compiled with native Clang and with wasi-sdk 34 targeting
-  `wasm32-wasip1-threads`, with `-Wall -Wextra -Werror`.
-- The first Gecko configure attempt rejected `MOZ_AUTOMATION=1` with a source
-  archive rather than a VCS checkout. That setting was removed. The next attempt
-  passed the target/host compiler checks and stopped at `Cannot find llvm-objdump`.
-  Next: expose the SDK binary through the configure tool override or PATH, then
-  rerun configure. The SDK contains `bin/llvm-objdump`.
-- No successful Gecko configure/build/link, browser launch, or windowserver
-  integration test has been established. There is no Firefox wasm artifact.
-
-## Remaining work
-
-1. Resolve actual configure/build errors, including WASI support in NSPR/NSS,
-   Rust target selection, and other platform-specific Gecko build rules.
-2. Replace or disable remaining Emscripten-only APIs throughout Gecko; do not
-   satisfy missing engine functionality with silent no-op imports.
-3. Finish the native entry point (keyboard modifiers, pointer buttons, error
-   handling, shutdown, and Firefox chrome resources) and its link recipe.
-4. Verify module imports: WASI preview1, wasi-threads, and the supported BrowserOS
-   POSIX extensions; no Emscripten runtime dependency.
-5. Package the built engine/resources in Progate/packages/browser-firefox,
-   expose `firefoxPackage()`, and test inside BrowserOS.
-6. Replace browser-browser in the browser-desktop demo and verify actual launch,
-   rendering, input, navigation, resizing, and process termination.
-
-Keep this change as a draft until these checks pass. In particular, the
-windowserver object's successful compilation does not validate Firefox itself.
+- `gecko.patch`: the changes to Gecko. Rust targets `wasm32-wasip1-threads`;
+  NSPR, NSS, chromium base and mfbt take the wasm paths on WASI; mutexes,
+  condition variables, thread locals and JS threads use pthreads under
+  `_REENTRANT`; xptcall is generated per XPIDL signature (`xptcodegen.py`);
+  libraries are written as wasm-ld response files and linked into one module;
+  fonts come from GRE and `/usr/share/fonts`.
+- `main.cpp`, `windowserver.cpp`: the program's entry point and the
+  windowserver client. They open the window, present frames at the desktop's
+  scale and translate pointer, keyboard, IME and clipboard events into Gecko's.
+- `link.sh`: links the entry point, the gecko.js embedder and Gecko's libraries
+  into `firedog.wasm`, with shared imported memory for wasi-threads.
+- `branding/firedog`: names, icons and default prefs. The prefs turn off the
+  services Mozilla runs for Firefox (updates, telemetry, studies, accounts,
+  remote settings, Safe Browsing); `gecko.patch` replaces the bundled search
+  configuration with one that has no partner codes.
+- `Dockerfile`, `configure.sh`, `rehash-vendored.py`: the toolchain and the
+  configure step.

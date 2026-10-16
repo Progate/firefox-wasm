@@ -21,4 +21,8 @@ crates=$(grep -o '^+++ b/third_party/rust/[^/]*' "$HERE/wasip1/gecko.patch" | cu
 if [ -n "$crates" ]; then
   python3 "$HERE/wasip1/rehash-vendored.py" $crates
 fi
+# FireDog's branding (name, icons, default prefs). A modified build cannot use
+# Mozilla's trademarks, so it replaces the unofficial branding (Nightly).
+rm -rf browser/branding/firedog
+cp -R "$HERE/wasip1/branding/firedog" browser/branding/firedog
 ./mach configure

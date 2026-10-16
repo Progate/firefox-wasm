@@ -2,6 +2,7 @@
 # This port is separate from the Emscripten build; no JS glue is linked.
 mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-wasip1
 ac_add_options --enable-application=browser
+ac_add_options --with-branding=browser/branding/firedog
 ac_add_options --target=wasm32-unknown-wasi
 ac_add_options --enable-default-toolkit=cairo-headless
 ac_add_options --disable-jit
