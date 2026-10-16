@@ -19,6 +19,9 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
   // it here. On a mousedown outside every open popup, roll them all up and consume
   // the click so it doesn't also fall through to content -- matching native menu
   // behavior. Clicks inside a popup fall through (menu item activation).
+  // Popup bounds are device pixels; (x, y) is CSS pixels.
+  LayoutDeviceIntPoint ref =
+      nsContentUtils::ToWidgetPoint(CSSPoint(x, y), offset, pc);
   if (evType == 1) {
     if (nsXULPopupManager* pm = nsXULPopupManager::GetInstance()) {
       nsTArray<nsMenuPopupFrame*> popups;
@@ -28,7 +31,8 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
         for (auto* pf : popups) {
           if (!pf) continue;
           LayoutDeviceIntRect b = pf->CalcWidgetBounds();
-          if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) {
+          if (ref.x >= b.x && ref.x < b.x + b.width && ref.y >= b.y &&
+              ref.y < b.y + b.height) {
             inside = true;
             break;
           }
@@ -43,8 +47,6 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
     }
   }
 
-  LayoutDeviceIntPoint ref =
-      nsContentUtils::ToWidgetPoint(CSSPoint(x, y), offset, pc);
   // evType: 0=mousemove 1=mousedown 2=mouseup 3=contextmenu. A synthesized right
   // mousedown/up doesn't generate eContextMenu in this headless build, so the JS
   // side sends an explicit contextmenu event (button 2) to open context menus.
@@ -223,4 +225,28 @@ bool set_clipboard_text(const char* utf8) {
   trans->SetTransferData(kTextMime, ToSupports(data));
   return NS_SUCCEEDED(
       clipboard->SetData(trans, nullptr, nsIClipboard::kGlobalClipboard, nullptr));
+}
+
+// The text on the global clipboard as UTF-8 (empty when there is none), so the
+// host can hand what the page copied to the system clipboard.
+std::string get_clipboard_text() {
+  using namespace mozilla;
+  nsCOMPtr<nsIClipboard> clipboard =
+      do_GetService("@mozilla.org/widget/clipboard;1");
+  if (!clipboard) return {};
+  nsCOMPtr<nsITransferable> trans =
+      do_CreateInstance("@mozilla.org/widget/transferable;1");
+  if (!trans) return {};
+  trans->Init(nullptr);
+  trans->AddDataFlavor(kTextMime);
+  if (NS_FAILED(clipboard->GetData(trans, nsIClipboard::kGlobalClipboard, nullptr))) {
+    return {};
+  }
+  nsCOMPtr<nsISupports> data;
+  if (NS_FAILED(trans->GetTransferData(kTextMime, getter_AddRefs(data)))) return {};
+  nsCOMPtr<nsISupportsString> text = do_QueryInterface(data);
+  if (!text) return {};
+  nsAutoString value;
+  text->GetData(value);
+  return NS_ConvertUTF16toUTF8(value).get();
 }

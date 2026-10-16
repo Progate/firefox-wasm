@@ -11,6 +11,8 @@ class WindowServer {
   bool next(std::string& line, int timeoutMs);
   bool present(const uint8_t* bgra);
   bool resize(int width, int height);
+  // Put text on the system clipboard (only while this window has the focus).
+  bool setClipboard(const std::string& text);
   bool connected() const { return socket_ >= 0; }
   int width = 1000;
   int height = 720;

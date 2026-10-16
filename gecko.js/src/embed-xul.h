@@ -197,6 +197,7 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers);
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
             int modifiers);
 bool set_clipboard_text(const char* utf8);
+std::string get_clipboard_text();
 
 char* mirror_collect_images();                               // embed-mirror.cpp
 char* mirror_collect_css();

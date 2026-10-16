@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "windowserver.h"
 #include <arpa/inet.h>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -35,6 +36,21 @@ WindowServer::~WindowServer() {
 bool WindowServer::command(const std::string& text) {
   const auto line = text + "\n";
   return writeAll(socket_, line.data(), line.size());
+}
+
+bool WindowServer::setClipboard(const std::string& text) {
+  // The protocol's text encoding: every byte but ASCII letters and digits as %XX.
+  std::string encoded;
+  for (unsigned char byte : text) {
+    if (isalnum(byte)) {
+      encoded += static_cast<char>(byte);
+    } else {
+      char escape[4];
+      snprintf(escape, sizeof escape, "%%%02X", byte);
+      encoded += escape;
+    }
+  }
+  return command("clipboard-set " + std::to_string(id_) + " " + encoded);
 }
 
 bool WindowServer::resize(int w, int h) {

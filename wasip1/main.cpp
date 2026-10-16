@@ -29,6 +29,12 @@ static int g_scale = 1;
 // (nsIDOMWindowUtils MODIFIER_ALT 1, CONTROL 2, SHIFT 4, META 8).
 static int g_buttons = 0;
 static int g_modifiers = 0;
+// The shortcut modifier. The desktop is laid out like macOS, so it is ⌘ (Meta)
+// as in Firefox for macOS (ui.key.accelKey, set in main).
+static const int kAccel = 8;
+// What the system clipboard holds, as far as this window knows. Gecko's
+// clipboard differing from it means the page copied something.
+static std::string g_clipboard;
 
 // Linux input-event key codes (the windowserver protocol) for keys without
 // text, as DOM key names and key codes.
@@ -108,6 +114,11 @@ static bool dispatch(WindowServer& window, const std::string& line) {
     if (strcmp(state, "down") == 0) { phase = 1; g_buttons |= bit; }
     else if (strcmp(state, "up") == 0) { phase = 2; g_buttons &= ~bit; }
     do_mouse(phase, x / g_scale, y / g_scale, domButton, phase ? 1 : 0, g_buttons, g_modifiers);
+    // The headless widget raises no contextmenu event of its own; on Linux it
+    // follows the right button's press.
+    if (phase == 1 && domButton == 2) {
+      do_mouse(3, x / g_scale, y / g_scale, domButton, 1, g_buttons, g_modifiers);
+    }
     return true;
   }
   if (sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5) {
@@ -121,12 +132,22 @@ static bool dispatch(WindowServer& window, const std::string& line) {
     return true;
   }
   if (sscanf(line.c_str(), "text %d %4095s", &id, text) == 2) {
-    // Committed text (IME): paste it through Gecko's own clipboard.
+    // Committed text (IME): paste it through Gecko's own clipboard, then put
+    // back what the clipboard held.
     const auto value = decode(text);
     if (set_clipboard_text(value.c_str())) {
-      do_key(0, "v", 86, 'v', 2);
-      do_key(1, "v", 86, 'v', 2);
+      do_key(0, "v", 86, 'v', kAccel);
+      do_key(1, "v", 86, 'v', kAccel);
+      set_clipboard_text(g_clipboard.c_str());
     }
+    return true;
+  }
+  // The system clipboard changed or the focus came here: Gecko's clipboard
+  // follows it, so ⌘V pastes what other windows copied.
+  if (sscanf(line.c_str(), "selection %d", &id) == 1) {
+    const auto space = line.find(' ', strlen("selection "));
+    g_clipboard = space == std::string::npos ? "" : decode(line.substr(space + 1));
+    set_clipboard_text(g_clipboard.c_str());
   }
   return true;
 }
@@ -170,6 +191,7 @@ int main(int argc, char** argv) {
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firefox: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
+  mozilla::Preferences::SetUint("ui.key.accelKey", 224);  // ⌘ (see kAccel)
   const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
   // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
@@ -190,6 +212,14 @@ int main(int argc, char** argv) {
       timeout = 0;
     }
     NS_ProcessPendingEvents(nullptr, 0);
+    if (active) {
+      // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
+      const auto copied = get_clipboard_text();
+      if (!copied.empty() && copied != g_clipboard) {
+        g_clipboard = copied;
+        window.setClipboard(copied);
+      }
+    }
     // Repaint after input; otherwise a few times a second for page updates.
     const auto now = std::chrono::steady_clock::now();
     if (!active && !firstFrame && now - lastPaint < std::chrono::milliseconds(100)) continue;

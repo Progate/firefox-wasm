@@ -842,6 +842,32 @@ index 77bda3959e..69df1c499d 100644
 +if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
      DIRS += ["shell"]
  TEST_DIRS += ["tests"]
+diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
+index f958ef7438..3e82edcf9c 100644
+--- a/layout/painting/nsDisplayList.cpp
++++ b/layout/painting/nsDisplayList.cpp
+@@ -1272,7 +1272,12 @@ void nsDisplayListBuilder::EnterPresShell(const nsIFrame* aReferenceFrame,
+ 
+   state->mCaretFrame = [&]() -> nsIFrame* {
+     RefPtr<nsCaret> caret = state->mPresShell->GetActiveCaret();
+-    nsIFrame* currentCaret = caret->GetPaintGeometry(&mCaretRect);
++    // mCaretRect is shared by every pres shell this builder enters. Only a
++    // shell with a caret to paint may set it: an in-process subdocument without
++    // one, entered while building its parent, must not empty the rect of the
++    // parent's caret (which would then be culled, as in the chrome document).
++    nsRect caretRect;
++    nsIFrame* currentCaret = caret->GetPaintGeometry(&caretRect);
+     if (!currentCaret) {
+       return nullptr;
+     }
+@@ -1289,6 +1294,7 @@ void nsDisplayListBuilder::EnterPresShell(const nsIFrame* aReferenceFrame,
+     // overflow area. Use flags to make sure we build display items for that
+     // frame instead.
+     MOZ_ASSERT(currentCaret->PresShell() == state->mPresShell);
++    mCaretRect = caretRect;
+     MarkFrameForDisplay(currentCaret, aReferenceFrame);
+     caret->SetLastPaintedFrame(currentCaret);
+     if (!mPaintedCarets.Contains(caret)) {
 diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
 index d4cf9a295e..0049cd8aaf 100644
 --- a/mfbt/ThreadLocal.h
@@ -1934,6 +1960,37 @@ index dce55a123f..fb2efbb2a6 100644
      if is_wasm:
          func = dependentlibs_wasm
      elif binary_type == ELF:
+diff --git a/toolkit/modules/ShortcutUtils.sys.mjs b/toolkit/modules/ShortcutUtils.sys.mjs
+index 0a2a5ac202..2ec631847f 100644
+--- a/toolkit/modules/ShortcutUtils.sys.mjs
++++ b/toolkit/modules/ShortcutUtils.sys.mjs
+@@ -95,7 +95,10 @@ export var ShortcutUtils = {
+     let elemString = "";
+     let haveCloverLeaf = false;
+     if (elemMod.match("accel")) {
+-      if (Services.appinfo.OS == "Darwin") {
++      // ⌘ is also the shortcut key where ui.key.accelKey says Meta (224 or 91),
++      // such as a desktop laid out like macOS.
++      const accelKey = Services.prefs.getIntPref("ui.key.accelKey", 0);
++      if (Services.appinfo.OS == "Darwin" || accelKey == 224 || accelKey == 91) {
+         haveCloverLeaf = true;
+       } else {
+         elemString +=
+@@ -141,9 +144,12 @@ export var ShortcutUtils = {
+     }
+ 
+     if (haveCloverLeaf) {
++      // Other platforms name the key "Win" or "Super"; show the ⌘ it is here.
+       elemString +=
+-        lazy.PlatformKeys.GetStringFromName("VK_COMMAND_OR_WIN") +
+-        lazy.PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR");
++        Services.appinfo.OS == "Darwin"
++          ? lazy.PlatformKeys.GetStringFromName("VK_COMMAND_OR_WIN") +
++            lazy.PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR")
++          : "\u2318";
+     }
+ 
+     return elemString;
 diff --git a/toolkit/moz.configure b/toolkit/moz.configure
 index b8c8a03c3d..0bc2cf1294 100644
 --- a/toolkit/moz.configure
