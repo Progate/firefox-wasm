@@ -5926,3 +5926,154 @@ diff --git a/storage/ObfuscatingVFS.cpp b/storage/ObfuscatingVFS.cpp
    }
  
    resetMethods.release();
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -15970,6 +15970,17 @@
+   value: ""
+   mirror: never
+ 
++# FireDog: reach https:// origins without doing TLS in this process. The
++# request goes as plaintext HTTP/1.1 to the origin's host and port, with the
++# request target in absolute form ("GET https://host/path HTTP/1.1"), for an
++# embedder that does the TLS itself (BrowserOS's gateway, which passes the
++# request to the host page's fetch()). Only for direct, non-loopback origins;
++# see nsHttpConnectionInfo::Init.
++- name: network.http.firedog.https_via_gateway
++  type: RelaxedAtomicBool
++  value: false
++  mirror: always
++
+ # Try and use HTTP2 when using SSL
+ - name: network.http.http2.enabled
+   type: RelaxedAtomicBool
+diff --git a/netwerk/protocol/http/nsHttpChannel.cpp b/netwerk/protocol/http/nsHttpChannel.cpp
+--- a/netwerk/protocol/http/nsHttpChannel.cpp
++++ b/netwerk/protocol/http/nsHttpChannel.cpp
+@@ -1840,6 +1840,15 @@ void nsHttpChannel::HandleAsyncNotModified() {
+   if (mLoadGroup) mLoadGroup->RemoveRequest(this, nullptr, mStatus);
+ }
+ 
++// FireDog: whether this https:// load goes without TLS because
++// network.http.firedog.https_via_gateway applied to its connection info (see
++// nsHttpConnectionInfo::Init). Otherwise an https:// URI always gets an
++// end-to-end SSL connection info, with or without a proxy.
++static bool IsHttpsViaGateway(nsIURI* aURI, nsHttpConnectionInfo* aConnInfo) {
++  return aConnInfo && aURI->SchemeIs("https") && !aConnInfo->EndToEndSSL() &&
++         !aConnInfo->UsingHttpProxy();
++}
++
+ nsresult nsHttpChannel::SetupChannelForTransaction() {
+   LOG((
+       "nsHttpChannel::SetupChannelForTransaction [this=%p, cos=%lu, inc=%d "
+@@ -1900,7 +1909,25 @@ nsresult nsHttpChannel::SetupChannelForTransaction() {
+     requestURI->SetLength(ref1);
+   }
+ 
+-  if (mConnectionInfo->UsingConnect() || !mConnectionInfo->UsingHttpProxy()) {
++  if (IsHttpsViaGateway(mURI, mConnectionInfo)) {
++    // The gateway learns the scheme only from the request line: an origin
++    // form target ("/index.html") reads as http:// on every port but 443.
++    // So send the absolute form, which an origin server must accept too
++    // (RFC 9112, 3.2.2), and keep the origin form in mPath as for a proxy.
++    mRequestHead.SetPath(*requestURI);
++    nsCOMPtr<nsIURI> exposableURI = nsIOService::CreateExposableURI(mURI);
++    rv = exposableURI->GetAsciiSpec(path);
++    if (NS_FAILED(rv)) return rv;
++    requestURI = &path;
++
++    int32_t ref = requestURI->FindChar('#');
++    if (ref != kNotFound) {
++      requestURI->SetLength(ref);
++    }
++
++    mRequestHead.SetVersion(gHttpHandler->HttpVersion());
++  } else if (mConnectionInfo->UsingConnect() ||
++             !mConnectionInfo->UsingHttpProxy()) {
+     mRequestHead.SetVersion(gHttpHandler->HttpVersion());
+   } else {
+     mRequestHead.SetPath(*requestURI);
+@@ -5686,7 +5713,10 @@ nsresult nsHttpChannel::OpenCacheInputStream(nsICacheEntry* cacheEntry,
+                                              bool startBuffering) {
+   nsresult rv;
+ 
+-  if (mURI->SchemeIs("https")) {
++  // FireDog: a response that came through the gateway was read without TLS
++  // in this process, so its cache entry has no security info. Requiring one
++  // would doom every such entry and refetch it.
++  if (mURI->SchemeIs("https") && !IsHttpsViaGateway(mURI, mConnectionInfo)) {
+     rv = cacheEntry->GetSecurityInfo(getter_AddRefs(mCachedSecurityInfo));
+     if (NS_FAILED(rv)) {
+       LOG(("failed to parse security-info [channel=%p, entry=%p]", this,
+diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.cpp b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+--- a/netwerk/protocol/http/nsHttpConnectionInfo.cpp
++++ b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include "nsHttpConnectionInfo.h"
+ #include "mozilla/HashFunctions.h"
++#include "mozilla/StaticPrefs_network.h"
+ 
+ #include "mozilla/net/DNS.h"
+ #include "mozilla/net/NeckoChannelParams.h"
+@@ -23,6 +24,7 @@
+ #include "nsHttpHandler.h"
+ #include "nsNetCID.h"
+ #include "nsProxyInfo.h"
++#include "nsReadableUtils.h"
+ #include "prnetdb.h"
+ 
+ static nsresult SHA256(const char* aPlainText, nsAutoCString& aResult) {
+@@ -80,6 +82,19 @@ uint64_t nsHttpConnectionInfo::GenerateNewWebTransportId() {
+   return ++id;
+ }
+ 
++// localhost, *.localhost and loopback addresses. Unlike IsLoopbackHostname()
++// this does not depend on the proxy hijacking prefs.
++static bool IsLoopbackOrigin(const nsACString& aHost) {
++  nsAutoCString host(aHost);
++  ToLowerCase(host);
++  if (host.EqualsLiteral("localhost") ||
++      StringEndsWith(host, ".localhost"_ns)) {
++    return true;
++  }
++  NetAddr addr;
++  return NS_SUCCEEDED(addr.InitFromString(host)) && addr.IsLoopbackAddr();
++}
++
+ void nsHttpConnectionInfo::Init(const nsACString& host, int32_t port,
+                                 const nsACString& npnToken,
+                                 const nsACString& username,
+@@ -89,6 +104,32 @@ void nsHttpConnectionInfo::Init(const nsACString& host, int32_t port,
+                                 bool aWebTransport) {
+   LOG(("Init nsHttpConnectionInfo @%p\n", this));
+ 
++  // FireDog: in BrowserOS this process cannot make TLS connections to the
++  // Internet. BrowserOS's gateway takes each plaintext HTTP request and
++  // replays it with the host page's fetch(), which does the TLS and applies
++  // the embedder's allowlist. So with network.http.firedog.https_via_gateway
++  // a direct https:// origin is reached as plaintext HTTP/1.1 to its own host
++  // and port, and nsHttpChannel::SetupChannelForTransaction writes the
++  // request target in absolute form so the gateway still sees the https://
++  // scheme. The rest of Necko then treats the connection like any plaintext
++  // one (no TLS socket, ALPN, HTTP/2, HTTPS RR or security info). Clones keep
++  // the explicit port and e2eSSL == false, so their hash key stays the same.
++  // The default port is resolved before e2eSSL is cleared, or DefaultPort()
++  // would pick 80. Proxies, HTTP/3, WebTransport and alternate routes keep
++  // TLS. Loopback hosts keep it too: they are servers inside the BrowserOS
++  // world that never reach the gateway and have no TLS, so https:// to them
++  // fails there as it would on a real network.
++  if (e2eSSL && !proxyInfo && !aIsHttp3 && !aWebTransport &&
++      mRoutedHost.IsEmpty() &&
++      StaticPrefs::network_http_firedog_https_via_gateway() &&
++      !IsLoopbackOrigin(host)) {
++    LOG(("nsHttpConnectionInfo @%p: https via gateway, without TLS\n", this));
++    e2eSSL = false;
++    if (port == -1) {
++      port = NS_HTTPS_DEFAULT_PORT;
++    }
++  }
++
+   mUsername = username;
+   mProxyInfo = proxyInfo;
+   mEndToEndSSL = e2eSSL;
