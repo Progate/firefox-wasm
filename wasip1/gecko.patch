@@ -5848,3 +5848,25 @@ index 0000000..ee1124d
 +already_AddRefed<nsIBidiKeyboard> nsIWidget::CreateBidiKeyboardInner() {
 +  return nullptr;
 +}
+diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselineInterpret.cpp
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -9852,8 +9852,18 @@
+ MethodStatus CanEnterPortableBaselineInterpreter(JSContext* cx,
+                                                  RunState& state) {
+   if (!JitOptions.portableBaselineInterpreter) {
++    return MethodStatus::Method_CantCompile;
++  }
++  // On WASI the per-op DEBUG_CHECK above is compiled out, so this interpreter
++  // never reaches a breakpoint or a single step. Scripts the debugger is
++  // watching (a breakpoint, stepping, or a debugger observing all execution)
++  // stay in the C++ interpreter, which handles both; checked before the
++  // JitScript test because a warm script already has one.
++#ifdef __wasi__
++  if (state.script()->isDebuggee()) {
+     return MethodStatus::Method_CantCompile;
+   }
++#endif
+   if (state.script()->hasJitScript()) {
+     return MethodStatus::Method_Compiled;
+   }
