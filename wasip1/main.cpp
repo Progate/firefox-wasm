@@ -48,7 +48,58 @@ static const NamedKey kNamedKeys[] = {
     {103, "ArrowUp", 38},  {104, "PageUp", 33},   {105, "ArrowLeft", 37},
     {106, "ArrowRight", 39}, {107, "End", 35},    {108, "ArrowDown", 40},
     {109, "PageDown", 34}, {110, "Insert", 45},   {111, "Delete", 46},
+    {59, "F1", 112},       {60, "F2", 113},       {61, "F3", 114},
+    {62, "F4", 115},       {63, "F5", 116},       {64, "F6", 117},
+    {65, "F7", 118},       {66, "F8", 119},       {67, "F9", 120},
+    {68, "F10", 121},      {87, "F11", 122},      {88, "F12", 123},
 };
+// KeyboardEvent.code for Linux input-event key codes (the US layout's
+// physical keys, as the UI Events code spec names them).
+static const char* domCode(int code) {
+  static const char* const kCodes[] = {
+      nullptr, "Escape", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5",
+      "Digit6", "Digit7", "Digit8", "Digit9", "Digit0", "Minus", "Equal",
+      "Backspace", "Tab", "KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyY",
+      "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight", "Enter",
+      "ControlLeft", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ",
+      "KeyK", "KeyL", "Semicolon", "Quote", "Backquote", "ShiftLeft",
+      "Backslash", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM",
+      "Comma", "Period", "Slash", "ShiftRight", "NumpadMultiply", "AltLeft",
+      "Space", "CapsLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
+      "F9", "F10", "NumLock", "ScrollLock", "Numpad7", "Numpad8", "Numpad9",
+      "NumpadSubtract", "Numpad4", "Numpad5", "Numpad6", "NumpadAdd",
+      "Numpad1", "Numpad2", "Numpad3", "Numpad0", "NumpadDecimal"};
+  if (code > 0 && code < (int)(sizeof(kCodes) / sizeof(kCodes[0]))) {
+    return kCodes[code];
+  }
+  switch (code) {
+    case 87: return "F11";
+    case 88: return "F12";
+    case 89: return "IntlRo";
+    case 92: return "Convert";
+    case 93: return "KanaMode";
+    case 94: return "NonConvert";
+    case 96: return "NumpadEnter";
+    case 97: return "ControlRight";
+    case 98: return "NumpadDivide";
+    case 100: return "AltRight";
+    case 102: return "Home";
+    case 103: return "ArrowUp";
+    case 104: return "PageUp";
+    case 105: return "ArrowLeft";
+    case 106: return "ArrowRight";
+    case 107: return "End";
+    case 108: return "ArrowDown";
+    case 109: return "PageDown";
+    case 110: return "Insert";
+    case 111: return "Delete";
+    case 117: return "NumpadEqual";
+    case 124: return "IntlYen";
+    case 125: return "MetaLeft";
+    case 126: return "MetaRight";
+  }
+  return nullptr;
+}
 // US layout characters for codes, so shortcuts (Ctrl+L, Ctrl+T) work when the
 // windowserver sends no text for a modified key.
 static char usCharacter(int code, bool shift) {
@@ -80,7 +131,8 @@ static void key(int down, int code, const std::string& text) {
   }
   for (const auto& named : kNamedKeys) {
     if (named.code == code) {
-      do_key(down ? 0 : 1, named.key, named.keyCode, code == 57 ? ' ' : 0, g_modifiers);
+      do_key(down ? 0 : 1, named.key, named.keyCode, code == 57 ? ' ' : 0, g_modifiers,
+             domCode(code));
       return;
     }
   }
@@ -96,7 +148,7 @@ static void key(int down, int code, const std::string& text) {
   else if ((first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) keyCode = first;
   // charCode only for a single ASCII character; other text keeps keyCode 0.
   int charCode = (character.size() == 1 && first >= 0x20 && first < 0x7f) ? first : 0;
-  do_key(down ? 0 : 1, character.c_str(), keyCode, charCode, g_modifiers);
+  do_key(down ? 0 : 1, character.c_str(), keyCode, charCode, g_modifiers, domCode(code));
 }
 
 static bool dispatch(WindowServer& window, const std::string& line) {

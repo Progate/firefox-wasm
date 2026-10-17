@@ -157,13 +157,18 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers) {
 // Build + dispatch one keyboard event of the given message through the widget.
 static void dispatch_key(nsIWidget* widget, mozilla::EventMessage msg,
                          const nsAString& key, int keyCode, int charCode,
-                         int modifiers) {
+                         int modifiers, const char* code) {
   using namespace mozilla;
   WidgetKeyboardEvent ev(true, msg, widget);
   KeyNameIndex kni = WidgetKeyboardEvent::GetKeyNameIndex(key);
   ev.mKeyNameIndex = kni;
   if (kni == KEY_NAME_INDEX_USE_STRING) ev.mKeyValue = key;
-  ev.mCodeNameIndex = CODE_NAME_INDEX_UNKNOWN;
+  // The physical key (KeyboardEvent.code), which shortcuts that hold Option
+  // need: on macOS Option changes the key's text (Option+I is "ˆ").
+  ev.mCodeNameIndex =
+      code && *code
+          ? WidgetKeyboardEvent::GetCodeNameIndex(NS_ConvertUTF8toUTF16(code))
+          : CODE_NAME_INDEX_UNKNOWN;
   ev.mModifiers = nsContentUtils::GetWidgetModifiers(modifiers);
   if (msg == eKeyPress && charCode) {
     // Printable keypress: mCharCode gates text insertion (IsInputtingText),
@@ -184,7 +189,7 @@ static void dispatch_key(nsIWidget* widget, mozilla::EventMessage msg,
 // dispatch a keypress for non-modifier keys (matching DOM ordering), which is
 // what drives text insertion + editor commands.
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
-                   int modifiers) {
+                   int modifiers, const char* code) {
   using namespace mozilla;
   if (!g_docShell) return;
   PresShell* ps = g_docShell->GetPresShell();
@@ -198,12 +203,12 @@ void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
   bool isModifierKey = WidgetKeyboardEvent::GetModifierForKeyName(kni) !=
                        MODIFIER_NONE;
   if (evType == 0) {
-    dispatch_key(widget, eKeyDown, key, keyCode, 0, modifiers);
+    dispatch_key(widget, eKeyDown, key, keyCode, 0, modifiers, code);
     if (!isModifierKey) {
-      dispatch_key(widget, eKeyPress, key, keyCode, charCode, modifiers);
+      dispatch_key(widget, eKeyPress, key, keyCode, charCode, modifiers, code);
     }
   } else {
-    dispatch_key(widget, eKeyUp, key, keyCode, 0, modifiers);
+    dispatch_key(widget, eKeyUp, key, keyCode, 0, modifiers, code);
   }
 }
 
