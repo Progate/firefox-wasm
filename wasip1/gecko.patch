@@ -1,0 +1,5464 @@
+diff --git a/accessible/other/Platform.cpp b/accessible/other/Platform.cpp
+index bbb60f5f49..0ee021016d 100644
+--- a/accessible/other/Platform.cpp
++++ b/accessible/other/Platform.cpp
+@@ -36,4 +36,8 @@ void a11y::PlatformAnnouncementEvent(Accessible* aTarget,
+                                      const nsAString& aAnnouncement,
+                                      uint16_t aPriority) {}
+ 
++uint64_t a11y::GetCacheDomainsForKnownClients(uint64_t aCacheDomains) {
++  return aCacheDomains;
++}
++
+ void a11y::GetHumanReadableInstantiatorStr(nsAString& aResult) {}
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index 83e52b260c..d44baebdd3 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -407,7 +407,11 @@ bin/libfreebl_64int_3.so
+ 
+ ; [ Ping Sender ]
+ ;
++; The headless-only toolkit (the wasm builds) runs without the separate
++; pingsender program.
++#ifndef MOZ_WIDGET_HEADLESS
+ @BINPATH@/pingsender@BIN_SUFFIX@
++#endif
+ 
+ ; [ Native Messaging Host Proxy ]
+ ;
+diff --git a/build/moz.configure/bindgen.configure b/build/moz.configure/bindgen.configure
+index 450d6927c9..a210b1b0e2 100644
+--- a/build/moz.configure/bindgen.configure
++++ b/build/moz.configure/bindgen.configure
+@@ -345,6 +345,11 @@ def basic_bindgen_cflags(
+         # matches the emscripten sysroot.
+         args += ["--target=wasm32-unknown-emscripten", "-fvisibility=default"]
+ 
++    if target.os == "WASI":
++        # Same reason as emscripten: parse with the wasm target the C++ side is
++        # compiled for. The sysroot comes from BINDGEN_CFLAGS.
++        args += ["--target=wasm32-wasip1-threads", "-pthread", "-fvisibility=default"]
++
+     args += {
+         "WINNT": [
+             "-DWIN32=1",
+diff --git a/build/moz.configure/rust.configure b/build/moz.configure/rust.configure
+index a89585f6f8..e847b6fee4 100644
+--- a/build/moz.configure/rust.configure
++++ b/build/moz.configure/rust.configure
+@@ -262,7 +262,11 @@ def rust_supported_targets(rustc):
+     data = {}
+     for t in out:
+         try:
+-            info = split_triplet(t, allow_wasi=True)
++            if t == "wasm32-wasip1-threads":
++                # Rust omits the vendor here, so the third field is not an OS.
++                info = split_triplet("wasm32-unknown-wasip1", allow_wasi=True)
++            else:
++                info = split_triplet(t, allow_wasi=True)
+         except ValueError:
+             if t.startswith("thumb"):
+                 cpu, rest = t.split("-", 1)
+@@ -300,6 +304,12 @@ def detect_rustc_target(
+         elif not candidates:
+             return None
+ 
++        # BrowserOS runs Gecko with wasi-threads.
++        if host_or_target.kernel == "WASI":
++            for c in candidates:
++                if c.rust_target == "wasm32-wasip1-threads":
++                    return c.rust_target
++
+         # We have multiple candidates. There are two cases where we can try to
+         # narrow further down using extra information from the build system.
+         # - For windows targets, correlate with the C compiler type
+diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
+index 3623a892f2..ce7ad26b43 100644
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -2220,7 +2220,9 @@ set_define("_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", True, when=using_libcxx)
+ @depends(target, build_environment)
+ def visibility_flags(target, env):
+     if target.os != "WINNT":
+-        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD"):
++        # WASI: wasi-sdk's libc++ declares its exported classes with default
++        # visibility, which conflicts with gcc_hidden.h's pragma.
++        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD", "WASI"):
+             return ("-fvisibility=hidden", "-fvisibility-inlines-hidden")
+         return (
+             "-I%s/system_wrappers" % os.path.join(env.dist),
+@@ -2231,7 +2233,7 @@ def visibility_flags(target, env):
+ 
+ @depends(target, visibility_flags)
+ def wrap_system_includes(target, visibility_flags):
+-    if visibility_flags and target.kernel != "Darwin":
++    if visibility_flags and target.kernel not in ("Darwin", "WASI"):
+         return True
+ 
+ 
+@@ -3431,6 +3433,18 @@ def make_shared_library(target, compiler):
+     flags = ["$(DSO_LDOPTS)"]
+     output = ["-o", "$@"]
+ 
++    if target.os == "WASI":
++        # wasm-ld has no shared libraries for WASI. Libraries are relocatable
++        # objects that the embedder links into one module, so libc and the
++        # emulation libraries are left for that final link.
++        # rules.mk appends the program link flags (-pthread and ELF -z flags);
++        # the wrapper drops them, since wasm-ld refuses shared memory for -r.
++        link = ["$(PYTHON3)", "$(topsrcdir)/build/wasi-relocatable-link.py"]
++        return namespace(
++            mkshlib=link + ['"$(CXX)"'] + output,
++            mkcshlib=link + ['"$(CC)"'] + output,
++        )
++
+     if target.kernel == "Darwin":
+         soname = []
+     elif target.os == "EMSCRIPTEN":
+diff --git a/config/external/nspr/pr/moz.build b/config/external/nspr/pr/moz.build
+index 003cf4e481..9f5c0b5072 100644
+--- a/config/external/nspr/pr/moz.build
++++ b/config/external/nspr/pr/moz.build
+@@ -75,7 +75,7 @@ elif CONFIG["OS_TARGET"] == "SunOS":
+         # macros (ENTRY/SET_SIZE); without preprocessing it won't build.
+         ASFLAGS += ["-x", "assembler-with-cpp"]
+         SOURCES += ["/nsprpub/pr/src/md/unix/os_SunOS_sparcv9.s"]
+-elif CONFIG["OS_TARGET"] == "EMSCRIPTEN":
++elif CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI"):
+     # emscripten presents a Linux-like POSIX environment. Single-threaded wasm,
+     # so no thread-context-switch assembly; use the generic unix md source.
+     DEFINES["LINUX"] = True
+diff --git a/config/external/nspr/prcpucfg.h b/config/external/nspr/prcpucfg.h
+index 8ce3236647..fb1e60ea03 100644
+--- a/config/external/nspr/prcpucfg.h
++++ b/config/external/nspr/prcpucfg.h
+@@ -21,7 +21,7 @@
+ #  include "md/_openbsd.cfg"
+ #elif defined(__linux__)
+ #  include "md/_linux.cfg"
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ /* emscripten is Linux-like; _linux.cfg has a __wasm32__ data-model branch. */
+ #  include "md/_linux.cfg"
+ #elif defined(__sun__)
+diff --git a/extensions/auth/nsAuthSambaNTLM.cpp b/extensions/auth/nsAuthSambaNTLM.cpp
+index c5581eb618..97a98af6bb 100644
+--- a/extensions/auth/nsAuthSambaNTLM.cpp
++++ b/extensions/auth/nsAuthSambaNTLM.cpp
+@@ -14,6 +14,7 @@
+ #include <stdlib.h>
+ #include <signal.h>
+ #include <sys/wait.h>
++#include <unistd.h>
+ 
+ nsAuthSambaNTLM::nsAuthSambaNTLM() = default;
+ 
+diff --git a/gfx/angle/checkout/include/EGL/eglplatform.h b/gfx/angle/checkout/include/EGL/eglplatform.h
+index 777e985588..aaf8d5f6ca 100644
+--- a/gfx/angle/checkout/include/EGL/eglplatform.h
++++ b/gfx/angle/checkout/include/EGL/eglplatform.h
+@@ -70,7 +70,7 @@ typedef HWND    EGLNativeWindowType;
+ typedef IInspectable* EGLNativeWindowType;
+ #endif
+ 
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ 
+ typedef int EGLNativeDisplayType;
+ typedef int EGLNativePixmapType;
+diff --git a/gfx/angle/checkout/src/common/platform.h b/gfx/angle/checkout/src/common/platform.h
+index fd0a009b5e..1f6957d099 100644
+--- a/gfx/angle/checkout/src/common/platform.h
++++ b/gfx/angle/checkout/src/common/platform.h
+@@ -23,7 +23,7 @@
+ #elif defined(__ggp__)
+ #    define ANGLE_PLATFORM_GGP 1
+ #    define ANGLE_PLATFORM_POSIX 1
+-#elif defined(__linux__) || defined(__EMSCRIPTEN__)
++#elif defined(__linux__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #    define ANGLE_PLATFORM_LINUX 1
+ #    define ANGLE_PLATFORM_POSIX 1
+ #elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) ||              \
+diff --git a/gfx/angle/checkout/src/common/system_utils_posix.cpp b/gfx/angle/checkout/src/common/system_utils_posix.cpp
+index ab0faee0bc..6e9bd96efc 100644
+--- a/gfx/angle/checkout/src/common/system_utils_posix.cpp
++++ b/gfx/angle/checkout/src/common/system_utils_posix.cpp
+@@ -40,6 +40,11 @@ namespace
+ {
+ std::string GetModulePath(void *moduleOrSymbol)
+ {
++#if defined(__wasi__)
++    // WASI has no dynamic loader; the program is one module without a path.
++    (void)moduleOrSymbol;
++    return "";
++#else
+     Dl_info dlInfo;
+     if (dladdr(moduleOrSymbol, &dlInfo) == 0)
+     {
+@@ -47,6 +52,7 @@ std::string GetModulePath(void *moduleOrSymbol)
+     }
+ 
+     return dlInfo.dli_fname;
++#endif
+ }
+ 
+ void *OpenPosixLibrary(const std::string &fullPath, int extraFlags, std::string *errorOut)
+diff --git a/gfx/cairo/cairo/src/cairo-ft-font.c b/gfx/cairo/cairo/src/cairo-ft-font.c
+index 02481e8b06..01465da267 100644
+--- a/gfx/cairo/cairo/src/cairo-ft-font.c
++++ b/gfx/cairo/cairo/src/cairo-ft-font.c
+@@ -44,6 +44,14 @@
+ #include "cairo-error-private.h"
+ #include "cairo-image-surface-private.h"
+ #include "cairo-ft-private.h"
++
++/* Optional FreeType functions are looked up at run time where FreeType is a
++ * shared library. WASI has no dlsym; the in-tree FreeType is linked in. */
++#ifdef __wasi__
++#define CAIRO_FT_FUNC(name) ((void *) &name)
++#else
++#define CAIRO_FT_FUNC(name) dlsym (RTLD_DEFAULT, #name)
++#endif
+ #include "cairo-list-inline.h"
+ #include "cairo-path-private.h"
+ #include "cairo-pattern-private.h"
+@@ -520,9 +528,9 @@ _cairo_ft_unscaled_font_init (cairo_ft_unscaled_font_t *unscaled,
+ 
+         static int firstTime = 1;
+         if (firstTime) {
+-            getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-            doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-            getVarDesignCoords = (GetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Design_Coordinates");
++            getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++            doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++            getVarDesignCoords = (GetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Design_Coordinates);
+             firstTime = 0;
+         }
+ 
+@@ -2393,10 +2401,10 @@ cairo_ft_apply_variations (FT_Face                 face,
+ 
+     static int firstTime = 1;
+     if (firstTime) {
+-        getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-        doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-        getVarDesignCoords = (GetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Design_Coordinates");
+-        setVarDesignCoords = (SetVarDesignCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Set_Var_Design_Coordinates");
++        getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++        doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++        getVarDesignCoords = (GetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Design_Coordinates);
++        setVarDesignCoords = (SetVarDesignCoordsFunc) CAIRO_FT_FUNC (FT_Set_Var_Design_Coordinates);
+         firstTime = 0;
+     }
+ 
+@@ -3738,9 +3746,9 @@ _cairo_ft_is_synthetic (void	        *abstract_font,
+ 
+     static int firstTime = 1;
+     if (firstTime) {
+-        getVar = (GetVarFunc) dlsym (RTLD_DEFAULT, "FT_Get_MM_Var");
+-        doneVar = (DoneVarFunc) dlsym (RTLD_DEFAULT, "FT_Done_MM_Var");
+-        getVarBlendCoords = (GetVarBlendCoordsFunc) dlsym (RTLD_DEFAULT, "FT_Get_Var_Blend_Coordinates");
++        getVar = (GetVarFunc) CAIRO_FT_FUNC (FT_Get_MM_Var);
++        doneVar = (DoneVarFunc) CAIRO_FT_FUNC (FT_Done_MM_Var);
++        getVarBlendCoords = (GetVarBlendCoordsFunc) CAIRO_FT_FUNC (FT_Get_Var_Blend_Coordinates);
+         firstTime = 0;
+     }
+ 
+diff --git a/gfx/harfbuzz/src/hb.hh b/gfx/harfbuzz/src/hb.hh
+index 7e2837f99a..fa83a0f2ec 100644
+--- a/gfx/harfbuzz/src/hb.hh
++++ b/gfx/harfbuzz/src/hb.hh
+@@ -94,6 +94,11 @@
+ #pragma GCC diagnostic error   "-Wunused-local-typedefs"
+ #pragma GCC diagnostic error   "-Wunused-value"
+ #pragma GCC diagnostic error   "-Wunused-variable"
++#ifdef __clang__
++/* clang 23 counts unused function templates in -Wunused; HarfBuzz's generic
++ * function objects leave some unused by design. */
++#pragma GCC diagnostic ignored "-Wunused-template"
++#endif
+ #pragma GCC diagnostic error   "-Wvla"
+ #pragma GCC diagnostic error   "-Wwrite-strings"
+ #endif
+diff --git a/gfx/layers/wr/WebRenderBridgeParent.cpp b/gfx/layers/wr/WebRenderBridgeParent.cpp
+index 05436c28bf..df1a3bf3b2 100644
+--- a/gfx/layers/wr/WebRenderBridgeParent.cpp
++++ b/gfx/layers/wr/WebRenderBridgeParent.cpp
+@@ -924,6 +924,12 @@ bool WebRenderBridgeParent::UpdateResources(
+         }
+         break;
+       }
++#else
++      case OpUpdateResource::TOpAddHostGpuExternalImage:
++        // Host GPU images come only from the emscripten embedding.
++        MOZ_ASSERT_UNREACHABLE("Host GPU image without a host GPU");
++        success = false;
++        break;
+ #endif
+       case OpUpdateResource::TOpPushExternalImageForTexture: {
+         const auto& op = cmd.get_OpPushExternalImageForTexture();
+diff --git a/gfx/skia/skia/include/private/base/SkFeatures.h b/gfx/skia/skia/include/private/base/SkFeatures.h
+index 9ea8063a62..0b788709fb 100644
+--- a/gfx/skia/skia/include/private/base/SkFeatures.h
++++ b/gfx/skia/skia/include/private/base/SkFeatures.h
+@@ -19,7 +19,7 @@
+         #define SK_BUILD_FOR_WIN
+     #elif defined(ANDROID) || defined(__ANDROID__)
+         #define SK_BUILD_FOR_ANDROID
+-    #elif defined(__EMSCRIPTEN__)
++    #elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+         // WASM toolchains expose a Unix-like compilation environment, but it is
+         // not Unix (e.g. posix signals are not supported).
+         #define SK_BUILD_FOR_WASM
+diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
+index a1e7c49d18..82f35c0e2f 100644
+--- a/gfx/thebes/gfxFT2FontList.cpp
++++ b/gfx/thebes/gfxFT2FontList.cpp
+@@ -1633,6 +1633,34 @@ void gfxFT2FontList::FindFonts() {
+         FindFontsInDir(localPath, mFontNameCache.get());
+       }
+     }
++#ifdef MOZ_WIDGET_HEADLESS
++    // The headless-only toolkit ships its fonts with the GRE. When the
++    // application directory is not the GRE (Firefox's front-end lives in
++    // <GRE>/browser), look there too.
++    nsCOMPtr<nsIFile> greDir;
++    if (NS_SUCCEEDED(dirSvc->Get(NS_GRE_DIR, NS_GET_IID(nsIFile),
++                                 getter_AddRefs(greDir)))) {
++      bool same = false;
++      nsCOMPtr<nsIFile> processDir;
++      if (NS_SUCCEEDED(dirSvc->Get(NS_XPCOM_CURRENT_PROCESS_DIR,
++                                   NS_GET_IID(nsIFile),
++                                   getter_AddRefs(processDir)))) {
++        greDir->Equals(processDir, &same);
++      }
++      if (!same) {
++        greDir->AppendNative("fonts"_ns);
++        nsCString grePath;
++        if (NS_SUCCEEDED(greDir->GetNativePath(grePath))) {
++          FindFontsInDir(grePath, mFontNameCache.get());
++        }
++      }
++    }
++    // The system's fonts, where fontconfig looks on Linux (fonts for other
++    // scripts, such as Japanese, are installed there by the OS).
++    for (const char* root : {"/usr/share/fonts", "/usr/local/share/fonts"}) {
++      FindFontsInTree(nsCString(root), mFontNameCache.get(), 4);
++    }
++#endif
+   }
+ 
+   // look for locally-added fonts in a "fonts" subdir of the profile
+@@ -1675,6 +1703,34 @@ void gfxFT2FontList::WriteCache() {
+   LOG(("Done with writecache"));
+ }
+ 
++#ifdef MOZ_WIDGET_HEADLESS
++void gfxFT2FontList::FindFontsInTree(const nsCString& aDir,
++                                     FontNameCache* aFNC, int aDepth) {
++  FindFontsInDir(aDir, aFNC);
++  if (aDepth <= 0) {
++    return;
++  }
++  DIR* d = opendir(aDir.get());
++  if (!d) {
++    return;
++  }
++  struct dirent* ent = nullptr;
++  while ((ent = readdir(d)) != nullptr) {
++    if (ent->d_name[0] == '.') {
++      continue;
++    }
++    nsAutoCString path(aDir);
++    path.Append('/');
++    path.Append(ent->d_name);
++    struct stat info;
++    if (stat(path.get(), &info) == 0 && S_ISDIR(info.st_mode)) {
++      FindFontsInTree(path, aFNC, aDepth - 1);
++    }
++  }
++  closedir(d);
++}
++#endif
++
+ void gfxFT2FontList::FindFontsInDir(const nsCString& aDir,
+                                     FontNameCache* aFNC) {
+   static const char* sStandardFonts[] = {"DroidSans.ttf",
+diff --git a/gfx/thebes/gfxFT2FontList.h b/gfx/thebes/gfxFT2FontList.h
+index c2ccbc203c..ce3aa561c7 100644
+--- a/gfx/thebes/gfxFT2FontList.h
++++ b/gfx/thebes/gfxFT2FontList.h
+@@ -254,6 +254,10 @@ class gfxFT2FontList final : public gfxPlatformFontList {
+ 
+   void FindFontsInOmnijar(FontNameCache* aCache) MOZ_REQUIRES(mLock);
+ 
++#ifdef MOZ_WIDGET_HEADLESS
++  // FindFontsInDir for aDir and the directories below it, aDepth levels deep.
++  void FindFontsInTree(const nsCString& aDir, FontNameCache* aFNC, int aDepth);
++#endif
+   void FindFontsInDir(const nsCString& aDir, FontNameCache* aFNC)
+       MOZ_REQUIRES(mLock);
+ 
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index cc508f74d6..9e55161c8e 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -16,8 +16,10 @@ use std::ops::Range;
+ #[cfg(target_os = "android")]
+ use std::os::raw::c_int;
+ use std::os::raw::{c_char, c_float, c_void};
+-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
++#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "wasi")))]
+ use std::os::unix::ffi::OsStringExt;
++#[cfg(target_os = "wasi")]
++use std::os::wasi::ffi::OsStringExt;
+ #[cfg(target_os = "windows")]
+ use std::os::windows::ffi::OsStringExt;
+ use std::path::PathBuf;
+diff --git a/gfx/webrender_bindings/src/moz2d_renderer.rs b/gfx/webrender_bindings/src/moz2d_renderer.rs
+index c885ba051e..2cfe02f195 100644
+--- a/gfx/webrender_bindings/src/moz2d_renderer.rs
++++ b/gfx/webrender_bindings/src/moz2d_renderer.rs
+@@ -50,8 +50,10 @@ use winapi::um::errhandlingapi::GetLastError;
+ 
+ #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+ use std::ffi::CString;
+-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
++#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "wasi")))]
+ use std::os::unix::ffi::OsStrExt;
++#[cfg(target_os = "wasi")]
++use std::os::wasi::ffi::OsStrExt;
+ 
+ /// Local print-debugging utility
+ macro_rules! dlog {
+diff --git a/gfx/wgpu_bindings/Cargo.toml b/gfx/wgpu_bindings/Cargo.toml
+index e56d413fdd..f3a075ff42 100644
+--- a/gfx/wgpu_bindings/Cargo.toml
++++ b/gfx/wgpu_bindings/Cargo.toml
+@@ -83,8 +83,14 @@ serde_json = "1"
+ nsstring = { path = "../../xpcom/rust/nsstring" }
+ static_prefs = { path = "../../modules/libpref/init/static_prefs" }
+ arrayvec = "0.7"
+-ash = "0.38"
+ glean = { workspace = true }
+ firefox-on-glean = { path = "../../toolkit/components/glean/api" }
+ moz_task = { path = "../../xpcom/rust/moz_task" }
+ futures-channel = "0.3"
++
++[target.'cfg(not(target_os = "wasi"))'.dependencies]
++ash = "0.38"
++
++# WASI has no dlopen, so leave out ash's Vulkan loader.
++[target.'cfg(target_os = "wasi")'.dependencies]
++ash = { version = "0.38", default-features = false, features = ["debug", "std"] }
+diff --git a/gfx/wr/wr_glyph_rasterizer/Cargo.toml b/gfx/wr/wr_glyph_rasterizer/Cargo.toml
+index de3ffa110e..86e098f42b 100644
+--- a/gfx/wr/wr_glyph_rasterizer/Cargo.toml
++++ b/gfx/wr/wr_glyph_rasterizer/Cargo.toml
+@@ -38,7 +38,7 @@ glutin-winit = "0.5"
+ rayon = "1"
+ winit = "0.30"
+ 
+-[target.'cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies]
++[target.'cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "macos", target_os = "ios")))))'.dependencies]
+ freetype = { version = "0.7", default-features = false }
+ libc = "0.2"
+ 
+diff --git a/gfx/wr/wr_glyph_rasterizer/src/lib.rs b/gfx/wr/wr_glyph_rasterizer/src/lib.rs
+index e83a95bae5..5e04077481 100644
+--- a/gfx/wr/wr_glyph_rasterizer/src/lib.rs
++++ b/gfx/wr/wr_glyph_rasterizer/src/lib.rs
+@@ -41,7 +41,7 @@ extern crate malloc_size_of;
+ pub mod platform {
+     #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub use crate::platform::macos::font;
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "ios", target_os = "macos")))))]
++    #[cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "ios", target_os = "macos")))))]
+     pub use crate::platform::unix::font;
+     #[cfg(target_os = "windows")]
+     pub use crate::platform::windows::font;
+@@ -50,7 +50,7 @@ pub mod platform {
+     pub mod macos {
+         pub mod font;
+     }
+-    #[cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))]
++    #[cfg(any(target_os = "android", target_os = "wasi", all(unix, not(any(target_os = "macos", target_os = "ios")))))]
+     pub mod unix {
+         pub mod font;
+     }
+diff --git a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs b/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
+index 586893df59..7342960b64 100644
+--- a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
++++ b/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
+@@ -26,7 +26,7 @@ use crate::gamma_lut::{ColorLut, GammaLut};
+ use crate::rasterizer::{FontInstance, GlyphFormat, GlyphKey};
+ use crate::rasterizer::{GlyphRasterError, GlyphRasterResult, RasterizedGlyph};
+ use crate::types::FastHashMap;
+-#[cfg(any(not(target_os = "android"), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_os = "wasi")), feature = "dynamic_freetype"))]
+ use libc::{dlsym, RTLD_DEFAULT};
+ use libc::free;
+ use std::{cmp, mem, ptr, slice};
+@@ -76,7 +76,7 @@ pub fn unimplemented(error: FT_Error) -> bool {
+ }
+ 
+ // Use dlsym to check for symbols. If not available. just return an unimplemented error.
+-#[cfg(any(not(target_os = "android"), feature = "dynamic_freetype"))]
++#[cfg(any(not(any(target_os = "android", target_os = "wasi")), feature = "dynamic_freetype"))]
+ macro_rules! ft_dyn_fn {
+     ($func_name:ident($($arg_name:ident:$arg_type:ty),*) -> FT_Error) => {
+         #[allow(non_snake_case)]
+@@ -98,8 +98,8 @@ macro_rules! ft_dyn_fn {
+     }
+ }
+ 
+-// On Android, just statically link in the symbols...
+-#[cfg(all(target_os = "android", not(feature = "dynamic_freetype")))]
++// On Android and WASI (no dlsym), just statically link in the symbols...
++#[cfg(all(any(target_os = "android", target_os = "wasi"), not(feature = "dynamic_freetype")))]
+ macro_rules! ft_dyn_fn {
+     ($($proto:tt)+) => { extern "C" { fn $($proto)+; } }
+ }
+diff --git a/ipc/chromium/moz.build b/ipc/chromium/moz.build
+index b17bba0adb..9931f1aef1 100644
+--- a/ipc/chromium/moz.build
++++ b/ipc/chromium/moz.build
+@@ -129,11 +129,16 @@ if CONFIG["TARGET_KERNEL"] == "Linux":
+ # built and base::Time/TimeTicks::Now are undefined. time_posix.cc uses
+ # gettimeofday + clock_gettime(CLOCK_MONOTONIC) (the mach path is XP_DARWIN-only),
+ # both available under emscripten.
+-if CONFIG["OS_TARGET"] == "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI"):
+     SOURCES += [
+         "src/base/time_posix.cc",
+     ]
+ 
++if CONFIG["OS_TARGET"] == "WASI":
++    SOURCES += [
++        "src/base/process_util_wasi.cc",
++    ]
++
+ if CONFIG["TARGET_KERNEL"] == "SunOS":
+     SOURCES += [
+         "src/base/process_util_linux.cc",
+diff --git a/ipc/chromium/src/base/platform_thread.h b/ipc/chromium/src/base/platform_thread.h
+index bb5c1525a3..c1e4ac7026 100644
+--- a/ipc/chromium/src/base/platform_thread.h
++++ b/ipc/chromium/src/base/platform_thread.h
+@@ -32,7 +32,7 @@ typedef lwpid_t PlatformThreadId;
+ #  elif defined(XP_DARWIN)
+ #    include <mach/mach.h>
+ typedef mach_port_t PlatformThreadId;
+-#  elif defined(__EMSCRIPTEN__)
++#  elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #    include <unistd.h>
+ typedef pid_t PlatformThreadId;
+ #  endif
+diff --git a/ipc/chromium/src/base/platform_thread_posix.cc b/ipc/chromium/src/base/platform_thread_posix.cc
+index 87e6af4154..58eb2ea264 100644
+--- a/ipc/chromium/src/base/platform_thread_posix.cc
++++ b/ipc/chromium/src/base/platform_thread_posix.cc
+@@ -58,7 +58,7 @@ PlatformThreadId PlatformThread::CurrentId() {
+   return lwp_gettid();
+ #elif defined(XP_FREEBSD)
+   return pthread_getthreadid_np();
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // Single-threaded wasm: no kernel TID; pthread_self() is a stable identifier.
+   return (PlatformThreadId)(intptr_t)(pthread_self());
+ #endif
+diff --git a/ipc/chromium/src/base/process_util_posix.cc b/ipc/chromium/src/base/process_util_posix.cc
+index 8d1c17c768..79f0240897 100644
+--- a/ipc/chromium/src/base/process_util_posix.cc
++++ b/ipc/chromium/src/base/process_util_posix.cc
+@@ -123,7 +123,8 @@ void CloseSuperfluousFds(void* aCtx, bool (*aShouldPreserve)(void*, int)) {
+ #if defined(ANDROID)
+   static const rlim_t kSystemDefaultMaxFds = 1024;
+   static const char kFDDir[] = "/proc/self/fd";
+-#elif defined(XP_LINUX) || defined(XP_SOLARIS) || defined(__EMSCRIPTEN__)
++#elif defined(XP_LINUX) || defined(XP_SOLARIS) || defined(__EMSCRIPTEN__) || \
++    defined(__wasi__)
+   static const rlim_t kSystemDefaultMaxFds = 8192;
+   static const char kFDDir[] = "/proc/self/fd";
+ #elif defined(XP_DARWIN)
+diff --git a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
+index fb146b5dd4..65a4dd8fc4 100644
+--- a/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
++++ b/ipc/chromium/src/third_party/libevent/emscripten/event2/event-config.h
+@@ -42,6 +42,12 @@
+ /* #undef EVENT__HAVE_ARC4RANDOM_BUF */
+ #endif
+ 
++/* wasi-libc has arc4random and arc4random_buf. */
++#ifdef __wasi__
++#define EVENT__HAVE_ARC4RANDOM 1
++#define EVENT__HAVE_ARC4RANDOM_BUF 1
++#endif
++
+ /* Define to 1 if you have the <arpa/inet.h> header file. */
+ #define EVENT__HAVE_ARPA_INET_H 1
+ 
+@@ -219,7 +225,9 @@
+ #define EVENT__HAVE_SA_FAMILY_T 1
+ 
+ /* Define to 1 if you have the `select' function. */
++#ifndef __wasi__
+ #define EVENT__HAVE_SELECT 1
++#endif
+ 
+ /* Define to 1 if you have the `sendfile' function. */
+ /* #undef EVENT__HAVE_SENDFILE */
+@@ -490,7 +498,7 @@
+ #define EVENT__SIZEOF_LONG_LONG 8
+ 
+ /* The size of `off_t', as computed by sizeof. */
+-#if defined(__LP64__) || defined(__EMSCRIPTEN__) || \
++#if defined(__LP64__) || defined(__EMSCRIPTEN__) || defined(__wasi__) || \
+     (defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS == 64)
+ #define EVENT__SIZEOF_OFF_T 8
+ #else
+@@ -515,7 +523,7 @@
+ #endif
+ 
+ /* The size of `time_t', as computed by sizeof. */
+-#if defined(__LP64__) || defined(__EMSCRIPTEN__)
++#if defined(__LP64__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #define EVENT__SIZEOF_TIME_T 8
+ #else
+ #define EVENT__SIZEOF_TIME_T 4
+diff --git a/ipc/chromium/src/third_party/libevent/time-internal.h b/ipc/chromium/src/third_party/libevent/time-internal.h
+index e79e6a528d..d848e9d7fa 100644
+--- a/ipc/chromium/src/third_party/libevent/time-internal.h
++++ b/ipc/chromium/src/third_party/libevent/time-internal.h
+@@ -43,7 +43,10 @@
+ extern "C" {
+ #endif
+ 
+-#if defined(EVENT__HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
++/* wasi-libc's clockid_t is a pointer, not the int libevent stores; WASI uses
++ * the gettimeofday fallback. */
++#if defined(EVENT__HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC) && \
++    !defined(__wasi__)
+ #define HAVE_POSIX_MONOTONIC
+ #elif defined(EVENT__HAVE_MACH_ABSOLUTE_TIME)
+ #define HAVE_MACH_MONOTONIC
+diff --git a/ipc/chromium/src/third_party/libeventcommon.mozbuild b/ipc/chromium/src/third_party/libeventcommon.mozbuild
+index 0b6f044937..95b659c899 100644
+--- a/ipc/chromium/src/third_party/libeventcommon.mozbuild
++++ b/ipc/chromium/src/third_party/libeventcommon.mozbuild
+@@ -10,7 +10,7 @@ elif CONFIG['TARGET_KERNEL'] == 'SunOS':
+     libevent_include_suffix = 'solaris'
+ elif CONFIG['TARGET_OS'] == 'Android':
+     libevent_include_suffix = 'android'
+-elif CONFIG['TARGET_KERNEL'] == 'EMSCRIPTEN':
++elif CONFIG['TARGET_KERNEL'] in ('EMSCRIPTEN', 'WASI'):
+     # wasm: linux-like but without epoll/eventfd/sendfile/timerfd; poll/select only.
+     libevent_include_suffix = 'emscripten'
+ else:
+diff --git a/ipc/chromium/src/third_party/moz.build b/ipc/chromium/src/third_party/moz.build
+index fd83f2348f..4c8aac7ab7 100644
+--- a/ipc/chromium/src/third_party/moz.build
++++ b/ipc/chromium/src/third_party/moz.build
+@@ -36,11 +36,17 @@ UNIFIED_SOURCES += [
+     'libevent/listener.c',
+     'libevent/log.c',
+     'libevent/poll.c',
+-    'libevent/select.c',
+     'libevent/signal.c',
+     'libevent/strlcpy.c',
+ ]
+ 
++# wasi-libc's fd_set is a list of fds, not the bitmask select.c edits; WASI
++# uses the poll backend.
++if CONFIG["TARGET_KERNEL"] != "WASI":
++    UNIFIED_SOURCES += [
++        'libevent/select.c',
++    ]
++
+ SOURCES += [
+     'libevent/bufferevent_pair.c',       # conflicting types errors
+     # 'libevent/evrpc.c', # Unused file. # conflicting TAILQ_ENTRY definition
+diff --git a/ipc/glue/SharedMemoryPlatform_posix.cpp b/ipc/glue/SharedMemoryPlatform_posix.cpp
+index e9ee2054b2..987ab0ff8f 100644
+--- a/ipc/glue/SharedMemoryPlatform_posix.cpp
++++ b/ipc/glue/SharedMemoryPlatform_posix.cpp
+@@ -37,7 +37,7 @@
+ #include "prenv.h"
+ #include "nsXULAppAPI.h"  // for XRE_IsParentProcess
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ #  include "mozilla/StaticMutex.h"
+ #  include <map>
+ #  include <stdlib.h>
+@@ -46,7 +46,7 @@
+ 
+ namespace mozilla::ipc::shared_memory {
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // emscripten has broken primitives for IPC shared memory:
+ //   - mmap(fd, MAP_SHARED) does NOT map the object; it returns private zero-filled
+ //     memory, so writes via one mapping are invisible to another.
+@@ -443,7 +443,7 @@ bool Platform::Freeze(FreezableHandle& aHandle) {
+ 
+ Maybe<void*> Platform::Map(const HandleBase& aHandle, uint64_t aOffset,
+                            size_t aSize, void* aFixedAddress, bool aReadOnly) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // See the note at EmShmHeader: the shared object's data lives in one heap buffer
+   // whose pointer is stored in an 8-byte header at the start of the shm file.
+   int fd = aHandle.mHandle.get();
+@@ -494,7 +494,7 @@ Maybe<void*> Platform::Map(const HandleBase& aHandle, uint64_t aOffset,
+ }
+ 
+ void Platform::Unmap(void* aMemory, size_t aSize) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // The data buffer is shared live across all mappings of the object (its pointer
+   // lives in the shm file header), so a single Unmap must not free it. Leave it
+   // alive for the object's lifetime. (Minor leak; WebRender recycles shmem.)
+@@ -514,7 +514,7 @@ bool Platform::Protect(char* aAddr, size_t aSize, Access aAccess) {
+ }
+ 
+ void* Platform::FindFreeAddressSpace(size_t aSize) {
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // emscripten's mmap(PROT_NONE, MAP_ANONYMOUS) does NOT cheaply reserve address
+   // space like a real OS -- it allocates and zero-fills the whole region (here
+   // 2*512MiB = 1GiB for the UA sheet cache), a multi-hundred-ms memset plus a huge
+diff --git a/ipc/moz.build b/ipc/moz.build
+index 861f39b49d..5e506de30a 100644
+--- a/ipc/moz.build
++++ b/ipc/moz.build
+@@ -12,7 +12,7 @@ DIRS += [
+ # ipc/app builds plugin-container, the e10s child-process executable. We run
+ # single-process, and under wasm it fails to link against libxul.so (benign
+ # duplicate symbols vs libpure_virtual.a / NSPR). Not needed for the engine.
+-if CONFIG["OS_TARGET"] != "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
+     DIRS += ["app"]
+ 
+ if CONFIG["OS_ARCH"] == "WINNT":
+diff --git a/js/src/threading/ConditionVariable.h b/js/src/threading/ConditionVariable.h
+index 9905af415e..8e8ac33803 100644
+--- a/js/src/threading/ConditionVariable.h
++++ b/js/src/threading/ConditionVariable.h
+@@ -9,7 +9,7 @@
+ #include "mozilla/TimeStamp.h"
+ 
+ #include <utility>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && (!defined(__wasi__) || defined(_REENTRANT))
+ #  include <pthread.h>
+ #endif
+ 
+diff --git a/js/src/threading/moz.build b/js/src/threading/moz.build
+index 3e8713e4a0..f3499459df 100644
+--- a/js/src/threading/moz.build
++++ b/js/src/threading/moz.build
+@@ -25,8 +25,9 @@ if CONFIG["OS_ARCH"] == "WINNT":
+         "windows/CpuCount.cpp",
+         "windows/WindowsThread.cpp",
+     ]
+-# WASI hasn't supported thread yet so noop implementation is used.
+-elif CONFIG["OS_ARCH"] == "WASI":
++# WASI without wasi-threads has no threads, so the noop implementation is used;
++# wasm32-wasip1-threads uses pthreads below.
++elif CONFIG["OS_ARCH"] == "WASI" and CONFIG["RUST_TARGET"] != "wasm32-wasip1-threads":
+     UNIFIED_SOURCES += [
+         "noop/CpuCount.cpp",
+         "noop/NoopThread.cpp",
+diff --git a/js/src/threading/posix/PosixThread.cpp b/js/src/threading/posix/PosixThread.cpp
+index 8340ead455..d8df0e8f87 100644
+--- a/js/src/threading/posix/PosixThread.cpp
++++ b/js/src/threading/posix/PosixThread.cpp
+@@ -88,14 +88,16 @@ ThreadId ThreadId::ThisThreadId() {
+ void ThisThread::SetName(const char* name) {
+   MOZ_RELEASE_ASSERT(name);
+ 
+-#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__)
++#if (defined(__APPLE__) && defined(__MACH__)) || defined(__linux__) || \
++    defined(__wasi__)
+ #  if defined(XP_DARWIN)
+   // Mac OS X has a length limit of 63 characters, but there is no API
+   // exposing it.
+ #    define SETNAME_LENGTH_CONSTRAINT 63
+ #  else
+-  // On linux the name may not be longer than 16 bytes, including
+-  // the null terminator. Truncate the name to 15 characters.
++  // On linux (and BrowserOS's libc on WASI) the name may not be longer than
++  // 16 bytes, including the null terminator. Truncate the name to 15
++  // characters.
+ #    define SETNAME_LENGTH_CONSTRAINT 15
+ #  endif
+   char nameBuf[SETNAME_LENGTH_CONSTRAINT + 1];
+diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselineInterpret.cpp
+index e33137a4ba..07a3beed6e 100644
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -129,12 +129,19 @@ static JSObject* gPBLResumeEnclosingEnv = nullptr;
+ // GECKO_WJ_EXITFPDBG=<decimal addr>: print every setter that installs the target
+ // exitFP value (task #60: the zeal crash's stale exitFP is address-deterministic).
+ static inline void WJExitFPDbg(int siteId, void* v) {
++#if defined(__EMSCRIPTEN__)
+   static const char* e = getenv("GECKO_WJ_EXITFPDBG");
+   static uintptr_t target = e ? strtoul(e, nullptr, 0) : 0;
+   if (MOZ_UNLIKELY(target != 0) && uintptr_t(v) == target) {
+     js::wasm::gWJExitFPLastSite = uint32_t(siteId);
+     js::wasm::gWJExitFPSetCount++;
+   }
++#else
++  // The JS->wasm JIT needs the host to instantiate generated modules, which
++  // only the emscripten embedding provides.
++  (void)siteId;
++  (void)v;
++#endif
+ }
+ // GECKO_WJ_RESUMETRACE=<n>: trace the first n ops of the FIRST JIT-deopt-resumed
+ // frame (op name + pc offset + stack top) -- diagnosing resume misexecution.
+@@ -174,9 +181,9 @@ static bool gPBLUnwindHaveExc = false;
+ #endif
+ 
+ // Whether to compile in interrupt checks in the main interpreter loop.
+-#ifndef __wasi__
+-// On WASI, with a single thread, there is no possibility for an
+-// interrupt to come asynchronously.
++#if !defined(__wasi__) || defined(_REENTRANT)
++// On WASI without wasi-threads there is a single thread, so no interrupt can
++// come asynchronously.
+ #  define ENABLE_INTERRUPT_CHECKS
+ #endif
+ 
+diff --git a/js/xpconnect/moz.build b/js/xpconnect/moz.build
+index 77bda3959e..69df1c499d 100644
+--- a/js/xpconnect/moz.build
++++ b/js/xpconnect/moz.build
+@@ -9,6 +9,6 @@ DIRS += ["public", "idl", "wrappers", "loader", "src"]
+ # js/xpconnect/shell builds xpcshell (a JS dev/test shell); not needed for the
+ # engine, and under wasm it fails to link against libxul.so (benign duplicate
+ # symbols vs libpure_virtual.a / NSPR).
+-if CONFIG["OS_TARGET"] != "EMSCRIPTEN":
++if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
+     DIRS += ["shell"]
+ TEST_DIRS += ["tests"]
+diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
+index f958ef7438..3e82edcf9c 100644
+--- a/layout/painting/nsDisplayList.cpp
++++ b/layout/painting/nsDisplayList.cpp
+@@ -1272,7 +1272,12 @@ void nsDisplayListBuilder::EnterPresShell(const nsIFrame* aReferenceFrame,
+ 
+   state->mCaretFrame = [&]() -> nsIFrame* {
+     RefPtr<nsCaret> caret = state->mPresShell->GetActiveCaret();
+-    nsIFrame* currentCaret = caret->GetPaintGeometry(&mCaretRect);
++    // mCaretRect is shared by every pres shell this builder enters. Only a
++    // shell with a caret to paint may set it: an in-process subdocument without
++    // one, entered while building its parent, must not empty the rect of the
++    // parent's caret (which would then be culled, as in the chrome document).
++    nsRect caretRect;
++    nsIFrame* currentCaret = caret->GetPaintGeometry(&caretRect);
+     if (!currentCaret) {
+       return nullptr;
+     }
+@@ -1289,6 +1294,7 @@ void nsDisplayListBuilder::EnterPresShell(const nsIFrame* aReferenceFrame,
+     // overflow area. Use flags to make sure we build display items for that
+     // frame instead.
+     MOZ_ASSERT(currentCaret->PresShell() == state->mPresShell);
++    mCaretRect = caretRect;
+     MarkFrameForDisplay(currentCaret, aReferenceFrame);
+     caret->SetLastPaintedFrame(currentCaret);
+     if (!mPaintedCarets.Contains(caret)) {
+diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
+index d4cf9a295e..0049cd8aaf 100644
+--- a/mfbt/ThreadLocal.h
++++ b/mfbt/ThreadLocal.h
+@@ -7,7 +7,7 @@
+ #ifndef mozilla_ThreadLocal_h
+ #define mozilla_ThreadLocal_h
+ 
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && (!defined(__wasi__) || defined(_REENTRANT))
+ #  include <pthread.h>
+ #endif
+ 
+@@ -118,8 +118,9 @@ class ThreadLocalKeyStorage {
+   unsigned long mKey;
+ };
+ #  endif
+-#elif defined(__wasi__)
+-// There are no threads on WASI, so we just use a global variable.
++#elif defined(__wasi__) && !defined(_REENTRANT)
++// There are no threads on WASI without wasi-threads, so we just use a global
++// variable.
+ template <typename T>
+ class ThreadLocalKeyStorage {
+  public:
+diff --git a/mfbt/UniquePtrExtensions.cpp b/mfbt/UniquePtrExtensions.cpp
+index 84e0f7e0e4..f14922fb59 100644
+--- a/mfbt/UniquePtrExtensions.cpp
++++ b/mfbt/UniquePtrExtensions.cpp
+@@ -46,7 +46,7 @@ void SetCloseOnExec(detail::FileHandleType aFile) {
+ }
+ #endif
+ 
+-#if !defined(__wasm__) || defined(__EMSCRIPTEN__)
++#if !defined(__wasm__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ UniqueFileHandle DuplicateFileHandle(detail::FileHandleType aFile) {
+ #  ifdef XP_WIN
+   if (aFile != INVALID_HANDLE_VALUE && aFile != NULL) {
+diff --git a/mfbt/UniquePtrExtensions.h b/mfbt/UniquePtrExtensions.h
+index 732f6ca0a5..95a7b8b9f3 100644
+--- a/mfbt/UniquePtrExtensions.h
++++ b/mfbt/UniquePtrExtensions.h
+@@ -226,8 +226,8 @@ using UniqueFreePtr = UniquePtr<T, detail::FreePolicy<T>>;
+ using UniqueFileHandle =
+     UniquePtr<detail::FileHandleType, detail::FileHandleDeleter>;
+ 
+-#if !defined(__wasm__) || defined(__EMSCRIPTEN__)
+-// WASI does not have `dup`, but emscripten does.
++#if !defined(__wasm__) || defined(__EMSCRIPTEN__) || defined(__wasi__)
++// Plain WASI does not have `dup`; emscripten and BrowserOS's libc do.
+ // On Unix, these set the close-on-exec flag for the new fd.
+ MFBT_API UniqueFileHandle DuplicateFileHandle(detail::FileHandleType aFile);
+ inline UniqueFileHandle DuplicateFileHandle(const UniqueFileHandle& aFile) {
+diff --git a/mozglue/baseprofiler/core/ProfilerUtils.cpp b/mozglue/baseprofiler/core/ProfilerUtils.cpp
+index 87dafa27cf..76f9cb53b0 100644
+--- a/mozglue/baseprofiler/core/ProfilerUtils.cpp
++++ b/mozglue/baseprofiler/core/ProfilerUtils.cpp
+@@ -12,16 +12,21 @@
+ // --------------------------------------------- WASI process & thread ids
+ #if defined(__wasi__)
+ 
++#  include <pthread.h>
++#  include <unistd.h>
++
+ namespace mozilla::baseprofiler {
+ 
+-// WASI is single-process and single-thread for now.
++// WASI has no thread ids; with wasi-threads, pthread_self() tells live threads
++// apart.
+ 
+ BaseProfilerProcessId profiler_current_process_id() {
+-  return BaseProfilerProcessId::FromNativeId(1u);
++  return BaseProfilerProcessId::FromNativeId(unsigned(getpid()));
+ }
+ 
+ BaseProfilerThreadId profiler_current_thread_id() {
+-  return BaseProfilerThreadId::FromNativeId(1u);
++  return BaseProfilerThreadId::FromNativeId(
++      unsigned(reinterpret_cast<uintptr_t>(pthread_self())));
+ }
+ 
+ }  // namespace mozilla::baseprofiler
+diff --git a/mozglue/misc/PerfStats.h b/mozglue/misc/PerfStats.h
+index 8c4000fd97..a3924beafc 100644
+--- a/mozglue/misc/PerfStats.h
++++ b/mozglue/misc/PerfStats.h
+@@ -222,7 +222,7 @@ class PerfStats {
+   // std::atomic<double>::fetch_add is a C++20 feature missing from the libc++
+   // shipped with emscripten 3.1.56; fall back to a portable CAS loop there.
+   static void AtomicAddDouble(std::atomic<double>& aTarget, double aValue) {
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+     double expected = aTarget.load(std::memory_order_relaxed);
+     while (!aTarget.compare_exchange_weak(expected, expected + aValue,
+                                           std::memory_order_relaxed,
+diff --git a/mozglue/misc/PlatformConditionVariable.h b/mozglue/misc/PlatformConditionVariable.h
+index 3cb363bf37..fefa385d0d 100644
+--- a/mozglue/misc/PlatformConditionVariable.h
++++ b/mozglue/misc/PlatformConditionVariable.h
+@@ -10,7 +10,7 @@
+ 
+ #if defined(XP_WIN)
+ #  include "mozilla/Futex.h"
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -48,7 +48,7 @@ class ConditionVariableImpl {
+ 
+ #if defined(XP_WIN)
+   Futex mFutex;
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+   pthread_cond_t mCond;
+ #endif
+ };
+diff --git a/mozglue/misc/PlatformMutex.h b/mozglue/misc/PlatformMutex.h
+index 0e4aef7e01..246c0d5b98 100644
+--- a/mozglue/misc/PlatformMutex.h
++++ b/mozglue/misc/PlatformMutex.h
+@@ -9,7 +9,7 @@
+ 
+ #if defined(XP_WIN)
+ #  include "mozilla/Futex.h"
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+ #  include <pthread.h>
+ #endif
+ 
+@@ -43,7 +43,7 @@ class MutexImpl {
+ 
+ #if defined(XP_WIN)
+   SmallFutex mFutex;
+-#elif !defined(__wasi__)
++#elif !defined(__wasi__) || defined(_REENTRANT)
+   pthread_mutex_t mMutex;
+ #endif
+ 
+diff --git a/mozglue/misc/SSE.h b/mozglue/misc/SSE.h
+index f2a65c4a3f..835b4dc639 100644
+--- a/mozglue/misc/SSE.h
++++ b/mozglue/misc/SSE.h
+@@ -208,7 +208,7 @@
+ #    define MOZILLA_PRESUME_SSE2
+ #  endif
+ 
+-#elif defined(__wasm_simd128__)
++#elif defined(__wasm_simd128__) && defined(__EMSCRIPTEN__)
+ 
+ // Emscripten/WebAssembly: SSE intrinsics are provided by emscripten's shim headers
+ // (emmintrin.h, tmmintrin.h, ...) and lowered to wasm 128-bit SIMD. The engine is
+diff --git a/mozglue/misc/StackWalk.h b/mozglue/misc/StackWalk.h
+index 34112f14e2..cc0179dfc7 100644
+--- a/mozglue/misc/StackWalk.h
++++ b/mozglue/misc/StackWalk.h
+@@ -29,7 +29,12 @@ MOZ_BEGIN_EXTERN_C
+  * to skip to MozStackWalk or MozWalkTheStack, which fell short in more cases
+  * (inlining of intermediaries, tail call optimization).
+  */
+-#define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#if defined(__wasi__)
++// wasm code cannot read return addresses; stack walking starts at the top.
++#  define CallerPC() nullptr
++#else
++#  define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#endif
+ 
+ /**
+  * The callback for MozStackWalk and MozStackWalkThread.
+diff --git a/mozglue/misc/moz.build b/mozglue/misc/moz.build
+index 4d46e151c8..33b2bbf6a9 100644
+--- a/mozglue/misc/moz.build
++++ b/mozglue/misc/moz.build
+@@ -119,8 +119,9 @@ if CONFIG["OS_ARCH"] == "WINNT":
+         "Mutex_futex.cpp",
+         "RWLock_windows.cpp",
+     ]
+-# WASI hasn't supported cond vars and mutexes yet so noop implementation is used.
+-elif CONFIG["OS_ARCH"] == "WASI":
++# WASI without wasi-threads has no cond vars and mutexes, so the noop
++# implementation is used; wasm32-wasip1-threads uses pthreads below.
++elif CONFIG["OS_ARCH"] == "WASI" and CONFIG["RUST_TARGET"] != "wasm32-wasip1-threads":
+     SOURCES += [
+         "ConditionVariable_noop.cpp",
+         "Mutex_noop.cpp",
+diff --git a/netwerk/socket/neqo_glue/src/lib.rs b/netwerk/socket/neqo_glue/src/lib.rs
+index ba8b9bb7d5..038f4bdc89 100644
+--- a/netwerk/socket/neqo_glue/src/lib.rs
++++ b/netwerk/socket/neqo_glue/src/lib.rs
+@@ -327,7 +327,7 @@ type SendFunc = extern "C" fn(
+ 
+ type SetTimerFunc = extern "C" fn(context: *mut c_void, timeout: u64);
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ type BorrowedSocket = std::os::fd::BorrowedFd<'static>;
+ #[cfg(windows)]
+ type BorrowedSocket = std::os::windows::io::BorrowedSocket<'static>;
+@@ -366,7 +366,7 @@ impl NeqoHttp3Conn {
+ 
+         let socket = socket
+             .map(|socket| {
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 let borrowed = {
+                     use std::os::fd::{BorrowedFd, RawFd};
+                     if socket == -1 {
+diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
+index 23a1d35e89..462c639d85 100644
+--- a/nsprpub/pr/include/md/_linux.h
++++ b/nsprpub/pr/include/md/_linux.h
+@@ -95,9 +95,12 @@
+ /*
+  * Elf linux supports dl* functions
+  */
++#if !defined(__wasi__)
++/* WASI has no dynamic linking; NSPR's linker only knows the static program. */
+ #define HAVE_DLL
+ #define USE_DLFCN
+-#if defined(ANDROID) || defined(__EMSCRIPTEN__)
++#endif
++#if defined(ANDROID) || defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // emscripten has no dlopen; NSPR's _PR_InitLinker must not dlopen(0) for the
+ // main-program handle (it would abort). Everything is statically linked, so the
+ // null executable loadmap is fine.
+@@ -350,7 +353,15 @@ static inline PRInt32 _MD_ATOMIC_SET(PRInt32 *ptr, PRInt32 nv)
+ #define _PR_HAVE_GETADDRINFO
+ #define _PR_INET6_PROBE
+ #endif
+-#ifndef ANDROID
++#if defined(__wasi__)
++/* BrowserOS's libc (wasi-libc) is not glibc but has the resolver and IPv6. It
++ * has no System V IPC. */
++#define _PR_INET6
++#define _PR_HAVE_INET_NTOP
++#define _PR_HAVE_GETHOSTBYNAME2
++#define _PR_HAVE_GETADDRINFO
++#define _PR_INET6_PROBE
++#elif !defined(ANDROID)
+ #define _PR_HAVE_SYSV_SEMAPHORES
+ #define PR_HAVE_SYSV_NAMED_SHARED_MEMORY
+ #endif
+diff --git a/nsprpub/pr/src/md/unix/unix_errors.c b/nsprpub/pr/src/md/unix/unix_errors.c
+index 972bef1e56..894a198792 100644
+--- a/nsprpub/pr/src/md/unix/unix_errors.c
++++ b/nsprpub/pr/src/md/unix/unix_errors.c
+@@ -78,7 +78,9 @@ void _MD_unix_map_default_error(int err) {
+       prError = PR_FILE_TOO_BIG_ERROR;
+       break;
+     case EHOSTUNREACH:
++#ifdef EHOSTDOWN
+     case EHOSTDOWN:
++#endif
+       prError = PR_HOST_UNREACHABLE_ERROR;
+       break;
+     case EINPROGRESS:
+diff --git a/nsprpub/pr/src/md/unix/uxproces.c b/nsprpub/pr/src/md/unix/uxproces.c
+index 30375203b7..3ce7df0e47 100644
+--- a/nsprpub/pr/src/md/unix/uxproces.c
++++ b/nsprpub/pr/src/md/unix/uxproces.c
+@@ -10,6 +10,10 @@
+ #include <signal.h>
+ #include <sys/wait.h>
+ #include <string.h>
++#if defined(__wasi__)
++#  include <spawn.h>
++extern char** environ;
++#endif
+ #if defined(AIX)
+ #  include <dlfcn.h> /* For dlopen, dlsym, dlclose */
+ #endif
+@@ -229,6 +233,44 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+       close(fd_map[2]);
+     }
+   }
++#elif defined(__wasi__)
++  /*
++   * WASI has no fork(). BrowserOS's libc spawns the child with the
++   * redirections and working directory as file actions.
++   */
++  {
++    posix_spawn_file_actions_t actions;
++    int err;
++    pid_t pid;
++
++    posix_spawn_file_actions_init(&actions);
++    if (attr) {
++      if (attr->stdinFd && attr->stdinFd->secret->md.osfd != 0) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stdinFd->secret->md.osfd, 0);
++      }
++      if (attr->stdoutFd && attr->stdoutFd->secret->md.osfd != 1) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stdoutFd->secret->md.osfd, 1);
++      }
++      if (attr->stderrFd && attr->stderrFd->secret->md.osfd != 2) {
++        posix_spawn_file_actions_adddup2(&actions,
++                                         attr->stderrFd->secret->md.osfd, 2);
++      }
++      if (attr->currentDirectory) {
++        posix_spawn_file_actions_addchdir_np(&actions,
++                                             attr->currentDirectory);
++      }
++    }
++    err = posix_spawn(&pid, path, &actions, NULL, argv,
++                      childEnvp ? childEnvp : environ);
++    posix_spawn_file_actions_destroy(&actions);
++    if (err) {
++      errno = err;
++      pid = -1;
++    }
++    process->md.pid = pid;
++  }
+ #else
+   process->md.pid = fork();
+ #endif
+@@ -248,7 +290,7 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+                                * the parent process's standard I/O data structures.
+                                */
+ 
+-#if !defined(NTO)
++#if !defined(NTO) && !defined(__wasi__)
+     if (attr) {
+       /* the osfd's to redirect stdin, stdout, and stderr to */
+       int in_osfd = -1, out_osfd = -1, err_osfd = -1;
+@@ -307,7 +349,7 @@ static PRProcess* ForkAndExec(const char* path, char* const* argv,
+     }
+     /* Whoops! It returned. That's a bad sign. */
+     _exit(1);
+-#endif /* !NTO */
++#endif /* !NTO && !__wasi__ */
+   }
+ 
+   if (newEnvp) {
+diff --git a/nsprpub/pr/src/pthreads/ptio.c b/nsprpub/pr/src/pthreads/ptio.c
+index 5a26c04f77..4551653660 100644
+--- a/nsprpub/pr/src/pthreads/ptio.c
++++ b/nsprpub/pr/src/pthreads/ptio.c
+@@ -148,6 +148,35 @@ static ssize_t (*pt_aix_sendfile_fptr)() = NULL;
+  * provides sendfile(); declare it ourselves. */
+ #      include <sys/types.h>
+ extern ssize_t sendfile(int, int, off_t*, size_t);
++#    elif defined(__wasi__)
++/* WASI has no sendfile(); copy through a buffer with Linux's semantics: read
++ * from *offset (leaving the file position alone) and advance it by what was
++ * written. */
++#      include <sys/types.h>
++#      include <unistd.h>
++static ssize_t sendfile(int out_fd, int in_fd, off_t* offset, size_t count) {
++  char buf[65536];
++  off_t pos = offset ? *offset : lseek(in_fd, 0, SEEK_CUR);
++  ssize_t n;
++  ssize_t written;
++  if (count > sizeof(buf)) {
++    count = sizeof(buf);
++  }
++  n = pread(in_fd, buf, count, pos);
++  if (n <= 0) {
++    return n;
++  }
++  written = write(out_fd, buf, n);
++  if (written <= 0) {
++    return written;
++  }
++  if (offset) {
++    *offset = pos + written;
++  } else {
++    lseek(in_fd, pos + written, SEEK_SET);
++  }
++  return written;
++}
+ #    else
+ #      include <sys/sendfile.h>
+ #    endif
+diff --git a/nsprpub/pr/src/pthreads/ptthread.c b/nsprpub/pr/src/pthreads/ptthread.c
+index dcb707cca0..4f0a32dac7 100644
+--- a/nsprpub/pr/src/pthreads/ptthread.c
++++ b/nsprpub/pr/src/pthreads/ptthread.c
+@@ -1327,7 +1327,13 @@ static void pt_SuspendSet(PRThread* thred) {
+   PR_LOG(_pr_gc_lm, PR_LOG_ALWAYS,
+          ("doing pthread_kill in pt_SuspendSet thred %p tid = %X\n", thred,
+           thred->id));
++#  if defined(__wasi__)
++  /* WASI cannot signal a single thread; PR_SuspendAll is unsupported. */
++  PR_NOT_REACHED("pt_SuspendSet on WASI");
++  rv = 0;
++#  else
+   rv = pthread_kill(thred->id, SIGUSR2);
++#  endif
+   PR_ASSERT(0 == rv);
+ }
+ 
+@@ -1372,7 +1378,7 @@ static void pt_ResumeSet(PRThread* thred) {
+ 
+   thred->suspend &= ~PT_THREAD_SUSPENDED;
+ 
+-#  if defined(PT_NO_SIGTIMEDWAIT)
++#  if defined(PT_NO_SIGTIMEDWAIT) && !defined(__wasi__)
+   pthread_kill(thred->id, SIGUSR1);
+ #  endif
+ 
+@@ -1530,6 +1536,8 @@ PR_IMPLEMENT(PRStatus) PR_SetCurrentThreadName(const char* name) {
+   prctl(PR_SET_NAME, (unsigned long)(name));
+ #  elif defined(NETBSD)
+   result = pthread_setname_np(thread->id, "%s", (void*)name);
++#  elif defined(__wasi__)
++  /* WASI threads have no OS-level name; NSPR keeps it in thread->name. */
+ #  else /* not BSD */
+   /*
+    * On OSX, pthread_setname_np is only available in 10.6 or later, so test
+diff --git a/python/mozbuild/mozbuild/frontend/data.py b/python/mozbuild/mozbuild/frontend/data.py
+index cb0492f67c..b1c83598b2 100644
+--- a/python/mozbuild/mozbuild/frontend/data.py
++++ b/python/mozbuild/mozbuild/frontend/data.py
+@@ -903,6 +903,9 @@ class SharedLibrary(Library):
+                     self.symbols_link_arg = "-DEF:" + self.symbols_file
+                 else:
+                     self.symbols_link_arg = self.symbols_file
++            elif os_target == "WASI":
++                # Relocatable links have no dynamic symbol table to restrict.
++                self.symbols_link_arg = None
+             elif context.config.substs.get("GCC_USE_GNU_LD"):
+                 self.symbols_link_arg = "-Wl,--version-script," + self.symbols_file
+ 
+diff --git a/security/moz.build b/security/moz.build
+index 02007bbc07..6e6f55ba04 100644
+--- a/security/moz.build
++++ b/security/moz.build
+@@ -77,7 +77,7 @@ gyp_vars["mozilla_client"] = 1
+ # engine. Under wasm they also fail to link (wasm-ld rejects the duplicate
+ # symbols between each tool's own objects and the shared NSS libs they link).
+ # Skip them entirely for the emscripten build.
+-gyp_vars["build_nss_cmds"] = 0 if CONFIG["OS_TARGET"] == "EMSCRIPTEN" else 1
++gyp_vars["build_nss_cmds"] = 0 if CONFIG["OS_TARGET"] in ("EMSCRIPTEN", "WASI") else 1
+ 
+ # This builds NSS tools in COMM applications that Firefox doesn't build.
+ if CONFIG["MOZ_BUILD_APP"].startswith("comm/"):
+diff --git a/security/nss/lib/softoken/fipstest.c b/security/nss/lib/softoken/fipstest.c
+index cd444f99b8..b5209a2525 100644
+--- a/security/nss/lib/softoken/fipstest.c
++++ b/security/nss/lib/softoken/fipstest.c
+@@ -790,9 +790,12 @@ sftk_FIPSEntryOK(PRBool rerun)
+ }
+ #else
+ #include "pkcs11t.h"
++/* Same signature as the declaration in softoken.h: wasm traps on a call whose
++ * type does not match the callee. */
+ CK_RV
+-sftk_FIPSEntryOK()
++sftk_FIPSEntryOK(PRBool rerun)
+ {
++    (void)rerun;
+     return CKR_DEVICE_ERROR;
+ }
+ #endif /* NSS_FIPS_DISABLED */
+diff --git a/services/settings/dumps/main/search-config-v2.json b/services/settings/dumps/main/search-config-v2.json
+index b8b72adcb7..a4797ef15e 100644
+--- a/services/settings/dumps/main/search-config-v2.json
++++ b/services/settings/dumps/main/search-config-v2.json
+@@ -258,12 +258,7 @@
+         "urls": {
+           "search": {
+             "base": "https://allegro.pl/listing",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "string"
+           }
+         }
+@@ -393,20 +388,10 @@
+         ],
+         "classification": "general",
+         "name": "Bing",
+-        "partnerCode": "MOZI",
+         "urls": {
+           "search": {
+             "base": "https://www.bing.com/search",
+-            "params": [
+-              {
+-                "name": "pc",
+-                "value": "{partnerCode}"
+-              },
+-              {
+-                "name": "form",
+-                "value": "MOZLBR"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -446,7 +431,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "MOZR",
+               "telemetrySuffix": "esr"
+             },
+             {
+@@ -455,19 +439,9 @@
+                   "firefox-android"
+                 ]
+               },
+-              "partnerCode": "MOZB",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MOZMBA"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -478,19 +452,9 @@
+                   "firefox-ios"
+                 ]
+               },
+-              "partnerCode": "MOZW",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MOZWSB"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -504,20 +468,10 @@
+                   "dt-001"
+                 ]
+               },
+-              "partnerCode": "MZTOF",
+               "telemetrySuffix": "MZTOF",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MZTOFO"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -531,20 +485,10 @@
+                   "vivo-001"
+                 ]
+               },
+-              "partnerCode": "MZCP",
+               "telemetrySuffix": "MZCP",
+               "urls": {
+                 "search": {
+-                  "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+-                    {
+-                      "name": "form",
+-                      "value": "MZVIVO"
+-                    }
+-                  ],
++                  "params": [],
+                   "searchTermParamName": "q"
+                 }
+               }
+@@ -553,14 +497,9 @@
+               "environment": {
+                 "experiment": "adblockers"
+               },
+-              "partnerCode": "MZABT",
+               "urls": {
+                 "search": {
+                   "params": [
+-                    {
+-                      "name": "pc",
+-                      "value": "{partnerCode}"
+-                    },
+                     {
+                       "name": "form",
+                       "value": "ABT"
+@@ -581,12 +520,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ordbok.uib.no/perl/ordbok.cgi",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "OPP"
+           }
+         }
+@@ -643,7 +577,6 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Cốc Cốc",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://coccoc.com/search",
+@@ -651,10 +584,6 @@
+               {
+                 "name": "s",
+                 "value": "ff"
+-              },
+-              {
+-                "name": "utm_source",
+-                "value": "{partnerCode}"
+               }
+             ],
+             "searchTermParamName": "query"
+@@ -696,8 +625,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ffmobile"
++              }
+             }
+           ]
+         }
+@@ -772,16 +700,10 @@
+         ],
+         "classification": "general",
+         "name": "DuckDuckGo",
+-        "partnerCode": "ffab",
+         "urls": {
+           "search": {
+             "base": "https://duckduckgo.com/",
+-            "params": [
+-              {
+-                "name": "t",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -813,7 +735,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "ftsa",
+               "telemetrySuffix": "esr"
+             }
+           ]
+@@ -825,8 +746,7 @@
+               "firefox-android",
+               "focus-android"
+             ]
+-          },
+-          "partnerCode": "fpas"
++          }
+         },
+         {
+           "environment": {
+@@ -835,8 +755,7 @@
+               "firefox-ios",
+               "focus-ios"
+             ]
+-          },
+-          "partnerCode": "ffip"
++          }
+         },
+         {
+           "environment": {
+@@ -844,7 +763,6 @@
+               "mint-001"
+             ]
+           },
+-          "partnerCode": "lm",
+           "telemetrySuffix": "lm"
+         }
+       ]
+@@ -856,7 +774,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.com/sch/",
+@@ -865,10 +782,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -922,8 +835,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -936,7 +848,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.at/sch/",
+@@ -945,10 +856,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1004,8 +911,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1018,7 +924,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.com.au/sch/",
+@@ -1027,10 +932,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1087,8 +988,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1101,7 +1001,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.befr.ebay.be/sch/",
+@@ -1110,10 +1009,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1172,8 +1067,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1186,7 +1080,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ca/sch/",
+@@ -1195,10 +1088,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1255,8 +1144,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1276,8 +1164,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1290,7 +1177,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ch/sch/",
+@@ -1299,10 +1185,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1362,8 +1244,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1383,8 +1264,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1397,7 +1277,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.de/sch/",
+@@ -1406,10 +1285,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1467,8 +1342,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1481,7 +1355,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.es/sch/",
+@@ -1490,10 +1363,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1553,8 +1422,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1567,7 +1435,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.fr/sch/",
+@@ -1576,10 +1443,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1638,8 +1501,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1652,7 +1514,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.ie/sch/",
+@@ -1661,10 +1522,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1721,8 +1578,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1742,8 +1598,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1756,7 +1611,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.it/sch/",
+@@ -1765,10 +1619,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1825,8 +1675,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1839,7 +1688,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.nl/sch/",
+@@ -1848,10 +1696,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -1907,8 +1751,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -1928,8 +1771,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -1942,7 +1784,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.pl/sch/",
+@@ -1951,10 +1792,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -2005,8 +1842,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -2019,7 +1855,6 @@
+         ],
+         "classification": "unknown",
+         "name": "eBay",
+-        "partnerCode": "5338192028",
+         "urls": {
+           "search": {
+             "base": "https://www.ebay.co.uk/sch/",
+@@ -2028,10 +1863,6 @@
+                 "name": "toolid",
+                 "value": "20004"
+               },
+-              {
+-                "name": "campid",
+-                "value": "{partnerCode}"
+-              },
+               {
+                 "name": "mkevt",
+                 "value": "1"
+@@ -2089,8 +1920,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         },
+@@ -2111,8 +1941,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "5338791379"
++              }
+             }
+           ]
+         }
+@@ -2122,16 +1951,10 @@
+       "base": {
+         "classification": "general",
+         "name": "Ecosia",
+-        "partnerCode": "mzl",
+         "urls": {
+           "search": {
+             "base": "https://www.ecosia.org/search",
+-            "params": [
+-              {
+-                "name": "tt",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -2165,8 +1988,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "813cf1dd"
++              }
+             },
+             {
+               "environment": {
+@@ -2174,8 +1996,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "16eeffc4"
++              }
+             }
+           ]
+         },
+@@ -2199,8 +2020,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "813cf1dd"
++              }
+             },
+             {
+               "environment": {
+@@ -2208,8 +2028,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "16eeffc4"
++              }
+             }
+           ]
+         }
+@@ -2358,10 +2177,6 @@
+                 "name": "brand",
+                 "value": "gmxcouk"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2408,10 +2223,6 @@
+                 "name": "brand",
+                 "value": "gmxes"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2458,10 +2269,6 @@
+                 "name": "brand",
+                 "value": "gmxfr"
+               },
+-              {
+-                "name": "origin",
+-                "value": "moz_splugin_ff"
+-              },
+               {
+                 "name": "enc",
+                 "value": "UTF-8"
+@@ -2536,31 +2343,13 @@
+           },
+           "suggestions": {
+             "base": "https://www.google.com/complete/search",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "firefox"
+-              },
+-              {
+-                "name": "channel",
+-                "value": "fen"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "trending": {
+             "base": "https://www.google.com/complete/search",
+             "method": "GET",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "firefox"
+-              },
+-              {
+-                "name": "channel",
+-                "value": "ftr"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "visualSearch": {
+@@ -2596,7 +2385,6 @@
+           "environment": {
+             "allRegionsAndLocales": true
+           },
+-          "partnerCode": "firefox-b-d",
+           "subVariants": [
+             {
+               "environment": {
+@@ -2604,7 +2392,6 @@
+                   "esr"
+                 ]
+               },
+-              "partnerCode": "firefox-b-e",
+               "telemetrySuffix": "b-e"
+             },
+             {
+@@ -2616,7 +2403,6 @@
+                   "focus-ios"
+                 ]
+               },
+-              "partnerCode": "firefox-b-m",
+               "telemetrySuffix": "b-m"
+             }
+           ],
+@@ -2624,14 +2410,6 @@
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2655,7 +2433,6 @@
+               "us"
+             ]
+           },
+-          "partnerCode": "firefox-b-1-d",
+           "subVariants": [
+             {
+               "environment": {
+@@ -2666,7 +2443,6 @@
+                   "us"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-e",
+               "telemetrySuffix": "b-1-e"
+             },
+             {
+@@ -2678,7 +2454,6 @@
+                   "focus-ios"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-m",
+               "telemetrySuffix": "b-1-m"
+             },
+             {
+@@ -2690,7 +2465,6 @@
+                   "aura-001"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-ar",
+               "telemetrySuffix": "b-1-ar"
+             },
+             {
+@@ -2704,7 +2478,6 @@
+                   "xiaomi-001"
+                 ]
+               },
+-              "partnerCode": "firefox-b-1-dt",
+               "telemetrySuffix": "b-1-dt"
+             }
+           ],
+@@ -2712,14 +2485,6 @@
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_us",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2735,20 +2500,10 @@
+               "canonical-001"
+             ]
+           },
+-          "partnerCode": "ubuntu",
+           "telemetrySuffix": "canonical",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "name": "channel",
+-                  "value": "fs"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2758,20 +2513,10 @@
+               "canonical-002"
+             ]
+           },
+-          "partnerCode": "ubuntu-sn",
+           "telemetrySuffix": "ubuntu-sn",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "name": "channel",
+-                  "value": "fs"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2785,19 +2530,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-lm",
+           "telemetrySuffix": "b-lm",
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2815,19 +2551,10 @@
+               "us"
+             ]
+           },
+-          "partnerCode": "firefox-b-1-lm",
+           "telemetrySuffix": "b-1-lm",
+           "urls": {
+             "search": {
+               "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                },
+                 {
+                   "enterpriseValue": "entpr",
+                   "name": "channel"
+@@ -2849,20 +2576,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-vv",
+           "telemetrySuffix": "b-vv",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2879,20 +2596,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-tf",
+           "telemetrySuffix": "b-tf",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2910,20 +2617,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-ar",
+           "telemetrySuffix": "b-ar",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         },
+@@ -2943,20 +2640,10 @@
+               "by"
+             ]
+           },
+-          "partnerCode": "firefox-b-dt",
+           "telemetrySuffix": "b-dt",
+           "urls": {
+             "search": {
+-              "params": [
+-                {
+-                  "name": "client",
+-                  "value": "{partnerCode}"
+-                },
+-                {
+-                  "experimentConfig": "google_channel_row",
+-                  "name": "channel"
+-                }
+-              ]
++              "params": []
+             }
+           }
+         }
+@@ -2973,10 +2660,6 @@
+               {
+                 "name": "what",
+                 "value": "all"
+-              },
+-              {
+-                "name": "cmpid",
+-                "value": "fre_partner_fire_gssbtop"
+               }
+             ],
+             "searchTermParamName": "q"
+@@ -3056,12 +2739,7 @@
+         "urls": {
+           "search": {
+             "base": "https://dict.longdo.com/",
+-            "params": [
+-              {
+-                "name": "src",
+-                "value": "moz"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -3400,16 +3078,10 @@
+         ],
+         "classification": "general",
+         "name": "Perplexity",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://www.perplexity.ai/search",
+-            "params": [
+-              {
+-                "name": "pc",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3508,16 +3180,10 @@
+         ],
+         "classification": "general",
+         "name": "Qwant",
+-        "partnerCode": "brz-moz",
+         "urls": {
+           "search": {
+             "base": "https://www.qwant.com/",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3551,8 +3217,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "ff_android"
++              }
+             },
+             {
+               "environment": {
+@@ -3560,8 +3225,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ff_ios"
++              }
+             }
+           ]
+         },
+@@ -3583,8 +3247,7 @@
+                   "firefox-android",
+                   "focus-android"
+                 ]
+-              },
+-              "partnerCode": "ff_android"
++              }
+             },
+             {
+               "environment": {
+@@ -3592,8 +3255,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "ff_ios"
++              }
+             }
+           ]
+         },
+@@ -3604,7 +3266,6 @@
+               "qwant-002"
+             ]
+           },
+-          "partnerCode": "firefoxqwant",
+           "telemetrySuffix": "qwant"
+         }
+       ]
+@@ -3613,16 +3274,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Qwant Junior",
+-        "partnerCode": "firefoxqwant",
+         "urls": {
+           "search": {
+             "base": "https://www.qwantjunior.com/",
+-            "params": [
+-              {
+-                "name": "client",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3749,16 +3404,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Salidzini.lv",
+-        "partnerCode": "firefox-plugin",
+         "urls": {
+           "search": {
+             "base": "https://www.salidzini.lv/search.php",
+-            "params": [
+-              {
+-                "name": "utm_source",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3789,8 +3438,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "firefox_mobile"
++              }
+             }
+           ]
+         }
+@@ -3800,16 +3448,10 @@
+       "base": {
+         "classification": "unknown",
+         "name": "Seznam",
+-        "partnerCode": "firefox",
+         "urls": {
+           "search": {
+             "base": "https://search.seznam.cz/",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+@@ -3839,8 +3481,7 @@
+                   "firefox-ios",
+                   "focus-ios"
+                 ]
+-              },
+-              "partnerCode": "SearchBox"
++              }
+             }
+           ]
+         }
+@@ -3853,26 +3494,15 @@
+         ],
+         "classification": "general",
+         "name": "Startpage",
+-        "partnerCode": "startpage.apex.desktop",
+         "urls": {
+           "search": {
+             "base": "https://www.startpage.com/sp/search",
+-            "params": [
+-              {
+-                "name": "segment",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           },
+           "suggestions": {
+             "base": "https://www.startpage.com/suggestions?partner=apex&format=opensearch",
+-            "params": [
+-              {
+-                "name": "segment",
+-                "value": "{partnerCode}"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "q"
+           }
+         }
+@@ -4009,12 +3639,7 @@
+         "urls": {
+           "search": {
+             "base": "https://en.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4152,12 +3777,7 @@
+         "urls": {
+           "search": {
+             "base": "https://nn.wikipedia.org/wiki/Spesial:Søk",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4197,12 +3817,7 @@
+         "urls": {
+           "search": {
+             "base": "https://no.wikipedia.org/wiki/Spesial:Søk",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4242,12 +3857,7 @@
+         "urls": {
+           "search": {
+             "base": "https://af.wikipedia.org/wiki/Spesiaal:Soek",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4288,12 +3898,7 @@
+         "urls": {
+           "search": {
+             "base": "https://an.wikipedia.org/wiki/Especial:Mirar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4334,12 +3939,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ar.wikipedia.org/wiki/خاص:بحث",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4379,12 +3979,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ast.wikipedia.org/wiki/Especial:Gueta",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4425,12 +4020,7 @@
+         "urls": {
+           "search": {
+             "base": "https://az.wikipedia.org/wiki/Xüsusi:Axtar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4471,12 +4061,7 @@
+         "urls": {
+           "search": {
+             "base": "https://be.wikipedia.org/wiki/Адмысловае:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4516,12 +4101,7 @@
+         "urls": {
+           "search": {
+             "base": "https://be-tarask.wikipedia.org/wiki/Спэцыяльныя:Пошук",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4562,12 +4142,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bg.wikipedia.org/wiki/Специални:Търсене",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4608,12 +4183,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bn.wikipedia.org/wiki/বিশেষ:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4655,12 +4225,7 @@
+         "urls": {
+           "search": {
+             "base": "https://br.wikipedia.org/wiki/Dibar:Klask",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4700,12 +4265,7 @@
+         "urls": {
+           "search": {
+             "base": "https://bs.wikipedia.org/wiki/Posebno:Pretraga",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4746,12 +4306,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ca.wikipedia.org/wiki/Especial:Cerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4793,12 +4348,7 @@
+         "urls": {
+           "search": {
+             "base": "https://cy.wikipedia.org/wiki/Arbennig:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4839,12 +4389,7 @@
+         "urls": {
+           "search": {
+             "base": "https://cs.wikipedia.org/wiki/Speciální:Hledání",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4884,12 +4429,7 @@
+         "urls": {
+           "search": {
+             "base": "https://da.wikipedia.org/wiki/Speciel:Søgning",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4929,12 +4469,7 @@
+         "urls": {
+           "search": {
+             "base": "https://de.wikipedia.org/wiki/Spezial:Suche",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -4975,12 +4510,7 @@
+         "urls": {
+           "search": {
+             "base": "https://dsb.wikipedia.org/wiki/Specialne:Pytaś",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5021,12 +4551,7 @@
+         "urls": {
+           "search": {
+             "base": "https://el.wikipedia.org/wiki/Ειδικό:Αναζήτηση",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5067,12 +4592,7 @@
+         "urls": {
+           "search": {
+             "base": "https://eo.wikipedia.org/wiki/Specialaĵo:Serĉi",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5112,12 +4632,7 @@
+         "urls": {
+           "search": {
+             "base": "https://es.wikipedia.org/wiki/Especial:Buscar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5163,12 +4678,7 @@
+         "urls": {
+           "search": {
+             "base": "https://et.wikipedia.org/wiki/Eri:Otsimine",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5208,12 +4718,7 @@
+         "urls": {
+           "search": {
+             "base": "https://eu.wikipedia.org/wiki/Berezi:Bilatu",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5254,12 +4759,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fa.wikipedia.org/wiki/ویژه:جستجو",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5299,12 +4799,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fi.wikipedia.org/wiki/Toiminnot:Haku",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5345,12 +4840,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fr.wikipedia.org/wiki/Spécial:Recherche",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5393,12 +4883,7 @@
+         "urls": {
+           "search": {
+             "base": "https://fy.wikipedia.org/wiki/Wiki:Sykje",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5439,12 +4924,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ga.wikipedia.org/wiki/Speisialta:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5485,12 +4965,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gd.wikipedia.org/wiki/Sònraichte:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5530,12 +5005,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gl.wikipedia.org/wiki/Especial:Procurar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5576,12 +5046,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gn.wikipedia.org/wiki/Mba'echĩchĩ:Buscar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5622,12 +5087,7 @@
+         "urls": {
+           "search": {
+             "base": "https://gu.wikipedia.org/wiki/વિશેષ:શોધ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5668,12 +5128,7 @@
+         "urls": {
+           "search": {
+             "base": "https://he.wikipedia.org/wiki/מיוחד:חיפוש",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5714,12 +5169,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hi.wikipedia.org/wiki/विशेष:खोज",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5760,12 +5210,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hr.wikipedia.org/wiki/Posebno:Traži",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5806,12 +5251,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hsb.wikipedia.org/wiki/Specialnje:Pytać",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5852,12 +5292,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hu.wikipedia.org/wiki/Speciális:Keresés",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5898,12 +5333,7 @@
+         "urls": {
+           "search": {
+             "base": "https://hy.wikipedia.org/wiki/Սպասարկող:Որոնել",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5943,12 +5373,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ia.wikipedia.org/wiki/Special:Recerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -5988,12 +5413,7 @@
+         "urls": {
+           "search": {
+             "base": "https://id.wikipedia.org/wiki/Istimewa:Pencarian",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6033,12 +5453,7 @@
+         "urls": {
+           "search": {
+             "base": "https://is.wikipedia.org/wiki/Kerfissíða:Leit",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6078,12 +5493,7 @@
+         "urls": {
+           "search": {
+             "base": "https://it.wikipedia.org/wiki/Speciale:Ricerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6123,14 +5533,9 @@
+         "classification": "unknown",
+         "name": "Wikipedia (ja)",
+         "urls": {
+-          "search": {
+-            "base": "https://ja.wikipedia.org/wiki/特別:検索",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++          "search": {
++            "base": "https://ja.wikipedia.org/wiki/特別:検索",
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6172,12 +5577,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ka.wikipedia.org/wiki/სპეციალური:ძიება",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6217,12 +5617,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kab.wikipedia.org/wiki/Uslig:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6263,12 +5658,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kk.wikipedia.org/wiki/Арнайы:Іздеу",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6309,12 +5699,7 @@
+         "urls": {
+           "search": {
+             "base": "https://km.wikipedia.org/wiki/ពិសេស:ស្វែងរក",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6355,12 +5740,7 @@
+         "urls": {
+           "search": {
+             "base": "https://kn.wikipedia.org/wiki/ವಿಶೇಷ:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6401,12 +5781,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ko.wikipedia.org/wiki/특수기능:찾기",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6446,12 +5821,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lij.wikipedia.org/wiki/Speçiale:Riçerca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6492,12 +5862,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lo.wikipedia.org/wiki/ພິເສດ:ຊອກຫາ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6538,12 +5903,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lt.wikipedia.org/wiki/Specialus:Paieška",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6584,12 +5944,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ltg.wikipedia.org/wiki/Seviškuo:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6630,12 +5985,7 @@
+         "urls": {
+           "search": {
+             "base": "https://lv.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6676,12 +6026,7 @@
+         "urls": {
+           "search": {
+             "base": "https://mk.wikipedia.org/wiki/Специјална:Барај",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6722,12 +6067,7 @@
+         "urls": {
+           "search": {
+             "base": "https://mr.wikipedia.org/wiki/विशेष:शोधा",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6767,12 +6107,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ms.wikipedia.org/wiki/Khas:Gelintar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6813,12 +6148,7 @@
+         "urls": {
+           "search": {
+             "base": "https://my.wikipedia.org/wiki/Special:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6859,12 +6189,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ne.wikipedia.org/wiki/विशेष:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6904,12 +6229,7 @@
+         "urls": {
+           "search": {
+             "base": "https://nl.wikipedia.org/wiki/Speciaal:Zoeken",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6950,12 +6270,7 @@
+         "urls": {
+           "search": {
+             "base": "https://oc.wikipedia.org/wiki/Especial:Recèrca",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -6996,12 +6311,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pa.wikipedia.org/wiki/ਖ਼ਾਸ:ਖੋਜੋ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7041,12 +6351,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pl.wikipedia.org/wiki/Specjalna:Szukaj",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7088,12 +6393,7 @@
+         "urls": {
+           "search": {
+             "base": "https://pt.wikipedia.org/wiki/Especial:Pesquisar",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7134,12 +6434,7 @@
+         "urls": {
+           "search": {
+             "base": "https://rm.wikipedia.org/wiki/Spezial:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7179,12 +6474,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ro.wikipedia.org/wiki/Special:Căutare",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7225,12 +6515,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ru.wikipedia.org/wiki/Служебная:Поиск",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7271,12 +6556,7 @@
+         "urls": {
+           "search": {
+             "base": "https://si.wikipedia.org/wiki/විශේෂ:ගවේෂණය",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7317,12 +6597,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sk.wikipedia.org/wiki/Špeciálne:Hľadanie",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7363,12 +6638,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sl.wikipedia.org/wiki/Posebno:Iskanje",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7408,12 +6678,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sq.wikipedia.org/wiki/Speciale:Kërkim",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7454,12 +6719,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sr.wikipedia.org/wiki/Посебно:Претражи",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7499,12 +6759,7 @@
+         "urls": {
+           "search": {
+             "base": "https://sv.wikipedia.org/wiki/Special:Sök",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7545,12 +6800,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ta.wikipedia.org/wiki/சிறப்பு:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7591,12 +6841,7 @@
+         "urls": {
+           "search": {
+             "base": "https://te.wikipedia.org/wiki/ప్రత్యేక:అన్వేషణ",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7637,12 +6882,7 @@
+         "urls": {
+           "search": {
+             "base": "https://th.wikipedia.org/wiki/พิเศษ:ค้นหา",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7682,12 +6922,7 @@
+         "urls": {
+           "search": {
+             "base": "https://tl.wikipedia.org/wiki/Natatangi:Maghanap",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7728,12 +6963,7 @@
+         "urls": {
+           "search": {
+             "base": "https://tr.wikipedia.org/wiki/Özel:Ara",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7774,12 +7004,7 @@
+         "urls": {
+           "search": {
+             "base": "https://uk.wikipedia.org/wiki/Спеціальна:Пошук",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7820,12 +7045,7 @@
+         "urls": {
+           "search": {
+             "base": "https://ur.wikipedia.org/wiki/خاص:تلاش",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7866,12 +7086,7 @@
+         "urls": {
+           "search": {
+             "base": "https://uz.wikipedia.org/wiki/Maxsus:Search",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7911,12 +7126,7 @@
+         "urls": {
+           "search": {
+             "base": "https://vi.wikipedia.org/wiki/Đặc_biệt:Tìm_kiếm",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -7956,12 +7166,7 @@
+         "urls": {
+           "search": {
+             "base": "https://wo.wikipedia.org/wiki/Jagleel:Ceet",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -8002,12 +7207,7 @@
+         "urls": {
+           "search": {
+             "base": "https://zh.wikipedia.org/wiki/Special:搜索",
+-            "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              }
+-            ],
++            "params": [],
+             "searchTermParamName": "search"
+           },
+           "suggestions": {
+@@ -8049,10 +7249,6 @@
+           "search": {
+             "base": "https://zh.wikipedia.org/wiki/Special:搜索",
+             "params": [
+-              {
+-                "name": "sourceid",
+-                "value": "Mozilla-search"
+-              },
+               {
+                 "name": "variant",
+                 "value": "zh-tw"
+@@ -8288,7 +7484,6 @@
+       "base": {
+         "classification": "general",
+         "name": "Yahoo! JAPAN",
+-        "partnerCode": "mozff",
+         "urls": {
+           "search": {
+             "base": "https://search.yahoo.co.jp/search",
+@@ -8296,10 +7491,6 @@
+               {
+                 "name": "ei",
+                 "value": "UTF-8"
+-              },
+-              {
+-                "name": "fr",
+-                "value": "{partnerCode}"
+               }
+             ],
+             "searchTermParamName": "p"
+@@ -8334,10 +7525,6 @@
+               {
+                 "name": "ei",
+                 "value": "EUC-JP"
+-              },
+-              {
+-                "name": "fr",
+-                "value": "mozff"
+               }
+             ],
+             "searchTermParamName": "p"
+diff --git a/servo/components/style/global_style_data.rs b/servo/components/style/global_style_data.rs
+index 8f689950e7..c385f7a21f 100644
+--- a/servo/components/style/global_style_data.rs
++++ b/servo/components/style/global_style_data.rs
+@@ -42,6 +42,13 @@ impl DummyThreadHandle {
+ #[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
+ /// Platform-specific handle to a thread.
+ pub type PlatformThreadHandle = DummyThreadHandle;
++/// wasi-libc's pthread_t (cbindgen maps RawPthread to pthread_t).
++#[cfg(all(target_os = "wasi", feature = "gecko"))]
++pub type RawPthread = std::os::raw::c_ulong;
++/// Platform-specific handle to a thread. Rust's std cannot hand out the pthread
++/// of a thread on WASI, so no handles are reported there.
++#[cfg(all(target_os = "wasi", feature = "gecko"))]
++pub type PlatformThreadHandle = RawPthread;
+ 
+ /// Global style data
+ pub struct GlobalStyleData {
+@@ -151,7 +158,13 @@ impl StyleThreadPool {
+                 let _ = join_handle;
+                 DummyThreadHandle { _x: 0 }
+             };
++            #[cfg(all(target_os = "wasi", feature = "gecko"))]
++            {
++                let _ = join_handle;
++                continue;
++            }
+ 
++            #[cfg(not(all(target_os = "wasi", feature = "gecko")))]
+             handles.push(handle);
+         }
+     }
+diff --git a/third_party/abseil-cpp/absl/base/config.h b/third_party/abseil-cpp/absl/base/config.h
+index 753bce4700..25c3cb3710 100644
+--- a/third_party/abseil-cpp/absl/base/config.h
++++ b/third_party/abseil-cpp/absl/base/config.h
+@@ -377,7 +377,8 @@ static_assert(ABSL_INTERNAL_INLINE_NAMESPACE_STR[0] != 'h' ||
+     defined(__asmjs__) || defined(__EMSCRIPTEN__) || defined(__Fuchsia__) || \
+     defined(__sun) || defined(__myriad2__) || defined(__HAIKU__) ||          \
+     defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) ||       \
+-    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__)
++    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__) || \
++    defined(__wasi__)
+ #define ABSL_HAVE_MMAP 1
+ #endif
+ 
+diff --git a/third_party/msgpack/include/msgpack/vrefbuffer.h b/third_party/msgpack/include/msgpack/vrefbuffer.h
+index 139869aa6b..b691032123 100644
+--- a/third_party/msgpack/include/msgpack/vrefbuffer.h
++++ b/third_party/msgpack/include/msgpack/vrefbuffer.h
+@@ -13,7 +13,7 @@
+ #include "zone.h"
+ #include <stdlib.h>
+ 
+-#if defined(unix) || defined(__unix) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) || defined(__QNXTO__)
++#if defined(unix) || defined(__unix) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) || defined(__QNXTO__) || defined(__wasi__)
+ #include <sys/uio.h>
+ #else
+ struct iovec {
+diff --git a/third_party/rust/bindgen/ir/ty.rs b/third_party/rust/bindgen/ir/ty.rs
+index a53de31c6a..bb418ad58e 100644
+--- a/third_party/rust/bindgen/ir/ty.rs
++++ b/third_party/rust/bindgen/ir/ty.rs
+@@ -223,7 +223,11 @@ impl Type {
+                 TypeKind::Comp(ref ci) => ci.layout(ctx),
+                 TypeKind::Array(inner, 0) => Some(Layout::new(
+                     0,
+-                    ctx.resolve_type(inner).layout(ctx)?.align,
++                    ctx.resolve_item_fallible(inner)?
++                        .kind()
++                        .as_type()?
++                        .layout(ctx)?
++                        .align,
+                 )),
+                 // FIXME(emilio): This is a hack for anonymous union templates.
+                 // Use the actual pointer size!
+@@ -231,9 +235,11 @@ impl Type {
+                     ctx.target_pointer_size(),
+                     ctx.target_pointer_size(),
+                 )),
+-                TypeKind::ResolvedTypeRef(inner) => {
+-                    ctx.resolve_type(inner).layout(ctx)
+-                }
++                TypeKind::ResolvedTypeRef(inner) => ctx
++                    .resolve_item_fallible(inner)?
++                    .kind()
++                    .as_type()?
++                    .layout(ctx),
+                 _ => None,
+             }
+         })
+diff --git a/third_party/rust/glean-core/src/fd_logger.rs b/third_party/rust/glean-core/src/fd_logger.rs
+index e885c596b2..a06e3a863d 100644
+--- a/third_party/rust/glean-core/src/fd_logger.rs
++++ b/third_party/rust/glean-core/src/fd_logger.rs
+@@ -13,7 +13,7 @@ use std::os::windows::io::FromRawHandle;
+ use std::ffi::c_void;
+ 
+ #[cfg(not(target_os = "windows"))]
+-use std::os::unix::io::FromRawFd;
++use std::os::fd::FromRawFd;
+ 
+ use serde::Serialize;
+ 
+diff --git a/third_party/rust/libc/src/wasi/browseros.rs b/third_party/rust/libc/src/wasi/browseros.rs
+new file mode 100644
+index 0000000000..b162e9b6ef
+--- /dev/null
++++ b/third_party/rust/libc/src/wasi/browseros.rs
+@@ -0,0 +1,29 @@
++//! POSIX functions that BrowserOS's libc (a wasi-libc fork) provides on
++//! wasm32-wasip1 beyond plain wasi-libc. Values match its headers when built
++//! with `-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID`.
++
++use crate::prelude::*;
++
++pub const PATH_MAX: c_int = 4096;
++
++pub const AF_UNIX: c_int = 3;
++pub const SOCK_CLOEXEC: c_int = 0x00002000;
++pub const MSG_DONTWAIT: c_int = 0x0040;
++
++pub const SIGINT: c_int = 2;
++pub const SIGABRT: c_int = 6;
++pub const SIGKILL: c_int = 9;
++pub const SIGTERM: c_int = 15;
++
++use crate::pid_t;
++
++extern "C" {
++    pub fn getpid() -> pid_t;
++    pub fn getppid() -> pid_t;
++    pub fn kill(pid: pid_t, sig: c_int) -> c_int;
++    pub fn pipe(fds: *mut c_int) -> c_int;
++    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
++    pub fn dup(fd: c_int) -> c_int;
++    pub fn dup2(src: c_int, dst: c_int) -> c_int;
++    pub fn socketpair(domain: c_int, type_: c_int, protocol: c_int, sv: *mut c_int) -> c_int;
++}
+diff --git a/third_party/rust/libc/src/wasi/mod.rs b/third_party/rust/libc/src/wasi/mod.rs
+index cd4f508459..59ffe0c1fe 100644
+--- a/third_party/rust/libc/src/wasi/mod.rs
++++ b/third_party/rust/libc/src/wasi/mod.rs
+@@ -951,9 +951,14 @@ extern "C" {
+     pub fn pthread_rwlockattr_destroy(attr: *mut pthread_rwlockattr_t) -> c_int;
+ }
+ 
++// BrowserOS's libc implements the wasi-libc socket API (the p2 definitions) on
++// wasip1 as well, plus the POSIX process and signal calls in `browseros`.
++mod p2;
++pub use self::p2::*;
++
+ cfg_if! {
+-    if #[cfg(not(target_env = "p1"))] {
+-        mod p2;
+-        pub use self::p2::*;
++    if #[cfg(target_env = "p1")] {
++        mod browseros;
++        pub use self::browseros::*;
+     }
+ }
+diff --git a/third_party/rust/mls-rs-core/src/time.rs b/third_party/rust/mls-rs-core/src/time.rs
+index 96cb22936c..a95677bf56 100644
+--- a/third_party/rust/mls-rs-core/src/time.rs
++++ b/third_party/rust/mls-rs-core/src/time.rs
+@@ -5,7 +5,7 @@
+ use core::time::Duration;
+ use mls_rs_codec::{MlsDecode, MlsEncode, MlsSize};
+ 
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten"), not(target_os = "wasi")))]
+ use wasm_bindgen::prelude::*;
+ 
+ /// Wasm-compatible representation of a timestamp.
+@@ -61,7 +61,7 @@ impl core::ops::Add<Duration> for MlsTime {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl MlsTime {
+     /// Current system time.
+     pub fn now() -> Self {
+@@ -94,13 +94,13 @@ impl From<MlsTime> for Duration {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ #[derive(Debug, thiserror::Error)]
+ #[error("Overflow while adding {0:?}")]
+ /// Overflow in time conversion.
+ pub struct TimeOverflow(Duration);
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl TryFrom<MlsTime> for std::time::SystemTime {
+     type Error = TimeOverflow;
+ 
+@@ -112,7 +112,7 @@ impl TryFrom<MlsTime> for std::time::SystemTime {
+     }
+ }
+ 
+-#[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
++#[cfg(all(any(not(target_arch = "wasm32"), target_os = "wasi"), feature = "std"))]
+ impl TryFrom<std::time::SystemTime> for MlsTime {
+     type Error = std::time::SystemTimeError;
+ 
+@@ -122,7 +122,7 @@ impl TryFrom<std::time::SystemTime> for MlsTime {
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten"), not(target_os = "wasi")))]
+ #[wasm_bindgen(inline_js = r#"
+ export function date_now() {
+   return Date.now();
+@@ -137,7 +137,7 @@ extern "C" {
+     fn date_now() -> f64;
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+ impl MlsTime {
+     pub fn now() -> Self {
+         Self {
+diff --git a/third_party/rust/mtu/src/lib.rs b/third_party/rust/mtu/src/lib.rs
+index a724971ba7..d7d7aa14d3 100644
+--- a/third_party/rust/mtu/src/lib.rs
++++ b/third_party/rust/mtu/src/lib.rs
+@@ -75,7 +75,7 @@ mod linux;
+ #[cfg(target_os = "windows")]
+ mod windows;
+ 
+-#[cfg(not(target_os = "windows"))]
++#[cfg(not(any(target_os = "windows", target_os = "wasi")))]
+ mod routesocket;
+ 
+ #[cfg(any(target_os = "macos", bsd))]
+@@ -115,7 +115,8 @@ const fn aligned_by(size: usize, align: usize) -> usize {
+     target_os = "tvos",
+     target_os = "visionos",
+     target_os = "redox",
+-    target_os = "emscripten"
++    target_os = "emscripten",
++    target_os = "wasi"
+ ))]
+ pub fn interface_and_mtu_impl(remote: IpAddr) -> Result<(String, usize)> {
+     return Err(default_err());
+diff --git a/third_party/rust/neqo-udp/src/lib.rs b/third_party/rust/neqo-udp/src/lib.rs
+index dd5be19e9d..400b96b42f 100644
+--- a/third_party/rust/neqo-udp/src/lib.rs
++++ b/third_party/rust/neqo-udp/src/lib.rs
+@@ -137,7 +137,7 @@ fn is_enobufs(_: &io::Error) -> bool {
+     false
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::AsFd as SocketRef;
+ #[cfg(windows)]
+ use std::os::windows::io::AsSocket as SocketRef;
+diff --git a/third_party/rust/quinn-udp/src/fallback.rs b/third_party/rust/quinn-udp/src/fallback.rs
+index ee57620904..3073b8a594 100644
+--- a/third_party/rust/quinn-udp/src/fallback.rs
++++ b/third_party/rust/quinn-udp/src/fallback.rs
+@@ -65,7 +65,11 @@ impl UdpSocketState {
+         let bufs = unsafe {
+             &mut *(bufs as *mut [IoSliceMut<'_>] as *mut [socket2::MaybeUninitSlice<'_>])
+         };
++        #[cfg(not(target_os = "wasi"))]
+         let (len, _flags, addr) = socket.0.recv_from_vectored(bufs)?;
++        // socket2 has no recvmsg on WASI; one datagram goes into the first buffer.
++        #[cfg(target_os = "wasi")]
++        let (len, addr) = socket.0.recv_from(&mut bufs[0])?;
+         meta[0] = RecvMeta {
+             len,
+             stride: len,
+@@ -118,10 +122,13 @@ impl UdpSocketState {
+ }
+ 
+ fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+-    socket.0.send_to(
+-        transmit.contents,
+-        &socket2::SockAddr::from(transmit.destination),
+-    )
++    socket
++        .0
++        .send_to(
++            transmit.contents,
++            &socket2::SockAddr::from(transmit.destination),
++        )
++        .map(|_| ())
+ }
+ 
+ pub(crate) const BATCH_SIZE: usize = 1;
+diff --git a/third_party/rust/quinn-udp/src/lib.rs b/third_party/rust/quinn-udp/src/lib.rs
+index 179a02b695..d9e6e4806b 100644
+--- a/third_party/rust/quinn-udp/src/lib.rs
++++ b/third_party/rust/quinn-udp/src/lib.rs
+@@ -30,6 +30,8 @@
+ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+ #[cfg(unix)]
+ use std::os::unix::io::AsFd;
++#[cfg(target_os = "wasi")]
++use std::os::fd::AsFd;
+ #[cfg(windows)]
+ use std::os::windows::io::AsSocket;
+ #[cfg(not(wasm_browser))]
+@@ -212,7 +214,7 @@ fn log_sendmsg_error(_: &Mutex<Instant>, _: impl core::fmt::Debug, _: &Transmit<
+ #[cfg(not(wasm_browser))]
+ pub struct UdpSockRef<'a>(socket2::SockRef<'a>);
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ impl<'s, S> From<&'s S> for UdpSockRef<'s>
+ where
+     S: AsFd,
+diff --git a/third_party/rust/socket2/src/lib.rs b/third_party/rust/socket2/src/lib.rs
+index b846288f72..333ea00632 100644
+--- a/third_party/rust/socket2/src/lib.rs
++++ b/third_party/rust/socket2/src/lib.rs
+@@ -109,7 +109,7 @@ macro_rules! from {
+     ($from: ty, $for: ty) => {
+         impl From<$from> for $for {
+             fn from(socket: $from) -> $for {
+-                #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 unsafe {
+                     <$for>::from_raw_fd(socket.into_raw_fd())
+                 }
+@@ -177,13 +177,13 @@ mod socket;
+ mod sockref;
+ 
+ #[cfg_attr(
+-    any(unix, all(target_os = "wasi", not(target_env = "p1"))),
++    any(unix, target_os = "wasi"),
+     path = "sys/unix.rs"
+ )]
+ #[cfg_attr(windows, path = "sys/windows.rs")]
+ mod sys;
+ 
+-#[cfg(not(any(windows, unix, all(target_os = "wasi", not(target_env = "p1")))))]
++#[cfg(not(any(windows, unix, target_os = "wasi")))]
+ compile_error!("Socket2 doesn't support the compile target");
+ 
+ use sys::c_int;
+@@ -528,7 +528,7 @@ impl TcpKeepalive {
+         target_os = "watchos",
+         target_os = "windows",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     ))]
+     pub const fn with_interval(self, interval: Duration) -> Self {
+         Self {
+@@ -558,7 +558,7 @@ impl TcpKeepalive {
+             target_os = "watchos",
+             target_os = "cygwin",
+             target_os = "windows",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub const fn with_retries(self, retries: u32) -> Self {
+diff --git a/third_party/rust/socket2/src/sockaddr.rs b/third_party/rust/socket2/src/sockaddr.rs
+index 120a546649..a5bd4cf370 100644
+--- a/third_party/rust/socket2/src/sockaddr.rs
++++ b/third_party/rust/socket2/src/sockaddr.rs
+@@ -298,7 +298,7 @@ impl SockAddr {
+                 ip,
+                 port,
+                 addr.sin6_flowinfo,
+-                #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++                #[cfg(any(unix, target_os = "wasi"))]
+                 addr.sin6_scope_id,
+                 #[cfg(windows)]
+                 unsafe {
+@@ -393,7 +393,7 @@ impl From<SocketAddrV6> for SockAddr {
+             storage.sin6_port = addr.port().to_be();
+             storage.sin6_addr = crate::sys::to_in6_addr(addr.ip());
+             storage.sin6_flowinfo = addr.flowinfo();
+-            #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++            #[cfg(any(unix, target_os = "wasi"))]
+             {
+                 storage.sin6_scope_id = addr.scope_id();
+             }
+diff --git a/third_party/rust/socket2/src/socket.rs b/third_party/rust/socket2/src/socket.rs
+index b258c93c33..af6aacdc68 100644
+--- a/third_party/rust/socket2/src/socket.rs
++++ b/third_party/rust/socket2/src/socket.rs
+@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
+ #[cfg(not(target_os = "nto"))]
+ use std::net::Ipv6Addr;
+ use std::net::{self, Ipv4Addr, Shutdown};
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::{FromRawFd, IntoRawFd};
+ #[cfg(windows)]
+ use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+@@ -220,7 +220,7 @@ impl Socket {
+         match res {
+             Ok(()) => return Ok(()),
+             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+-            #[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++            #[cfg(any(unix, target_os = "wasi"))]
+             Err(ref e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {}
+             Err(e) => return Err(e),
+         }
+@@ -367,7 +367,7 @@ impl Socket {
+     /// On Windows it is not possible retrieve the nonblocking mode status.
+     #[cfg(all(
+         feature = "all",
+-        any(unix, all(target_os = "wasi", not(target_env = "p1")))
++        any(unix, target_os = "wasi")
+     ))]
+     pub fn nonblocking(&self) -> io::Result<bool> {
+         sys::nonblocking(self.as_raw())
+@@ -2241,7 +2241,7 @@ impl Socket {
+             target_os = "tvos",
+             target_os = "watchos",
+             target_os = "cygwin",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub fn tcp_keepalive_interval(&self) -> io::Result<Duration> {
+@@ -2273,7 +2273,7 @@ impl Socket {
+             target_os = "watchos",
+             target_os = "cygwin",
+             target_os = "windows",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub fn tcp_keepalive_retries(&self) -> io::Result<u32> {
+diff --git a/third_party/rust/socket2/src/sockref.rs b/third_party/rust/socket2/src/sockref.rs
+index b07a031f70..b938b62d6c 100644
+--- a/third_party/rust/socket2/src/sockref.rs
++++ b/third_party/rust/socket2/src/sockref.rs
+@@ -2,7 +2,7 @@ use std::fmt;
+ use std::marker::PhantomData;
+ use std::mem::ManuallyDrop;
+ use std::ops::Deref;
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+ #[cfg(windows)]
+ use std::os::windows::io::{AsRawSocket, AsSocket, FromRawSocket};
+@@ -77,7 +77,7 @@ impl<'s> Deref for SockRef<'s> {
+ }
+ 
+ /// On Windows, a corresponding `From<&impl AsSocket>` implementation exists.
+-#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p1"))))]
++#[cfg(any(unix, target_os = "wasi"))]
+ impl<'s, S> From<&'s S> for SockRef<'s>
+ where
+     S: AsFd,
+diff --git a/third_party/rust/socket2/src/sys/unix.rs b/third_party/rust/socket2/src/sys/unix.rs
+index 5162e8310e..cc696a1eb0 100644
+--- a/third_party/rust/socket2/src/sys/unix.rs
++++ b/third_party/rust/socket2/src/sys/unix.rs
+@@ -267,7 +267,7 @@ pub(crate) use libc::{IPV6_ADD_MEMBERSHIP, IPV6_DROP_MEMBERSHIP};
+     target_os = "solaris",
+     target_os = "tvos",
+     target_os = "watchos",
+-    all(target_os = "wasi", not(target_env = "p1")),
++    target_os = "wasi",
+ ))]
+ pub(crate) use libc::{
+     IPV6_JOIN_GROUP as IPV6_ADD_MEMBERSHIP, IPV6_LEAVE_GROUP as IPV6_DROP_MEMBERSHIP,
+@@ -290,7 +290,7 @@ pub(crate) use libc::{IPV6_MULTICAST_HOPS, IPV6_MULTICAST_IF, IP_MULTICAST_IF, M
+         target_os = "tvos",
+         target_os = "watchos",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     )
+ ))]
+ pub(crate) use libc::{TCP_KEEPCNT, TCP_KEEPINTVL};
+@@ -452,7 +452,7 @@ impl Type {
+             target_os = "netbsd",
+             target_os = "openbsd",
+             target_os = "cygwin",
+-            all(target_os = "wasi", not(target_env = "p1")),
++            target_os = "wasi",
+         )
+     ))]
+     pub const fn nonblocking(self) -> Type {
+@@ -1002,7 +1002,7 @@ pub(crate) fn try_clone(fd: RawSocket) -> io::Result<RawSocket> {
+ 
+ #[cfg(all(
+     feature = "all",
+-    any(unix, all(target_os = "wasi", not(target_env = "p1"))),
++    any(unix, target_os = "wasi"),
+     not(target_os = "vita")
+ ))]
+ pub(crate) fn nonblocking(fd: RawSocket) -> io::Result<bool> {
+@@ -1263,7 +1263,7 @@ pub(crate) fn set_tcp_keepalive(fd: RawSocket, keepalive: &TcpKeepalive) -> io::
+         target_os = "tvos",
+         target_os = "watchos",
+         target_os = "cygwin",
+-        all(target_os = "wasi", not(target_env = "p1")),
++        target_os = "wasi",
+     ))]
+     {
+         if let Some(interval) = keepalive.interval {
+diff --git a/third_party/sqlite3/src/moz.build b/third_party/sqlite3/src/moz.build
+index da931832e0..212ea90337 100644
+--- a/third_party/sqlite3/src/moz.build
++++ b/third_party/sqlite3/src/moz.build
+@@ -27,6 +27,11 @@ SOURCES += [
+     "sqlite3.c",
+ ]
+ 
++if CONFIG["OS_TARGET"] == "WASI":
++    SOURCES += [
++        "sqlite3_wasi_load_extension.c",
++    ]
++
+ LOCAL_INCLUDES += [
+     "../ext",
+ ]
+diff --git a/toolkit/components/kvstore/src/fs.rs b/toolkit/components/kvstore/src/fs.rs
+index 37ac203c85..bcd70253b4 100644
+--- a/toolkit/components/kvstore/src/fs.rs
++++ b/toolkit/components/kvstore/src/fs.rs
+@@ -57,7 +57,23 @@ impl WidePathBuf {
+             }
+             Ok(OsString::from_vec(unsafe { CStr::from_ptr(ptr) }.to_bytes().into()).into())
+         }
+-        #[cfg(all(not(unix), not(windows)))]
++        // std::fs::canonicalize is unsupported on wasip1; BrowserOS's libc
++        // has realpath.
++        #[cfg(target_os = "wasi")]
++        {
++            use std::{
++                ffi::{CStr, CString, OsString},
++                os::wasi::ffi::OsStringExt,
++            };
++            let path = CString::new(String::from_utf16(&*self.0).map_err(io::Error::other)?)?;
++            let mut bytes = [0 as libc::c_char; libc::PATH_MAX as usize];
++            let ptr = unsafe { libc::realpath(path.as_ptr(), bytes[..].as_mut_ptr()) };
++            if ptr.is_null() {
++                return Err(io::Error::last_os_error());
++            }
++            Ok(OsString::from_vec(unsafe { CStr::from_ptr(ptr) }.to_bytes().into()).into())
++        }
++        #[cfg(all(not(unix), not(windows), not(target_os = "wasi")))]
+         compile_error!("`WidePathBuf::canonicalize` requires Windows or Unix")
+     }
+ }
+diff --git a/toolkit/components/processtools/Cargo.toml b/toolkit/components/processtools/Cargo.toml
+index c78cdb3383..fd50ac5cf0 100644
+--- a/toolkit/components/processtools/Cargo.toml
++++ b/toolkit/components/processtools/Cargo.toml
+@@ -12,6 +12,6 @@ xpcom = { path = "../../../xpcom/rust/xpcom" }
+ [target.'cfg(windows)'.dependencies]
+ winapi = "0.3.7"
+ 
+-[target.'cfg(unix)'.dependencies]
++[target.'cfg(any(unix, target_os = "wasi"))'.dependencies]
+ libc = "0.2"
+ log = "0.4"
+diff --git a/toolkit/components/processtools/moz.build b/toolkit/components/processtools/moz.build
+index 60da6f2370..70ebb1bf06 100644
+--- a/toolkit/components/processtools/moz.build
++++ b/toolkit/components/processtools/moz.build
+@@ -54,5 +54,7 @@ elif toolkit == "windows":
+     ]
+ elif toolkit in ("cocoa", "uikit"):
+     UNIFIED_SOURCES += ["ProcInfo.mm"]
++elif CONFIG["OS_TARGET"] == "WASI":
++    UNIFIED_SOURCES += ["ProcInfo_wasi.cpp"]
+ 
+ include("/ipc/chromium/chromium-config.mozbuild")
+diff --git a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+index d641f91719..730a53b3f5 100644
+--- a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
++++ b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+@@ -1006,15 +1006,22 @@ static nsCString GetFPUControlState() {
+     case FE_TONEAREST:
+       mode_str = "0";
+       break;
++    // wasm rounds to nearest only, so WASI's <fenv.h> has no other modes.
++#ifdef FE_DOWNWARD
+     case FE_DOWNWARD:
+       mode_str = "1";
+       break;
++#endif
++#ifdef FE_UPWARD
+     case FE_UPWARD:
+       mode_str = "2";
+       break;
++#endif
++#ifdef FE_TOWARDZERO
+     case FE_TOWARDZERO:
+       mode_str = "3";
+       break;
++#endif
+   }
+   result.AppendLiteral("std:");
+   result.Append(mode_str);
+diff --git a/toolkit/components/telemetry/moz.build b/toolkit/components/telemetry/moz.build
+index 91ae53839b..d9f0f53feb 100644
+--- a/toolkit/components/telemetry/moz.build
++++ b/toolkit/components/telemetry/moz.build
+@@ -6,9 +6,11 @@ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+ FINAL_LIBRARY = "xul"
+ 
+-DIRS = [
+-    "pingsender",
+-]
++# pingsender is a separate program that dlopens libcurl; WASI has neither.
++if CONFIG["OS_TARGET"] != "WASI":
++    DIRS = [
++        "pingsender",
++    ]
+ 
+ DEFINES["MOZ_APP_VERSION"] = '"%s"' % CONFIG["MOZ_APP_VERSION"]
+ 
+diff --git a/toolkit/library/build/dependentlibs.py b/toolkit/library/build/dependentlibs.py
+index dce55a123f..fb2efbb2a6 100644
+--- a/toolkit/library/build/dependentlibs.py
++++ b/toolkit/library/build/dependentlibs.py
+@@ -147,7 +147,8 @@ def dependentlibs(lib, libpaths, func):
+ def gen_list(output, lib):
+     libpaths = [os.path.join(substs["DIST"], "bin")]
+     binary_type = get_type(lib)
+-    is_wasm = substs.get("OS_TARGET") == "EMSCRIPTEN"
++    # WASI links every library into one module as well (see MKSHLIB).
++    is_wasm = substs.get("OS_TARGET") in ("EMSCRIPTEN", "WASI")
+     if is_wasm:
+         func = dependentlibs_wasm
+     elif binary_type == ELF:
+diff --git a/toolkit/modules/ShortcutUtils.sys.mjs b/toolkit/modules/ShortcutUtils.sys.mjs
+index 0a2a5ac202..2ec631847f 100644
+--- a/toolkit/modules/ShortcutUtils.sys.mjs
++++ b/toolkit/modules/ShortcutUtils.sys.mjs
+@@ -95,7 +95,10 @@ export var ShortcutUtils = {
+     let elemString = "";
+     let haveCloverLeaf = false;
+     if (elemMod.match("accel")) {
+-      if (Services.appinfo.OS == "Darwin") {
++      // ⌘ is also the shortcut key where ui.key.accelKey says Meta (224 or 91),
++      // such as a desktop laid out like macOS.
++      const accelKey = Services.prefs.getIntPref("ui.key.accelKey", 0);
++      if (Services.appinfo.OS == "Darwin" || accelKey == 224 || accelKey == 91) {
+         haveCloverLeaf = true;
+       } else {
+         elemString +=
+@@ -141,9 +144,12 @@ export var ShortcutUtils = {
+     }
+ 
+     if (haveCloverLeaf) {
++      // Other platforms name the key "Win" or "Super"; show the ⌘ it is here.
+       elemString +=
+-        lazy.PlatformKeys.GetStringFromName("VK_COMMAND_OR_WIN") +
+-        lazy.PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR");
++        Services.appinfo.OS == "Darwin"
++          ? lazy.PlatformKeys.GetStringFromName("VK_COMMAND_OR_WIN") +
++            lazy.PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR")
++          : "\u2318";
+     }
+ 
+     return elemString;
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index b8c8a03c3d..0bc2cf1294 100644
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -166,7 +166,7 @@ def fold_libs(target):
+     # separate objects collide on shared symbols (libVersionPoint, etc.) when
+     # statically linked into one wasm module, and wasm-ld has no
+     # --allow-multiple-definition. Folding is also what Android does.
+-    return target.os in ("WINNT", "OSX", "iOS", "Android", "EMSCRIPTEN")
++    return target.os in ("WINNT", "OSX", "iOS", "Android", "EMSCRIPTEN", "WASI")
+ 
+ 
+ set_config("MOZ_FOLD_LIBS", fold_libs)
+@@ -280,6 +280,9 @@ def audio_backends_default(target):
+         return ("sunaudio",)
+     elif target.os == "WINNT":
+         return ("wasapi",)
++    elif target.os == "WASI":
++        # BrowserOS has no audio device for cubeb yet.
++        return False
+     else:
+         return ("pulseaudio",)
+ 
+@@ -534,7 +537,7 @@ def toolkit_choices(target):
+         return ("cairo-uikit",)
+     elif target.os == "Android":
+         return ("cairo-android",)
+-    elif target.os == "EMSCRIPTEN":
++    elif target.os in ("EMSCRIPTEN", "WASI"):
+         # No native widget toolkit in wasm; use the offscreen headless backend
+         # (widget/headless) as the sole widget toolkit.
+         return ("cairo-headless",)
+@@ -796,7 +799,7 @@ def freetype2_combined_info(fontconfig_info, freetype2_info):
+ @depends(freetype2_info, target)
+ def have_freetype2(freetype2_info, target):
+     # emscripten provides FreeType via its port (-sUSE_FREETYPE).
+-    if freetype2_info or target.os == "EMSCRIPTEN":
++    if freetype2_info or target.os in ("EMSCRIPTEN", "WASI"):
+         return True
+ 
+ 
+@@ -1328,7 +1331,7 @@ def tree_freetype(target):
+     # emscripten's bundled FreeType port is ancient (2.6.0) and missing many
+     # APIs Gecko's font code needs (FT_Done_MM_Var, variable fonts, COLRv1...).
+     # Build the modern in-tree FreeType instead.
+-    if target.os == "EMSCRIPTEN":
++    if target.os in ("EMSCRIPTEN", "WASI"):
+         return True
+ 
+ 
+@@ -1360,7 +1363,7 @@ def enable_cairo_ft(target, tree_freetype, freetype2_info):
+     return (
+         freetype2_info
+         or (tree_freetype and target.os != "WINNT")
+-        or target.os == "EMSCRIPTEN"
++        or target.os in ("EMSCRIPTEN", "WASI")
+     )
+ 
+ 
+diff --git a/tools/profiler/core/ProfilerUtils.cpp b/tools/profiler/core/ProfilerUtils.cpp
+index 64e7831e34..c55582c051 100644
+--- a/tools/profiler/core/ProfilerUtils.cpp
++++ b/tools/profiler/core/ProfilerUtils.cpp
+@@ -9,8 +9,26 @@
+ 
+ #include "mozilla/ProfilerUtils.h"
+ 
++// --------------------------------------------- WASI process & thread ids
++#if defined(__wasi__)
++
++#  include <pthread.h>
++#  include <unistd.h>
++
++// WASI has no thread ids; with wasi-threads, pthread_self() tells live threads
++// apart (same as mozglue/baseprofiler).
++
++ProfilerProcessId profiler_current_process_id() {
++  return ProfilerProcessId::FromNativeId(unsigned(getpid()));
++}
++
++ProfilerThreadId profiler_current_thread_id() {
++  return ProfilerThreadId::FromNativeId(
++      unsigned(reinterpret_cast<uintptr_t>(pthread_self())));
++}
++
+ // --------------------------------------------- Windows process & thread ids
+-#if defined(XP_WIN)
++#elif defined(XP_WIN)
+ 
+ #  include <process.h>
+ #  include <processthreadsapi.h>
+diff --git a/widget/MediaKeysEventSourceFactory.cpp b/widget/MediaKeysEventSourceFactory.cpp
+index b49ffa8fb7..9278bb2cfc 100644
+--- a/widget/MediaKeysEventSourceFactory.cpp
++++ b/widget/MediaKeysEventSourceFactory.cpp
+@@ -8,7 +8,7 @@
+ 
+ namespace mozilla::widget {
+ 
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ class EmscriptenMediaControlKeySource final
+     : public mozilla::dom::MediaControlKeySource {
+  public:
+diff --git a/widget/headless/moz.build b/widget/headless/moz.build
+index bb7c839554..a9a383568f 100644
+--- a/widget/headless/moz.build
++++ b/widget/headless/moz.build
+@@ -27,6 +27,11 @@ UNIFIED_SOURCES += [
+     "HeadlessWidget.cpp",
+ ]
+ 
++if widget_dir == "headless":
++    UNIFIED_SOURCES += [
++        "HeadlessToolkitWidgets.cpp",
++    ]
++
+ if widget_dir in ("gtk", "headless"):
+     # HeadlessLookAndFeelGTK.cpp is pure hardcoded defaults (no GTK API), so it
+     # also serves as the headless-only toolkit's nsLookAndFeel implementation.
+diff --git a/widget/moz.build b/widget/moz.build
+index 9a4ff13578..5397036aaa 100644
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -337,7 +337,7 @@ EXPORTS.ipc = [
+ if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
+     DIRS += ["x11"]
+ 
+-if toolkit in {"gtk", "cocoa", "windows", "android", "uikit"}:
++if toolkit in {"gtk", "cocoa", "windows", "android", "uikit", "headless"}:
+     UNIFIED_SOURCES += [
+         "nsBaseFilePicker.cpp",
+     ]
+diff --git a/widget/nsContentProcessWidgetFactory.h b/widget/nsContentProcessWidgetFactory.h
+index 134438621b..fa5e093ae7 100644
+--- a/widget/nsContentProcessWidgetFactory.h
++++ b/widget/nsContentProcessWidgetFactory.h
+@@ -21,7 +21,7 @@
+     return inst.forget();                                              \
+   }
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // The cairo-headless toolkit registers no platform clipboard component, so
+ // @mozilla.org/widget/parent/clipboard;1 is absent. Build the headless clipboard
+ // directly (single process => always the parent path). Defined in
+diff --git a/widget/nsTransferable.cpp b/widget/nsTransferable.cpp
+index 40fba76b52..5993e1ac64 100644
+--- a/widget/nsTransferable.cpp
++++ b/widget/nsTransferable.cpp
+@@ -559,7 +559,7 @@ void nsTransferable::SetReferrerInfo(nsIReferrerInfo* aReferrerInfo) {
+   mReferrerInfo = aReferrerInfo;
+ }
+ 
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+ // The cairo-headless toolkit registers no platform widget components -- those live
+ // in widget/{gtk,cocoa,...}/components.conf, none of which is built here. Editor
+ // copy/cut/paste needs @mozilla.org/widget/transferable;1 (and the format
+diff --git a/xpcom/base/nsDumpUtils.cpp b/xpcom/base/nsDumpUtils.cpp
+index 933b15646f..efa6af387d 100644
+--- a/xpcom/base/nsDumpUtils.cpp
++++ b/xpcom/base/nsDumpUtils.cpp
+@@ -12,7 +12,7 @@
+ #include "mozilla/ClearOnShutdown.h"
+ #include "SpecialSystemDirectory.h"
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)  // {
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)  // {
+ #  include "mozilla/Preferences.h"
+ #  include <fcntl.h>
+ #  include <unistd.h>
+@@ -392,7 +392,7 @@ void FifoWatcher::OnFileCanReadWithoutBlocking(int aFd) {
+   LOG("Got unexpected value from fifo; ignoring it.");
+ }
+ 
+-#endif  // XP_UNIX && !XP_IOS }
++#endif  // XP_UNIX && !XP_IOS && !__wasi__ }
+ 
+ // In Android case, this function will open a file named aFilename under
+ // /data/local/tmp/"aFoldername".
+diff --git a/xpcom/base/nsDumpUtils.h b/xpcom/base/nsDumpUtils.h
+index 0e49aae975..2818c3a6e3 100644
+--- a/xpcom/base/nsDumpUtils.h
++++ b/xpcom/base/nsDumpUtils.h
+@@ -25,7 +25,7 @@
+ #  define LOG(...)
+ #endif
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)  // {
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)  // {
+ 
+ /**
+  * Abstract base class for something which watches an fd and takes action when
+@@ -162,7 +162,7 @@ class SignalPipeWatcher : public FdWatcher {
+   SignalInfoArray mSignalInfo MOZ_GUARDED_BY(mSignalInfoLock);
+ };
+ 
+-#endif  // XP_UNIX && !XP_IOS }
++#endif  // XP_UNIX && !XP_IOS && !__wasi__ }
+ 
+ class nsDumpUtils {
+  public:
+diff --git a/xpcom/base/nsMemoryInfoDumper.cpp b/xpcom/base/nsMemoryInfoDumper.cpp
+index a124c75467..7f483c8e2d 100644
+--- a/xpcom/base/nsMemoryInfoDumper.cpp
++++ b/xpcom/base/nsMemoryInfoDumper.cpp
+@@ -29,7 +29,8 @@
+ #  include <unistd.h>
+ #endif
+ 
+-#if defined(XP_UNIX) && !defined(XP_IOS)
++// BrowserOS's filesystem has no named pipes.
++#if defined(XP_UNIX) && !defined(XP_IOS) && !defined(__wasi__)
+ #  define MOZ_SUPPORTS_FIFO 1
+ #endif
+ 
+diff --git a/xpcom/build/BinaryPath.h b/xpcom/build/BinaryPath.h
+index ff17e195cf..66f8029727 100644
+--- a/xpcom/build/BinaryPath.h
++++ b/xpcom/build/BinaryPath.h
+@@ -278,6 +278,13 @@ class BinaryPath {
+     strcpy(aResult, "/firefox");
+     return NS_OK;
+   }
++#elif defined(__wasi__)
++  // WASI has no executable path. BrowserOS's browser-firefox package installs
++  // the engine and its resources (omni.ja, defaults/) in /usr/lib/firefox.
++  static nsresult Get(char aResult[MAXPATHLEN]) {
++    strcpy(aResult, "/usr/lib/firefox/firefox");
++    return NS_OK;
++  }
+ #else
+ #  error Oops, you need platform-specific code here
+ #endif
+diff --git a/xpcom/reflect/xptcall/md/unix/moz.build b/xpcom/reflect/xptcall/md/unix/moz.build
+index 20729d8251..43e714c361 100644
+--- a/xpcom/reflect/xptcall/md/unix/moz.build
++++ b/xpcom/reflect/xptcall/md/unix/moz.build
+@@ -10,6 +10,14 @@ if CONFIG["OS_ARCH"] == "EMSCRIPTEN":
+         "xptcstubs_wasm.cpp",
+     ]
+ 
++if CONFIG["OS_ARCH"] == "WASI":
++    # Same marshaling as the emscripten port, but dispatched through tables
++    # that xptcodegen.py generates into xptdata.cpp (no JS function table).
++    SOURCES += [
++        "xptcinvoke_wasi.cpp",
++        "xptcstubs_wasi.cpp",
++    ]
++
+ if CONFIG["OS_ARCH"] == "Darwin":
+     SOURCES += [
+         "xptcinvoke_darwin.cpp",
+diff --git a/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp b/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp
+new file mode 100644
+index 0000000000..35ae8d985a
+--- /dev/null
++++ b/xpcom/reflect/xptcall/md/unix/xptcinvoke_wasi.cpp
+@@ -0,0 +1,107 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// wasm32-wasi xptcall, JS->C++ direction: NS_InvokeByIndex.
++//
++// wasm call_indirect needs the exact function type at the call site. The
++// arguments are packed into 8-byte slots, and the call is made by the invoker
++// that xptcodegen.py generated for this signature.
++
++#include "xptcprivate.h"
++#include "xptcall_wasi.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++static const xptcall_wasi::InvokeEntry* FindInvoker(const char* aSig) {
++  size_t lo = 0;
++  size_t hi = xptcall_wasi::kInvokerCount;
++  while (lo < hi) {
++    size_t mid = (lo + hi) / 2;
++    int cmp = strcmp(xptcall_wasi::kInvokers[mid].mSig, aSig);
++    if (cmp == 0) {
++      return &xptcall_wasi::kInvokers[mid];
++    }
++    if (cmp < 0) {
++      lo = mid + 1;
++    } else {
++      hi = mid;
++    }
++  }
++  return nullptr;
++}
++
++extern "C" nsresult NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
++                                     uint32_t paramCount,
++                                     nsXPTCVariant* params) {
++  void** vtable = *reinterpret_cast<void***>(that);
++  void* fp = vtable[methodIndex];
++
++  char sig[PARAM_BUFFER_COUNT + 8];
++  size_t sn = 0;
++  sig[sn++] = 'i';  // nsresult
++  sig[sn++] = 'i';  // this
++  uint8_t argbuf[PARAM_BUFFER_COUNT * 8];
++  if (paramCount > PARAM_BUFFER_COUNT) {
++    return NS_ERROR_ILLEGAL_VALUE;
++  }
++
++  for (uint32_t i = 0; i < paramCount; i++) {
++    nsXPTCVariant& s = params[i];
++    uint8_t* a = argbuf + size_t(i) * 8;
++    memset(a, 0, 8);
++    if (s.IsIndirect()) {
++      sig[sn++] = 'i';
++      void* p = &s.val;
++      memcpy(a, &p, sizeof(p));
++      continue;
++    }
++    int32_t i32 = 0;
++    switch (s.type) {
++      case nsXPTType::T_DOUBLE:
++        sig[sn++] = 'd';
++        memcpy(a, &s.val.d, sizeof(double));
++        continue;
++      case nsXPTType::T_FLOAT:
++        sig[sn++] = 'f';
++        memcpy(a, &s.val.f, sizeof(float));
++        continue;
++      case nsXPTType::T_I64:
++        sig[sn++] = 'j';
++        memcpy(a, &s.val.i64, sizeof(int64_t));
++        continue;
++      case nsXPTType::T_U64:
++        sig[sn++] = 'j';
++        memcpy(a, &s.val.u64, sizeof(uint64_t));
++        continue;
++      case nsXPTType::T_I8: i32 = s.val.i8; break;
++      case nsXPTType::T_I16: i32 = s.val.i16; break;
++      case nsXPTType::T_I32: i32 = s.val.i32; break;
++      case nsXPTType::T_U8: i32 = s.val.u8; break;
++      case nsXPTType::T_U16: i32 = s.val.u16; break;
++      case nsXPTType::T_U32: i32 = int32_t(s.val.u32); break;
++      case nsXPTType::T_BOOL: i32 = s.val.b ? 1 : 0; break;
++      case nsXPTType::T_CHAR: i32 = s.val.c; break;
++      case nsXPTType::T_WCHAR: i32 = s.val.wc; break;
++      default:
++        i32 = int32_t(reinterpret_cast<intptr_t>(s.val.p));
++        break;
++    }
++    sig[sn++] = 'i';
++    memcpy(a, &i32, sizeof(i32));
++  }
++  sig[sn] = '\0';
++
++  const xptcall_wasi::InvokeEntry* entry = FindInvoker(sig);
++  if (!entry) {
++    // Every signature reachable from XPIDL is generated; reaching this means
++    // the generator and the caller disagree about the C++ ABI.
++    fprintf(stderr, "xptcall: no invoker for signature %s (method %u)\n", sig,
++            methodIndex);
++    abort();
++  }
++  return entry->mInvoke(fp, that, argbuf);
++}
+diff --git a/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp b/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp
+new file mode 100644
+index 0000000000..ae7836739b
+--- /dev/null
++++ b/xpcom/reflect/xptcall/md/unix/xptcstubs_wasi.cpp
+@@ -0,0 +1,279 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// wasm32-wasi xptcall, C++->JS direction (the nsXPTCStubBase replacement).
++//
++// wasm call_indirect enforces an exact function type at every call site, so the
++// native "one Stub# entry, marshal registers in asm" trick can't be ported. We
++// instead build, per interface, a vtable whose slots are real wasm functions of
++// the right type:
++//   slot 0/1/2 -> QueryInterface/AddRef/Release (fixed-signature C++ funcs)
++//   slot N>=3  -> the function xptcodegen.py generated for (signature, N). It
++//                 packs its arguments into 8-byte slots and forwards to
++//                 WasmXPTCStubDispatch, which rebuilds an nsXPTCMiniVariant[]
++//                 and calls mOuter->CallMethod.
++// Vtables are cached per nsXPTInterfaceInfo.
++
++#include "xptcprivate.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <unordered_map>
++#include <cstdio>
++
++#include "xptcall_wasi.h"
++
++#include "mozilla/StaticMutex.h"
++
++// The synthetic proxy object. The vtable pointer MUST be first so that an
++// interface pointer to this object dispatches through our table.
++struct WasmStub {
++  void** vtable;
++  nsIXPTCProxy* mOuter;
++  const nsXPTInterfaceInfo* mEntry;
++};
++
++extern "C" {
++
++// nsISupports slots, implemented directly (fixed signatures, no marshaling).
++nsresult WasmStub_QueryInterface(WasmStub* self, const nsID& aIID,
++                                 void** aInstancePtr) {
++  if (aIID.Equals(self->mEntry->IID())) {
++    self->mOuter->AddRef();
++    *aInstancePtr = static_cast<void*>(self);
++    return NS_OK;
++  }
++  return self->mOuter->QueryInterface(aIID, aInstancePtr);
++}
++
++MozExternalRefCountType WasmStub_AddRef(WasmStub* self) {
++  return self->mOuter->AddRef();
++}
++
++MozExternalRefCountType WasmStub_Release(WasmStub* self) {
++  return self->mOuter->Release();
++}
++
++// Called by every method shim. argbuf holds one 8-byte slot per incoming C++
++// argument (excluding 'this'): integers/pointers in the low bytes, i64 as 8
++// bytes, float as 4 bytes, double as 8 bytes -- matching how the JS shim wrote
++// them per the signature. We walk the XPT params (skipping the implicit
++// JSContext slot, ignoring a trailing optional-argc slot) into a mini-variant
++// array, then dispatch.
++nsresult WasmXPTCStubDispatch(void* aSelf, uint32_t methodIndex,
++                              uint8_t* argbuf, uint32_t /*nargs*/) {
++  WasmStub* self = static_cast<WasmStub*>(aSelf);
++  const nsXPTMethodInfo* info = nullptr;
++  self->mEntry->GetMethodInfo(uint16_t(methodIndex), &info);
++  if (!info) {
++    return NS_ERROR_UNEXPECTED;
++  }
++
++  nsXPTCMiniVariant paramBuffer[PARAM_BUFFER_COUNT];
++  uint32_t paramCount = info->ParamCount();
++  const uint8_t indexOfJSContext = info->IndexOfJSContext();
++
++  uint32_t slot = 0;  // index into argbuf's 8-byte slots
++  for (uint32_t i = 0; i < paramCount; i++) {
++    if (i == indexOfJSContext) {
++      slot++;  // skip the implicit JSContext* argument
++    }
++    const nsXPTParamInfo& param = info->Param(i);
++    const nsXPTType& type = param.GetType();
++    nsXPTCMiniVariant* dp = &paramBuffer[i];
++    uint8_t* a = argbuf + size_t(slot) * 8;
++    slot++;
++
++    if (param.IsOut() || !type.IsArithmetic()) {
++      dp->val.p = *reinterpret_cast<void**>(a);
++      continue;
++    }
++    switch (type) {
++      case nsXPTType::T_I8:    dp->val.i8  = int8_t(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_I16:   dp->val.i16 = int16_t(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_I32:   dp->val.i32 = *reinterpret_cast<int32_t*>(a); break;
++      case nsXPTType::T_I64:   dp->val.i64 = *reinterpret_cast<int64_t*>(a); break;
++      case nsXPTType::T_U8:    dp->val.u8  = uint8_t(*reinterpret_cast<uint32_t*>(a)); break;
++      case nsXPTType::T_U16:   dp->val.u16 = uint16_t(*reinterpret_cast<uint32_t*>(a)); break;
++      case nsXPTType::T_U32:   dp->val.u32 = *reinterpret_cast<uint32_t*>(a); break;
++      case nsXPTType::T_U64:   dp->val.u64 = *reinterpret_cast<uint64_t*>(a); break;
++      case nsXPTType::T_FLOAT: dp->val.f   = *reinterpret_cast<float*>(a); break;
++      case nsXPTType::T_DOUBLE:dp->val.d   = *reinterpret_cast<double*>(a); break;
++      case nsXPTType::T_BOOL:  dp->val.b   = bool(uint8_t(*reinterpret_cast<uint32_t*>(a))); break;
++      case nsXPTType::T_CHAR:  dp->val.c   = char(*reinterpret_cast<int32_t*>(a)); break;
++      case nsXPTType::T_WCHAR: dp->val.wc  = char16_t(*reinterpret_cast<uint32_t*>(a)); break;
++      default:
++        dp->val.p = *reinterpret_cast<void**>(a);
++        break;
++    }
++  }
++
++  return self->mOuter->CallMethod(uint16_t(methodIndex), info, paramBuffer);
++}
++
++}  // extern "C"
++
++// Compute the signature string for a method: return type
++// first ('i' = nsresult), then 'this', then each argument in C++ order.
++static char WasmTypeChar(const nsXPTParamInfo& aParam) {
++  if (aParam.IsOut()) {
++    return 'i';  // out params are pointers
++  }
++  const nsXPTType& type = aParam.GetType();
++  if (!type.IsArithmetic()) {
++    return 'i';  // complex types passed by pointer
++  }
++  switch (type) {
++    case nsXPTType::T_I64:
++    case nsXPTType::T_U64:
++      return 'j';
++    case nsXPTType::T_FLOAT:
++      return 'f';
++    case nsXPTType::T_DOUBLE:
++      return 'd';
++    default:
++      return 'i';
++  }
++}
++
++static void WasmComputeSig(const nsXPTMethodInfo* aInfo, char* aOut,
++                           size_t aMax) {
++  size_t n = 0;
++  auto put = [&](char c) {
++    if (n + 1 < aMax) aOut[n++] = c;
++  };
++  put('i');  // nsresult return
++  put('i');  // this
++  uint32_t paramCount = aInfo->ParamCount();
++  uint8_t indexOfJSContext = aInfo->IndexOfJSContext();
++  for (uint32_t i = 0; i < paramCount; i++) {
++    if (aInfo->WantsContext() && i == indexOfJSContext) {
++      put('i');  // implicit JSContext*
++    }
++    put(WasmTypeChar(aInfo->Param(i)));
++  }
++  if (aInfo->WantsContext() && indexOfJSContext == paramCount) {
++    put('i');  // JSContext* after all params (no retval case)
++  }
++  if (aInfo->WantsOptArgc()) {
++    put('i');  // trailing uint8_t argc
++  }
++  aOut[n] = '\0';
++}
++
++// Find the generated method shim for (signature, method index).
++static void* WasmFindStub(uint32_t aMethodIndex, const char* aSig) {
++  size_t lo = 0;
++  size_t hi = xptcall_wasi::kStubCount;
++  while (lo < hi) {
++    size_t mid = (lo + hi) / 2;
++    const xptcall_wasi::StubEntry& e = xptcall_wasi::kStubs[mid];
++    int cmp = strcmp(e.mSig, aSig);
++    if (cmp == 0) {
++      cmp = int(e.mMethodIndex) - int(aMethodIndex);
++    }
++    if (cmp == 0) {
++      return e.mFunc;
++    }
++    if (cmp < 0) {
++      lo = mid + 1;
++    } else {
++      hi = mid;
++    }
++  }
++  return nullptr;
++}
++
++// Slots without a generated shim ([notxpcom] methods) cannot be called on a
++// JS-implemented object.
++static nsresult WasmStub_Unsupported(WasmStub* self) {
++  fprintf(stderr, "xptcall: unsupported method on %s\n", self->mEntry->Name());
++  abort();
++}
++
++static mozilla::StaticMutex sVtableMutex MOZ_UNANNOTATED;
++
++static std::unordered_map<const nsXPTInterfaceInfo*, void**>* sVtableCache =
++    nullptr;
++
++static void** WasmGetOrBuildVtable(const nsXPTInterfaceInfo* aEntry) {
++  mozilla::StaticMutexAutoLock lock(sVtableMutex);
++  if (!sVtableCache) {
++    sVtableCache = new std::unordered_map<const nsXPTInterfaceInfo*, void**>();
++  }
++  auto it = sVtableCache->find(aEntry);
++  if (it != sVtableCache->end()) {
++    return it->second;
++  }
++
++  uint32_t methodCount = aEntry->MethodCount();
++  void** vtable = static_cast<void**>(malloc(sizeof(void*) * methodCount));
++  vtable[0] = reinterpret_cast<void*>(&WasmStub_QueryInterface);
++  vtable[1] = reinterpret_cast<void*>(&WasmStub_AddRef);
++  vtable[2] = reinterpret_cast<void*>(&WasmStub_Release);
++  for (uint32_t mi = 3; mi < methodCount; mi++) {
++    const nsXPTMethodInfo* info = nullptr;
++    aEntry->GetMethodInfo(uint16_t(mi), &info);
++    char sig[PARAM_BUFFER_COUNT + 8];
++    if (info) {
++      WasmComputeSig(info, sig, sizeof(sig));
++    } else {
++      strcpy(sig, "ii");
++    }
++    void* fn = info ? WasmFindStub(mi, sig) : nullptr;
++    vtable[mi] = fn ? fn : reinterpret_cast<void*>(&WasmStub_Unsupported);
++  }
++
++  (*sVtableCache)[aEntry] = vtable;
++  return vtable;
++}
++
++EXPORT_XPCOM_API(nsresult)
++NS_GetXPTCallStub(REFNSIID aIID, nsIXPTCProxy* aOuter,
++                  nsISomeInterface** aResult) {
++  if (NS_WARN_IF(!aOuter) || NS_WARN_IF(!aResult)) {
++    return NS_ERROR_INVALID_ARG;
++  }
++  const nsXPTInterfaceInfo* iie = nsXPTInterfaceInfo::ByIID(aIID);
++  if (!iie || iie->IsBuiltinClass()) {
++    return NS_ERROR_FAILURE;
++  }
++  void** vtable = WasmGetOrBuildVtable(iie);
++  WasmStub* stub = static_cast<WasmStub*>(malloc(sizeof(WasmStub)));
++  stub->vtable = vtable;
++  stub->mOuter = aOuter;
++  stub->mEntry = iie;
++  *aResult = reinterpret_cast<nsISomeInterface*>(stub);
++  return NS_OK;
++}
++
++EXPORT_XPCOM_API(void)
++NS_DestroyXPTCallStub(nsISomeInterface* aStub) {
++  // The vtable is cached/shared per interface; only the per-proxy object is
++  // freed here.
++  free(static_cast<void*>(aStub));
++}
++
++EXPORT_XPCOM_API(size_t)
++NS_SizeOfIncludingThisXPTCallStub(const nsISomeInterface* aStub,
++                                  mozilla::MallocSizeOf aMallocSizeOf) {
++  return aMallocSizeOf(aStub);
++}
++
++// nsXPTCStubBase is still a complete type elsewhere; its Stub#/Sentinel# bodies
++// are never reached on wasm (we don't instantiate it) but must be defined so the
++// class links. Keep them as traps.
++#define STUB_ENTRY(n) \
++  nsresult nsXPTCStubBase::Stub##n() { abort(); }
++
++#define SENTINEL_ENTRY(n)                        \
++  nsresult nsXPTCStubBase::Sentinel##n() {       \
++    NS_ERROR("nsXPTCStubBase::Sentinel called"); \
++    return NS_ERROR_NOT_IMPLEMENTED;             \
++  }
++
++#include "xptcstubsdef.inc"
++
++#undef STUB_ENTRY
++#undef SENTINEL_ENTRY
+diff --git a/xpcom/reflect/xptcall/xptcall.cpp b/xpcom/reflect/xptcall/xptcall.cpp
+index 3cd129d4c3..d10e482c54 100644
+--- a/xpcom/reflect/xptcall/xptcall.cpp
++++ b/xpcom/reflect/xptcall/xptcall.cpp
+@@ -29,7 +29,7 @@ nsXPTCStubBase::Release() { return mOuter->Release(); }
+ // xptcstubs_wasm.cpp, which builds a synthetic addFunction()-based vtable
+ // instead of relying on nsXPTCStubBase's compiled vtable (the latter can't work
+ // under wasm's call_indirect signature checks).
+-#ifndef __EMSCRIPTEN__
++#if !defined(__EMSCRIPTEN__) && !defined(__wasi__)
+ EXPORT_XPCOM_API(nsresult)
+ NS_GetXPTCallStub(REFNSIID aIID, nsIXPTCProxy* aOuter,
+                   nsISomeInterface** aResult) {
+@@ -57,4 +57,4 @@ NS_SizeOfIncludingThisXPTCallStub(const nsISomeInterface* aStub,
+   // anything, so just measure the size of the object itself.
+   return aMallocSizeOf(aStub);
+ }
+-#endif  // !__EMSCRIPTEN__
++#endif  // !__EMSCRIPTEN__ && !__wasi__
+diff --git a/xpcom/reflect/xptinfo/moz.build b/xpcom/reflect/xptinfo/moz.build
+index 5e3d62bcc4..9d065db153 100644
+--- a/xpcom/reflect/xptinfo/moz.build
++++ b/xpcom/reflect/xptinfo/moz.build
+@@ -14,6 +14,11 @@ EXPORTS += [
+     "xptinfo.h",
+ ]
+ 
++if CONFIG["OS_ARCH"] == "WASI":
++    EXPORTS += [
++        "xptcall_wasi.h",
++    ]
++
+ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+ FINAL_LIBRARY = "xul"
+diff --git a/xpcom/reflect/xptinfo/xptcall_wasi.h b/xpcom/reflect/xptinfo/xptcall_wasi.h
+new file mode 100644
+index 0000000000..6bba9adad9
+--- /dev/null
++++ b/xpcom/reflect/xptinfo/xptcall_wasi.h
+@@ -0,0 +1,44 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Tables generated by xptcodegen.py for xptcall on wasm32-wasi. A signature is
++// "ii" (nsresult return, this) followed by one character per C++ argument:
++// i = i32, j = i64, f = f32, d = f64. Arguments are passed in 8-byte slots.
++
++#ifndef xptcall_wasi_h
++#define xptcall_wasi_h
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "nsError.h"
++
++extern "C" nsresult WasmXPTCStubDispatch(void* aSelf, uint32_t aMethodIndex,
++                                         uint8_t* aArgs, uint32_t aCount);
++
++namespace xptcall_wasi {
++
++typedef nsresult (*Invoker)(void* aFunc, void* aThis, const uint8_t* aArgs);
++
++struct InvokeEntry {
++  const char* mSig;
++  Invoker mInvoke;
++};
++
++struct StubEntry {
++  const char* mSig;
++  uint16_t mMethodIndex;
++  void* mFunc;
++};
++
++// Sorted by signature.
++extern const InvokeEntry kInvokers[];
++extern const size_t kInvokerCount;
++// Sorted by (signature, method index).
++extern const StubEntry kStubs[];
++extern const size_t kStubCount;
++
++}  // namespace xptcall_wasi
++
++#endif  // xptcall_wasi_h
+diff --git a/xpcom/reflect/xptinfo/xptcodegen.py b/xpcom/reflect/xptinfo/xptcodegen.py
+index d089e84807..b9d46fb458 100644
+--- a/xpcom/reflect/xptinfo/xptcodegen.py
++++ b/xpcom/reflect/xptinfo/xptcodegen.py
+@@ -588,6 +588,162 @@ const uint16_t sInterfacesSize = std::size(sInterfaces);
+ """
+     )
+ 
++    write_wasi_xptcall(interfaces, ancestors, fd)
++
++
++# wasm call_indirect checks the exact function type, so xptcall cannot use one
++# assembly trampoline for every method on WASI. Emit a C++ function for every
++# signature used by the interfaces (invoke) and for every (signature, method
++# index) a JS-implemented interface can be called through (stubs).
++WASI_ARITHMETIC_SIG = {
++    "TD_INT64": "j",
++    "TD_UINT64": "j",
++    "TD_FLOAT": "f",
++    "TD_DOUBLE": "d",
++}
++WASI_ARITHMETIC_TAGS = {
++    "TD_INT8",
++    "TD_INT16",
++    "TD_INT32",
++    "TD_INT64",
++    "TD_UINT8",
++    "TD_UINT16",
++    "TD_UINT32",
++    "TD_UINT64",
++    "TD_FLOAT",
++    "TD_DOUBLE",
++    "TD_BOOL",
++    "TD_CHAR",
++    "TD_WCHAR",
++}
++WASI_CTYPE = {"i": "int32_t", "j": "int64_t", "f": "float", "d": "double"}
++
++
++def wasi_method_sig(method):
++    """Return the wasm signature of the C++ method (nsresult, this, args...),
++    matching WasmComputeSig in xptcall/md/unix/xptcstubs_wasi.cpp."""
++
++    def param_char(param):
++        if "out" in param["flags"]:
++            return "i"
++        tag = param["type"]["tag"]
++        if tag not in WASI_ARITHMETIC_TAGS:
++            return "i"
++        return WASI_ARITHMETIC_SIG.get(tag, "i")
++
++    flags = method["flags"]
++    params = method["params"]
++    sig = "ii"
++    context = None
++    if "jscontext" in flags:
++        if "getter" in flags or "setter" in flags:
++            context = 0
++        else:
++            context = len(params) - (1 if "hasretval" in flags else 0)
++    for i, param in enumerate(params):
++        if i == context:
++            sig += "i"
++        sig += param_char(param)
++    if context is not None and context == len(params):
++        sig += "i"
++    if "optargc" in flags:
++        sig += "i"
++    return sig
++
++
++def write_wasi_xptcall(interfaces, ancestors, fd):
++    invoke_sigs = set()
++    stubs = set()
++    for iface in interfaces:
++        chain = list(ancestors(iface))
++        chain.reverse()
++        methods = [m for i in chain for m in i["methods"]]
++        builtinclass = "builtinclass" in iface["flags"]
++        for index, method in enumerate(methods):
++            if "notxpcom" in method["flags"]:
++                continue
++            sig = wasi_method_sig(method)
++            if "hidden" not in method["flags"]:
++                invoke_sigs.add(sig)
++            if not builtinclass and index >= 3:
++                stubs.add((sig, index))
++
++    def args(sig):
++        return [WASI_CTYPE[c] for c in sig[2:]]
++
++    fd.write(
++        """
++#if defined(__wasi__)
++#include <string.h>
++#include "xptcall_wasi.h"
++
++namespace xptcall_wasi {
++
++"""
++    )
++    invokers = sorted(invoke_sigs)
++    for sig in invokers:
++        types = args(sig)
++        loads = []
++        for n, ty in enumerate(types):
++            loads.append(
++                "%s a%d; memcpy(&a%d, aArgs + %d, sizeof(a%d));" % (ty, n, n, n * 8, n)
++            )
++        fd.write(
++            "static nsresult Invoke_%s(void* aFunc, void* aThis, const uint8_t* aArgs) {\n"
++            "  %s\n"
++            "  return reinterpret_cast<nsresult (*)(void*%s)>(aFunc)(aThis%s);\n"
++            "}\n"
++            % (
++                sig,
++                "\n  ".join(loads) if loads else "(void)aArgs;",
++                "".join(", " + t for t in types),
++                "".join(", a%d" % n for n in range(len(types))),
++            )
++        )
++    fd.write("\nconst InvokeEntry kInvokers[] = {\n")
++    for sig in invokers:
++        fd.write('  {"%s", Invoke_%s},\n' % (sig, sig))
++    fd.write("};\nconst size_t kInvokerCount = std::size(kInvokers);\n\n")
++
++    stub_list = sorted(stubs)
++    for sig, index in stub_list:
++        types = args(sig)
++        stores = [
++            "memcpy(buf + %d, &a%d, sizeof(a%d));" % (n * 8, n, n)
++            for n in range(len(types))
++        ]
++        fd.write(
++            "static nsresult Stub_%s_%d(void* aSelf%s) {\n"
++            "  uint8_t buf[%d] = {};\n"
++            "  %s\n"
++            "  return WasmXPTCStubDispatch(aSelf, %d, buf, %d);\n"
++            "}\n"
++            % (
++                sig,
++                index,
++                "".join(", %s a%d" % (t, n) for n, t in enumerate(types)),
++                max(len(types), 1) * 8,
++                "\n  ".join(stores),
++                index,
++                len(types),
++            )
++        )
++    fd.write("\nconst StubEntry kStubs[] = {\n")
++    for sig, index in stub_list:
++        fd.write(
++            '  {"%s", %d, reinterpret_cast<void*>(Stub_%s_%d)},\n'
++            % (sig, index, sig, index)
++        )
++    fd.write(
++        """};
++const size_t kStubCount = std::size(kStubs);
++
++}  // namespace xptcall_wasi
++#endif  // __wasi__
++"""
++    )
++
+ 
+ def link_and_write(files, outfile, outheader):
+     interfaces = []
+diff --git a/xpcom/threads/nsThreadManager.cpp b/xpcom/threads/nsThreadManager.cpp
+index 42ba00ad3c..a7bcc97782 100644
+--- a/xpcom/threads/nsThreadManager.cpp
++++ b/xpcom/threads/nsThreadManager.cpp
+@@ -274,7 +274,7 @@ NS_IMPL_CI_INTERFACE_GETTER(nsThreadManager, nsIThreadManager)
+   // 2MB huge page for the stack on first access.  ASan and TSan builds are
+   // given a larger stack size due to extra data and red-zones which consume
+   // stack space.
+-#if defined(__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__) || defined(__wasi__)
+   // The in-process wasm interpreter (GECKO_WASM_INTERP) recurses one C++ frame
+   // per guest wasm call, so worker threads running guest wasm (e.g.
+   // embed-demo-in-embed-demo) need a much deeper physical stack than the JS

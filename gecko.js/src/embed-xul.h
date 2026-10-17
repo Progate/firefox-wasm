@@ -21,12 +21,16 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #include <emscripten/wasmfs.h>
 
 // Persistent /profile + /gre provider backend, patched into libwasmfs (emsdk-
 // patches/provider_backend.h). Not in the public emscripten/wasmfs.h.
 extern "C" backend_t wasmfs_create_provider_backend(int mountId);
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 
 #include "nsXPCOM.h"
 #include "nsCOMPtr.h"
@@ -193,6 +197,10 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers);
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
             int modifiers);
 bool set_clipboard_text(const char* utf8);
+std::string get_clipboard_text();
+void set_composition(const char* utf8);
+void commit_text(const char* utf8);
+bool caret_rect(int* x, int* y, int* width, int* height);
 
 char* mirror_collect_images();                               // embed-mirror.cpp
 char* mirror_collect_css();

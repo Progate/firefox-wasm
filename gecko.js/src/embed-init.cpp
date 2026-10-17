@@ -134,6 +134,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // pthread blocks for it; under the in-process interpreter the inner app pthread
   // runs synchronously and cannot yield, so this deadlocks. Skipping it falls the
   // profile back to the default in-memory WasmFS backend (mkdir creates /opfs/*).
+#if defined(__EMSCRIPTEN__)
   if (getenv("GECKO_OPFS_MOUNT") && !getenv("GECKO_SKIP_OPFS")) {
     backend_t ob = wasmfs_create_opfs_backend();
     int orv = wasmfs_create_directory("/opfs", 0777, ob);
@@ -157,6 +158,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     printf("xul_init: mounted %s (GRE provider backend) rv=%d\n", greDir, grv);
     fflush(stdout);
   }
+
+#endif
 
   // Content build: binDir = the GRE (/gre), no provider. Chrome build: binDir = the
   // APP dir (/gre/browser) so resource:/// points at the Firefox front-end, with a
@@ -566,12 +569,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // the ENV flag index.ts sets when a profile provider exists (the JS
       // Module.geckoProviders the hooks read isn't visible on this pthread, but ENV
       // is). Backend + hooks: emsdk-patches/provider_backend.h + build/provider-fs.js.
+#if defined(__EMSCRIPTEN__)
       if (getenv("GECKO_PROFILE_PROVIDER")) {
         backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
         int mrv = wasmfs_create_directory(profPath, 0777, pb);
         printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
         fflush(stdout);
       }
+#endif
       nsCOMPtr<nsIFile> profDir;
       if (NS_SUCCEEDED(NS_NewNativeLocalFile(nsDependentCString(profPath),
                                              getter_AddRefs(profDir)))) {

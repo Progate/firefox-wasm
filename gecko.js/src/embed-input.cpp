@@ -1,6 +1,11 @@
 // Input injection (synthesized mouse/keyboard/wheel) + clipboard priming. Split
 // from embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
+#include "mozilla/TextEvents.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "nsFocusManager.h"
+#include "nsITextInputProcessor.h"
+#include "nsITextInputProcessorCallback.h"
 // Synthesize a mouse event (evType: 0 move, 1 down, 2 up) at CSS px (x,y) and
 // dispatch it through the full event path (hit-testing, focus, click synthesis).
 void do_mouse(int evType, int x, int y, int button, int clickCount,
@@ -19,6 +24,9 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
   // it here. On a mousedown outside every open popup, roll them all up and consume
   // the click so it doesn't also fall through to content -- matching native menu
   // behavior. Clicks inside a popup fall through (menu item activation).
+  // Popup bounds are device pixels; (x, y) is CSS pixels.
+  LayoutDeviceIntPoint ref =
+      nsContentUtils::ToWidgetPoint(CSSPoint(x, y), offset, pc);
   if (evType == 1) {
     if (nsXULPopupManager* pm = nsXULPopupManager::GetInstance()) {
       nsTArray<nsMenuPopupFrame*> popups;
@@ -28,7 +36,8 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
         for (auto* pf : popups) {
           if (!pf) continue;
           LayoutDeviceIntRect b = pf->CalcWidgetBounds();
-          if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) {
+          if (ref.x >= b.x && ref.x < b.x + b.width && ref.y >= b.y &&
+              ref.y < b.y + b.height) {
             inside = true;
             break;
           }
@@ -43,8 +52,6 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
     }
   }
 
-  LayoutDeviceIntPoint ref =
-      nsContentUtils::ToWidgetPoint(CSSPoint(x, y), offset, pc);
   // evType: 0=mousemove 1=mousedown 2=mouseup 3=contextmenu. A synthesized right
   // mousedown/up doesn't generate eContextMenu in this headless build, so the JS
   // side sends an explicit contextmenu event (button 2) to open context menus.
@@ -223,4 +230,150 @@ bool set_clipboard_text(const char* utf8) {
   trans->SetTransferData(kTextMime, ToSupports(data));
   return NS_SUCCEEDED(
       clipboard->SetData(trans, nullptr, nsIClipboard::kGlobalClipboard, nullptr));
+}
+
+// The text on the global clipboard as UTF-8 (empty when there is none), so the
+// host can hand what the page copied to the system clipboard.
+std::string get_clipboard_text() {
+  using namespace mozilla;
+  nsCOMPtr<nsIClipboard> clipboard =
+      do_GetService("@mozilla.org/widget/clipboard;1");
+  if (!clipboard) return {};
+  nsCOMPtr<nsITransferable> trans =
+      do_CreateInstance("@mozilla.org/widget/transferable;1");
+  if (!trans) return {};
+  trans->Init(nullptr);
+  trans->AddDataFlavor(kTextMime);
+  if (NS_FAILED(clipboard->GetData(trans, nsIClipboard::kGlobalClipboard, nullptr))) {
+    return {};
+  }
+  nsCOMPtr<nsISupports> data;
+  if (NS_FAILED(trans->GetTransferData(kTextMime, getter_AddRefs(data)))) return {};
+  nsCOMPtr<nsISupportsString> text = do_QueryInterface(data);
+  if (!text) return {};
+  nsAutoString value;
+  text->GetData(value);
+  return NS_ConvertUTF16toUTF8(value).get();
+}
+
+// IME composition (text being converted, before it is committed). The host's
+// input method sends it; it goes through Gecko's text input processor like a
+// native IME, so the field shows it underlined where the caret is.
+namespace {
+class CompositionCallback final : public nsITextInputProcessorCallback {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_IMETHOD OnNotify(nsITextInputProcessor* aProcessor,
+                      nsITextInputProcessorNotification* aNotification,
+                      bool* aSucceeded) override {
+    *aSucceeded = true;
+    nsAutoCString type;
+    aNotification->GetType(type);
+    // Gecko asks to finish the composition (focus moved, a click): keep what
+    // is shown, as a native IME does on commit, or drop it on cancel.
+    if (type.EqualsLiteral("request-to-commit")) {
+      aProcessor->CommitComposition(nullptr, 0, 0);
+    } else if (type.EqualsLiteral("request-to-cancel")) {
+      aProcessor->CancelComposition(nullptr, 0, 0);
+    }
+    return NS_OK;
+  }
+
+ private:
+  ~CompositionCallback() = default;
+};
+NS_IMPL_ISUPPORTS(CompositionCallback, nsITextInputProcessorCallback)
+
+nsCOMPtr<nsITextInputProcessor> sProcessor;
+
+// The processor is chrome-only and checks that its caller is system script:
+// run in the realm of Firefox's own window (browser.xhtml).
+struct ChromeCaller {
+  mozilla::dom::AutoJSAPI jsapi;
+  bool ok = false;
+  ChromeCaller() {
+    nsCOMPtr<nsPIDOMWindowOuter> chrome = g_docShell ? g_docShell->GetWindow() : nullptr;
+    nsPIDOMWindowInner* inner = chrome ? chrome->GetCurrentInnerWindow() : nullptr;
+    ok = inner && jsapi.Init(inner->AsGlobal());
+  }
+};
+
+// The processor, bound to the window that has the focus (the chrome document
+// for the address bar, the page's document for its fields).
+nsITextInputProcessor* composition_processor() {
+  nsFocusManager* fm = nsFocusManager::GetFocusManager();
+  nsCOMPtr<nsPIDOMWindowOuter> outer = fm ? fm->GetFocusedWindow() : nullptr;
+  if (!outer && g_docShell) outer = g_docShell->GetWindow();
+  nsPIDOMWindowInner* inner = outer ? outer->GetCurrentInnerWindow() : nullptr;
+  if (!inner) return nullptr;
+  if (!sProcessor) {
+    sProcessor = do_CreateInstance("@mozilla.org/text-input-processor;1");
+    if (!sProcessor) return nullptr;
+  }
+  static nsCOMPtr<nsITextInputProcessorCallback> sCallback =
+      new CompositionCallback();
+  bool ok = false;
+  if (NS_FAILED(sProcessor->BeginInputTransaction(inner, sCallback, &ok)) || !ok) {
+    return nullptr;
+  }
+  return sProcessor;
+}
+}  // namespace
+
+// Show utf8 as the text being composed; an empty string ends the composition
+// without inserting anything.
+void set_composition(const char* utf8) {
+  ChromeCaller caller;
+  if (!caller.ok) return;
+  nsITextInputProcessor* processor = composition_processor();
+  if (!processor) return;
+  NS_ConvertUTF8toUTF16 text(utf8 ? utf8 : "");
+  bool composing = false;
+  processor->GetHasComposition(&composing);
+  if (text.IsEmpty()) {
+    if (composing) processor->CancelComposition(nullptr, 0, 0);
+    return;
+  }
+  processor->SetPendingCompositionString(text);
+  processor->AppendClauseToPendingComposition(text.Length(),
+                                              nsITextInputProcessor::ATTR_RAW_CLAUSE);
+  processor->SetCaretInPendingComposition(text.Length());
+  bool flushed = false;
+  processor->FlushPendingComposition(nullptr, 0, 0, &flushed);
+}
+
+// Insert committed text (replacing the composition, if there is one).
+void commit_text(const char* utf8) {
+  ChromeCaller caller;
+  if (!caller.ok) return;
+  nsITextInputProcessor* processor = composition_processor();
+  if (!processor) return;
+  bool committed = false;
+  processor->CommitCompositionWith(NS_ConvertUTF8toUTF16(utf8 ? utf8 : ""), nullptr, 0,
+                                   0, &committed);
+}
+
+// Where text is being typed, in device pixels of the window: the caret of the
+// focused field. False when nothing editable has the focus.
+bool caret_rect(int* x, int* y, int* width, int* height) {
+  using namespace mozilla;
+  if (!g_docShell) return false;
+  PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return false;
+  nsPoint offset;
+  nsIWidget* widget = nsContentUtils::GetWidget(ps, &offset);
+  if (!widget) return false;
+  WidgetQueryContentEvent selected(true, eQuerySelectedText, widget);
+  widget->DispatchEvent(&selected);
+  if (!selected.Succeeded() || !selected.mReply->mOffsetAndData) return false;
+  WidgetQueryContentEvent caret(true, eQueryCaretRect, widget);
+  caret.InitForQueryCaretRect(selected.mReply->EndOffset());
+  widget->DispatchEvent(&caret);
+  if (!caret.Succeeded()) return false;
+  const LayoutDeviceIntRect rect = caret.mReply->mRect;
+  *x = rect.x;
+  *y = rect.y;
+  *width = std::max(rect.width, 1);
+  *height = rect.height;
+  return true;
 }
