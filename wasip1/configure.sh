@@ -21,6 +21,22 @@ crates=$(grep -o '^+++ b/third_party/rust/[^/]*' "$HERE/wasip1/gecko.patch" | cu
 if [ -n "$crates" ]; then
   python3 "$HERE/wasip1/rehash-vendored.py" $crates
 fi
+# Rust std is built from source (-Z build-std, config/makefiles/rust.mk) so that
+# it uses BrowserOS's libc values. Vendor std's own dependencies, give std's libc
+# crate the same values as Gecko's (std-libc.patch) and make std report the
+# preview1 calls' errno with the Linux numbers (std.patch, applied to rust-src).
+apply_once() { # <directory> <patch>
+  if patch -d "$1" -p1 --dry-run --forward < "$2" >/dev/null 2>&1; then
+    patch -d "$1" -p1 --forward < "$2"
+  elif ! patch -d "$1" -p1 --dry-run --reverse < "$2" >/dev/null 2>&1; then
+    echo "$1 does not match $2" >&2
+    exit 1
+  fi
+}
+GECKO_SOURCE="$GECKO_SOURCE" python3 "$HERE/vendor-std-deps.py"
+apply_once "$GECKO_SOURCE" "$HERE/wasip1/std-libc.patch"
+python3 "$HERE/wasip1/rehash-vendored.py" $(grep -o '^+++ b/third_party/rust/[^/]*' "$HERE/wasip1/std-libc.patch" | cut -d/ -f2-4 | sort -u)
+apply_once "$(rustc --print sysroot)/lib/rustlib/src/rust" "$HERE/wasip1/std.patch"
 # FireDog's branding (name, icons, default prefs). A modified build cannot use
 # Mozilla's trademarks, so it replaces the unofficial branding (Nightly).
 rm -rf browser/branding/firedog
