@@ -63,6 +63,17 @@ class EmbedAppShell final : public nsBaseAppShell {
   EmbedAppShell() = default;
   nsresult InitShell() { return Init(); }
 
+  // Init() makes the appshell the main thread's observer. nsBaseAppShell then
+  // looks for native events before each event the thread runs, and as there are
+  // none, it queues a dummy event whenever the thread would sleep: the main
+  // thread never slept and spent a core on dummy events while the page was still.
+  NS_IMETHOD OnProcessNextEvent(nsIThreadInternal*, bool) override {
+    return NS_OK;
+  }
+  NS_IMETHOD AfterProcessNextEvent(nsIThreadInternal*, bool) override {
+    return NS_OK;
+  }
+
  protected:
   ~EmbedAppShell() override = default;
   void ScheduleNativeEventCallback() override {}
