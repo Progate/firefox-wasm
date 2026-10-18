@@ -6162,3 +6162,47 @@ diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
  
    [[nodiscard]] nsresult AttachNativeKeyEvent(
        WidgetKeyboardEvent& aEvent) override;
+diff --git a/widget/headless/HeadlessCompositorWidget.h b/widget/headless/HeadlessCompositorWidget.h
+--- a/widget/headless/HeadlessCompositorWidget.h
++++ b/widget/headless/HeadlessCompositorWidget.h
+@@ -34,6 +34,17 @@
+ 
+   void ObserveVsync(VsyncObserver* aObserver) override;
+ 
++#if defined(__wasi__)
++  // SWGL asks the compositor widget, not the window, for somewhere to draw.
++  // Pass that on to the window, where FireDog's embedder answers it (see
++  // FireDogRemoteDrawing in HeadlessWidget.h).
++  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++  void EndRemoteDrawingInRegion(
++      gfx::DrawTarget* aDrawTarget,
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++#endif
++
+   // CompositorWidgetDelegate Overrides
+ 
+   HeadlessCompositorWidget* AsHeadlessCompositorWidget() override {
+diff --git a/widget/headless/HeadlessCompositorWidget.cpp b/widget/headless/HeadlessCompositorWidget.cpp
+--- a/widget/headless/HeadlessCompositorWidget.cpp
++++ b/widget/headless/HeadlessCompositorWidget.cpp
+@@ -26,6 +26,19 @@
+ 
+ nsIWidget* HeadlessCompositorWidget::RealWidget() { return mWidget; }
+ 
++#if defined(__wasi__)
++already_AddRefed<gfx::DrawTarget>
++HeadlessCompositorWidget::StartRemoteDrawingInRegion(
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  return mWidget->StartRemoteDrawingInRegion(aInvalidRegion);
++}
++
++void HeadlessCompositorWidget::EndRemoteDrawingInRegion(
++    gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
++  mWidget->EndRemoteDrawingInRegion(aDrawTarget, aInvalidRegion);
++}
++#endif
++
+ void HeadlessCompositorWidget::NotifyClientSizeChanged(
+     const LayoutDeviceIntSize& aClientSize) {
+   auto size = mClientSize.Lock();
