@@ -224,11 +224,45 @@ static std::string startUrl(const char* argument) {
   return "about:blank";
 }
 
+// Chromium's switches that FireDog takes. They come before the URL, as with
+// chrome: --remote-debugging-port=N serves the Chrome DevTools Protocol on
+// 127.0.0.1:N (an embedder that reloads or inspects the page uses it), and
+// --remote-allow-origins=LIST lets those web origins open its WebSocket.
+struct Switches {
+  int remoteDebuggingPort = 0;
+  std::string remoteAllowOrigins;
+  const char* url = nullptr;
+};
+
+static bool switchValue(const char* argument, const char* name, const char** value) {
+  const size_t length = strlen(name);
+  if (strncmp(argument, name, length) != 0 || argument[length] != '=') return false;
+  *value = argument + length + 1;
+  return true;
+}
+
+static Switches parseSwitches(int argc, char** argv) {
+  Switches switches;
+  for (int i = 1; i < argc; i++) {
+    const char* value;
+    if (switchValue(argv[i], "--remote-debugging-port", &value)) {
+      switches.remoteDebuggingPort = atoi(value);
+    } else if (switchValue(argv[i], "--remote-allow-origins", &value)) {
+      switches.remoteAllowOrigins = value;
+    } else if (!switches.url) {
+      switches.url = argv[i];
+    }
+  }
+  return switches;
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--help") == 0) {
-    puts("usage: firedog [URL]\nUses DISPLAY and PROFILE_DIR inside BrowserOS.");
+    puts("usage: firedog [--remote-debugging-port=PORT] [--remote-allow-origins=ORIGINS] [URL]\n"
+         "Uses DISPLAY and PROFILE_DIR inside BrowserOS.");
     return 0;
   }
+  const Switches switches = parseSwitches(argc, argv);
   const char* gre = getenv("GRE_DIR");
   if (!gre) gre = "/usr/lib/firedog";
   setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
@@ -250,10 +284,17 @@ int main(int argc, char** argv) {
   // The window repaints a few times a second, so the caret can blink as on
   // other desktops (xul_init stops it for one-shot snapshots).
   mozilla::Preferences::SetInt("ui.caretBlinkTime", 530);
+  // Before browser.xhtml loads: its script starts the endpoint from these prefs.
+  if (switches.remoteDebuggingPort > 0) {
+    mozilla::Preferences::SetInt("firedog.devtools.remote-debugging-port", switches.remoteDebuggingPort);
+  }
+  if (!switches.remoteAllowOrigins.empty()) {
+    mozilla::Preferences::SetCString("firedog.devtools.remote-allow-origins", switches.remoteAllowOrigins.c_str());
+  }
   const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
   // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
-  const std::string url = startUrl(argc > 1 ? argv[1] : nullptr);
+  const std::string url = startUrl(switches.url);
   if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
   fprintf(stderr, "firedog: page loading, entering the event loop\n");
   bool firstFrame = true;

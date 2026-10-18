@@ -34,9 +34,16 @@ pref("browser.urlbar.showSearchTerms.enabled", false);
 pref("intl.locale.requested", "ja");
 pref("intl.accept_languages", "ja, en-US, en");
 
-// Firefox's DevTools front-end is not packaged (repack.mjs). Without this F12
-// and the menus would try to open the missing toolbox.
+// Firefox's DevTools front-end is not packaged (repack.mjs); FireDog's
+// developer tools are Chrome DevTools. Without this F12 and the menus would try
+// to open the missing toolbox.
 pref("devtools.policy.disabled", true);
 // Chromium shows JSON responses as text. Firefox's JSON viewer is part of the
 // DevTools front-end.
 pref("devtools.jsonview.enabled", false);
+
+// The Chrome DevTools Protocol endpoint (devtools/RemoteDebugging.sys.mjs),
+// Chromium's --remote-debugging-port and --remote-allow-origins. Closed unless
+// a port is set.
+pref("firedog.devtools.remote-debugging-port", 0);
+pref("firedog.devtools.remote-allow-origins", "");

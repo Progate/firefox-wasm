@@ -638,3 +638,12 @@
 #tabbrowser-tabs::after {
   display: none !important;
 }
+
+/* DevTools docked in a tab (devtools/DevToolsWindow.sys.mjs). The front-end
+   covers the tab's content area and places the inspected page within it, as
+   Chrome's docked DevTools do. Both live in the tab's .browserStack, a grid
+   whose children share one cell. */
+.browserStack > browser.firedog-devtools-inspected {
+  justify-self: start;
+  align-self: start;
+}

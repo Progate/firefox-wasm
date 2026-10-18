@@ -5,3 +5,7 @@
 # The profile button between the address bar and the app menu.
 firedog-profile-button =
     .tooltiptext = Profile
+
+# The last item of the page's context menu, which opens DevTools on the clicked element.
+firedog-context-inspect =
+    .label = Inspect

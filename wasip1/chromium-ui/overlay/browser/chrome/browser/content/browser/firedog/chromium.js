@@ -14,6 +14,11 @@ var FireDogChromium = {
     this.addTrafficLights();
     this.addProfileButton();
     this.replayFirstLocation();
+    this.addDevTools();
+    // The Chrome DevTools Protocol endpoint, when its pref sets a port.
+    ChromeUtils.importESModule(
+      "resource:///modules/firedog/devtools/RemoteDebugging.sys.mjs"
+    ).RemoteDebugging.startFromPrefs();
     if (Services.prefs.getBoolPref("firedog.chromium.debug", false)) {
       // The parity tooling (browser-gecko's scripts/ui-parity.ts) compares
       // pixels; these rects tell which element a difference belongs to.
@@ -40,6 +45,50 @@ var FireDogChromium = {
       box.append(button);
     }
     toolbar.prepend(box);
+  },
+
+  // Chrome DevTools (devtools/DevToolsWindow.sys.mjs) on Chromium's keys:
+  // F12 and ⌥⌘I open or close it, ⌥⌘J opens the Console, ⌥⌘C picks an
+  // element, and "検証" (Inspect) at the end of the page's context menu opens
+  // it on the clicked element.
+  addDevTools() {
+    const { DevTools } = ChromeUtils.importESModule(
+      "resource:///modules/firedog/devtools/DevToolsWindow.sys.mjs"
+    );
+    const frontendAction = (devtools, action) =>
+      devtools?.whenLoaded(api => action(Cu.waiveXrays(api)));
+    window.addEventListener(
+      "keydown",
+      event => {
+        const tab = gBrowser.selectedTab;
+        const command = event.metaKey && event.altKey && !event.ctrlKey;
+        if (event.key === "F12" || (command && event.code === "KeyI")) {
+          DevTools.toggle(tab);
+        } else if (command && event.code === "KeyJ") {
+          frontendAction(DevTools.open(tab), api => api.showPanel("console"));
+        } else if (command && event.code === "KeyC") {
+          frontendAction(DevTools.open(tab), api => api.enterInspectElementMode());
+        } else {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+      },
+      true
+    );
+    const menu = document.getElementById("contentAreaContextMenu");
+    if (!menu || document.getElementById("firedog-context-inspect")) {
+      return;
+    }
+    const separator = document.createXULElement("menuseparator");
+    const item = document.createXULElement("menuitem");
+    item.id = "firedog-context-inspect";
+    document.l10n.setAttributes(item, "firedog-context-inspect");
+    item.addEventListener("command", () => {
+      const node = gContextMenu?.target;
+      DevTools.open(gBrowser.selectedTab).inspectNode(node);
+    });
+    menu.append(separator, item);
   },
 
   // Chromium shows the profile's avatar between the address bar and the app
