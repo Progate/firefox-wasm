@@ -50,3 +50,30 @@ index 4f2eb11..56fa2aa 100644
 +    };
 +    crate::io::Error::from_raw_os_error(errno)
  }
+diff --git a/library/std/src/sys/io/error/wasi.rs b/library/std/src/sys/io/error/wasi.rs
+--- a/library/std/src/sys/io/error/wasi.rs
++++ b/library/std/src/sys/io/error/wasi.rs
+@@ -1,19 +1,15 @@
+ use crate::ffi::CStr;
+ use crate::io as std_io;
+ 
+-unsafe extern "C" {
+-    #[thread_local]
+-    #[link_name = "errno"]
+-    static mut libc_errno: libc::c_int;
+-}
+-
++// BrowserOS's libc is musl, whose errno is per thread behind
++// __errno_location() rather than a thread-local variable named errno.
+ pub fn errno() -> i32 {
+-    unsafe { libc_errno as i32 }
++    unsafe { *libc::__errno_location() as i32 }
+ }
+ 
+ pub fn set_errno(val: i32) {
+     unsafe {
+-        libc_errno = val;
++        *libc::__errno_location() = val;
+     }
+ }
+ 
