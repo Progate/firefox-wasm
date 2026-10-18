@@ -14,7 +14,9 @@
 //     Firefox Nightly language pack of the same mozilla-central day as the
 //     Gecko source (LANGPACK), with FireDog's branding in place of Nightly's,
 //   - the images listed in mozilla-marks.txt made empty,
-//   - Firefox's DevTools front-end left out (see pruneDevtoolsClient).
+//   - Firefox's DevTools front-end left out (see pruneDevtoolsClient),
+//   - Chromium's DevTools front-end as devtools-frontend.zip (see
+//     writeDevtoolsFrontend).
 // Both archives are written stored (no compression), as `./mach package`
 // writes them; the published files are compressed on the wire.
 import {execFileSync} from 'node:child_process'
@@ -229,6 +231,59 @@ const pruneDevtoolsClient = (browser, gre) => {
   console.log(`devtools/client: kept ${kept.size} files, removed ${removed} (${relative(browser, client)})`)
 }
 
+/**
+ * Writes Chromium's DevTools front-end (the files devtools-frontend.json
+ * lists, from the revision it pins, with the license texts of its source at
+ * LICENSE and third_party/<name>/LICENSE) to devtools-frontend.zip next to omni.ja,
+ * where devtools/DevToolsWindow.sys.mjs reads it. It is an archive of its own,
+ * not part of browser/omni.ja, so that it is fetched only when DevTools first
+ * opens. Files are cached in ~/.cache/firedog and checked against the
+ * manifest's SHA-256.
+ *
+ * @param {string} output the GRE directory being written
+ */
+const writeDevtoolsFrontend = async (output) => {
+  if (!existsSync(join(here, 'devtools-frontend.json'))) {
+    throw new Error('devtools-frontend.json is missing; run tools/devtools-frontend-manifest.mjs')
+  }
+  const manifest = JSON.parse(readFileSync(join(here, 'devtools-frontend.json'), 'utf8'))
+  const cache = join(homedir(), '.cache/firedog/devtools-frontend', manifest.commit)
+  // The bundle's files, and the license texts of the source it was built from
+  // (the bundle carries none), each from its own base URL.
+  const entries = [
+    ...Object.entries(manifest.files).map(([path, {sha256}]) => [path, {sha256, url: manifest.base + path}]),
+    ...Object.entries(manifest.licenses).map(([path, {source, sha256}]) => [path, {sha256, url: manifest.licenseBase + source}]),
+  ]
+  // The server drops or stalls a few of many parallel requests; each is
+  // retried rather than failing or hanging the whole repack.
+  const download = async (url, attempts = 5) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await fetch(url, {signal: AbortSignal.timeout(30000)})
+        if (!response.ok) throw new Error(`${url}: ${response.status}`)
+        return Buffer.from(await response.arrayBuffer())
+      } catch (error) {
+        if (attempt === attempts) throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt))
+    }
+  }
+  const fetchOne = async ([path, {sha256, url}]) => {
+    const file = join(cache, path)
+    if (!existsSync(file) || createHash('sha256').update(readFileSync(file)).digest('hex') !== sha256) {
+      const bytes = await download(url)
+      const digest = createHash('sha256').update(bytes).digest('hex')
+      if (digest !== sha256) throw new Error(`${path} has sha256 ${digest}, expected ${sha256}`)
+      mkdirSync(dirname(file), {recursive: true})
+      writeFileSync(file, bytes)
+    }
+  }
+  for (let i = 0; i < entries.length; i += 32) await Promise.all(entries.slice(i, i + 32).map(fetchOne))
+  const staging = join(work, 'devtools-frontend')
+  for (const [path] of entries) cpSync(join(cache, path), join(staging, path))
+  zip(staging, join(output, 'devtools-frontend.zip'))
+}
+
 const work = mkdtempSync(join(tmpdir(), 'firedog-repack-'))
 try {
   if (input !== output) {
@@ -267,7 +322,8 @@ try {
   pruneDevtoolsClient(browser, gre)
   zip(browser, join(output, 'browser/omni.ja'))
 
-  for (const file of ['omni.ja', 'browser/omni.ja']) console.log(`wrote ${join(output, file)}`)
+  await writeDevtoolsFrontend(output)
+  for (const file of ['omni.ja', 'browser/omni.ja', 'devtools-frontend.zip']) console.log(`wrote ${join(output, file)}`)
 } finally {
   rmSync(work, {recursive: true, force: true})
 }

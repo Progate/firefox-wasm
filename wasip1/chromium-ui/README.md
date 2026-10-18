@@ -56,6 +56,26 @@ from `./mach package`'s output.
   imports, and the pref `devtools.policy.disabled` keeps F12 and the menus from
   opening the missing toolbox.
 
+## Chrome DevTools
+
+FireDog's developer tools are Chromium's own DevTools front-end, docked in the
+tab as Chrome docks it (F12, ⌥⌘I, ⌥⌘J, ⌥⌘C, and 検証 in the page's context
+menu), speaking the Chrome DevTools Protocol to Gecko.
+
+- `overlay/browser/modules/firedog/devtools/` is the protocol's back end:
+  `Session.sys.mjs` dispatches a connection's messages to the domains in
+  `domains/` (one module per CDP domain), `DevToolsWindow.sys.mjs` docks the
+  front-end and is its embedder (Chrome's `DevToolsHost`), and
+  `RemoteDebugging.sys.mjs` serves `/json/*` and WebSockets on 127.0.0.1 when
+  the pref `firedog.devtools.remote-debugging-port` sets a port, as
+  `--remote-debugging-port` does, for Puppeteer and other CDP clients.
+- `devtools-frontend.json` pins the front-end: the build Chromium publishes
+  for one revision, every file with its SHA-256. `repack.mjs` downloads the
+  files (cached in `~/.cache/firedog`), checks them and writes
+  `devtools-frontend.zip` next to `omni.ja`, read only when DevTools first
+  opens. `tools/devtools-frontend-manifest.mjs` makes the manifest for another
+  revision.
+
 ## Checking it against Chromium
 
 browser-gecko's `scripts/ui-parity.ts` runs FireDog at a reference's size and
