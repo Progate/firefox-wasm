@@ -24,8 +24,12 @@ ac_add_options --disable-ctypes
 ac_add_options --disable-bootstrap
 # bindgen must parse wasi-sdk's libc++ with the same LLVM.
 ac_add_options --with-libclang-path=${LIBCLANG_PATH:-$WASI_SDK_PATH/lib}
-export CC="$WASI_SDK_PATH/bin/clang --target=wasm32-wasip1-threads"
-export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads"
+# The sysroot is part of the compiler command, not only CFLAGS and LDFLAGS:
+# configure's symbol checks link with the bare compiler, and would otherwise
+# test wasi-sdk's own wasi-libc (which has arc4random and no eventfd) instead
+# of BrowserOS's libc.
+export CC="$WASI_SDK_PATH/bin/clang --target=wasm32-wasip1-threads --sysroot=$BROWSEROS_SYSROOT"
+export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads --sysroot=$BROWSEROS_SYSROOT"
 export AR="$WASI_SDK_PATH/bin/llvm-ar"
 export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
 # setjmp/longjmp use the legacy wasm exception instructions, as BrowserOS's
