@@ -6077,3 +6077,144 @@ diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.cpp b/netwerk/protocol/h
    mUsername = username;
    mProxyInfo = proxyInfo;
    mEndToEndSSL = e2eSSL;
+diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget.cpp
+--- a/widget/headless/HeadlessWidget.cpp
++++ b/widget/headless/HeadlessWidget.cpp
+@@ -28,6 +28,14 @@
+ 
+ using mozilla::LogLevel;
+ 
++#if defined(__wasi__)
++// Defined here, outside namespace mozilla::widget, so that it is the extern
++// "C" variable HeadlessWidget.h declares. Inside the namespace it would be a
++// variable of its own that the embedder's definition never replaces.
++__attribute__((weak)) FireDogRemoteDrawing firedog_remote_drawing = {nullptr,
++                                                                     nullptr};
++#endif
++
+ #ifdef MOZ_LOGGING
+ 
+ #  include "mozilla/Logging.h"
+@@ -232,6 +240,32 @@
+   return GetTopLevelWidget()->GetBounds().TopLeft();
+ }
+ 
++#if defined(__wasi__)
++already_AddRefed<gfx::DrawTarget> HeadlessWidget::StartRemoteDrawingInRegion(
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  if (!firedog_remote_drawing.start) {
++    return nullptr;
++  }
++  return already_AddRefed<gfx::DrawTarget>(firedog_remote_drawing.start(this));
++}
++
++void HeadlessWidget::EndRemoteDrawingInRegion(
++    gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
++  if (!firedog_remote_drawing.end) {
++    return;
++  }
++  AutoTArray<int32_t, 16> rects;
++  for (auto iter = aInvalidRegion.RectIter(); !iter.Done(); iter.Next()) {
++    const LayoutDeviceIntRect& r = iter.Get();
++    rects.AppendElement(r.x);
++    rects.AppendElement(r.y);
++    rects.AppendElement(r.width);
++    rects.AppendElement(r.height);
++  }
++  firedog_remote_drawing.end(this, rects.Elements(), rects.Length() / 4);
++}
++#endif
++
+ WindowRenderer* HeadlessWidget::GetWindowRenderer() {
+   return nsIWidget::GetWindowRenderer();
+ }
+diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
+--- a/widget/headless/HeadlessWidget.h
++++ b/widget/headless/HeadlessWidget.h
+@@ -34,6 +34,27 @@
+ #  define MOZ_HEADLESS_SCROLL_DELTA_MODE -1
+ #endif
+ 
++#if defined(__wasi__)
++// Where the compositor of a headless window draws, for an embedder that shows
++// the window itself (FireDog on BrowserOS). Without it the software
++// compositor renders every frame into nothing and the embedder has to paint
++// the window a second time with RenderDocument on the main thread.
++//
++// libxul carries a weak, empty definition; the embedder's own (strong)
++// definition replaces it at link time. Both run on the render thread.
++extern "C" {
++struct FireDogRemoteDrawing {
++  // A new reference (the caller adopts it) to a draw target covering the
++  // whole widget from its origin, or null to skip the frame.
++  mozilla::gfx::DrawTarget* (*start)(nsIWidget* aWidget);
++  // After a non-null start: aCount rectangles (x, y, width, height in device
++  // pixels) that the frame changed.
++  void (*end)(nsIWidget* aWidget, const int32_t* aRects, size_t aCount);
++};
++extern FireDogRemoteDrawing firedog_remote_drawing;
++}
++#endif
++
+ namespace mozilla {
+ enum class NativeKeyBindingsType : uint8_t;
+ namespace widget {
+@@ -90,6 +111,14 @@
+ #endif
+ 
+   void SetCompositorWidgetDelegate(CompositorWidgetDelegate* delegate) override;
++
++#if defined(__wasi__)
++  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++  void EndRemoteDrawingInRegion(
++      gfx::DrawTarget* aDrawTarget,
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++#endif
+ 
+   [[nodiscard]] nsresult AttachNativeKeyEvent(
+       WidgetKeyboardEvent& aEvent) override;
+diff --git a/widget/headless/HeadlessCompositorWidget.h b/widget/headless/HeadlessCompositorWidget.h
+--- a/widget/headless/HeadlessCompositorWidget.h
++++ b/widget/headless/HeadlessCompositorWidget.h
+@@ -34,6 +34,17 @@
+ 
+   void ObserveVsync(VsyncObserver* aObserver) override;
+ 
++#if defined(__wasi__)
++  // SWGL asks the compositor widget, not the window, for somewhere to draw.
++  // Pass that on to the window, where FireDog's embedder answers it (see
++  // FireDogRemoteDrawing in HeadlessWidget.h).
++  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++  void EndRemoteDrawingInRegion(
++      gfx::DrawTarget* aDrawTarget,
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++#endif
++
+   // CompositorWidgetDelegate Overrides
+ 
+   HeadlessCompositorWidget* AsHeadlessCompositorWidget() override {
+diff --git a/widget/headless/HeadlessCompositorWidget.cpp b/widget/headless/HeadlessCompositorWidget.cpp
+--- a/widget/headless/HeadlessCompositorWidget.cpp
++++ b/widget/headless/HeadlessCompositorWidget.cpp
+@@ -26,6 +26,19 @@
+ 
+ nsIWidget* HeadlessCompositorWidget::RealWidget() { return mWidget; }
+ 
++#if defined(__wasi__)
++already_AddRefed<gfx::DrawTarget>
++HeadlessCompositorWidget::StartRemoteDrawingInRegion(
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  return mWidget->StartRemoteDrawingInRegion(aInvalidRegion);
++}
++
++void HeadlessCompositorWidget::EndRemoteDrawingInRegion(
++    gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
++  mWidget->EndRemoteDrawingInRegion(aDrawTarget, aInvalidRegion);
++}
++#endif
++
+ void HeadlessCompositorWidget::NotifyClientSizeChanged(
+     const LayoutDeviceIntSize& aClientSize) {
+   auto size = mClientSize.Lock();

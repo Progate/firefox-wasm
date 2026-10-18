@@ -187,6 +187,13 @@ void EnsureSize(int width, int height);                      // embed-browser.cp
 bool RunChromeScript(const nsACString& aScript, char** aOutResult = nullptr);
 
 uint8_t* xul_paint(int width, int height);                   // embed-paint.cpp
+bool xul_paint_into(uint8_t* buf, int width, int height);
+uint64_t paint_generation();
+bool paint_pending();
+int paint_popups_into(uint8_t* buf, int width, int height);
+bool popups_visible();
+nsIWidget* main_widget();
+void paint_now_if_pending();
 void gpu_ensure_active(int width, int height);               // embed-paint.cpp
 uint8_t* paint_popup_overlay(int width, int height);         // embed-paint.cpp
 void PumpEvents();                                           // embed-paint.cpp

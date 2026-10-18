@@ -3,7 +3,13 @@
 #include "../gecko.js/src/embed-xul.h"
 #include "windowserver.h"
 #include "nsPrintfCString.h"
+#include "nsITimer.h"
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 XulCmd* g_cmd = nullptr;
 bool g_gpu = false;
@@ -207,6 +213,287 @@ static bool dispatch(WindowServer& window, const std::string& line) {
   return true;
 }
 
+// Notices the reader thread took off the windowserver socket, waiting for the
+// application thread. The reader wakes the application thread with a Gecko
+// runnable, so the application thread can sleep in Gecko's own event loop:
+// timers, network replies and refresh ticks that other threads post then run
+// at once instead of after a socket poll timed out (it waited up to 16 ms).
+static std::mutex g_inboxLock;
+static std::vector<std::string> g_inbox;
+static std::atomic<bool> g_wakePosted{false};
+
+static void wakeApplication() {
+  if (g_wakePosted.exchange(true)) return;  // one runnable per batch is enough
+  NS_DispatchToMainThread(NS_NewRunnableFunction("firedog::notices", [] {
+    g_wakePosted.store(false);
+  }));
+}
+
+static void readNotices(WindowServer* window) {
+  std::string line;
+  while (window->connected()) {
+    // The timeout only bounds how long a dead connection goes unnoticed.
+    if (!window->next(line, 1000)) continue;
+    std::vector<std::string> batch{line};
+    while (window->next(line, 0)) batch.push_back(line);  // everything already sent
+    {
+      std::lock_guard<std::mutex> lock(g_inboxLock);
+      for (auto& entry : batch) g_inbox.push_back(std::move(entry));
+    }
+    wakeApplication();
+  }
+  wakeApplication();  // let the application thread see the connection is gone
+}
+
+static bool isMotion(const std::string& line) {
+  int id;
+  char state[16];
+  return sscanf(line.c_str(), "pointer %d %15s", &id, state) == 2 &&
+      strcmp(state, "down") != 0 && strcmp(state, "up") != 0;
+}
+
+// Merge notices that only matter as a total, so a burst queued while Gecko was
+// busy costs one event instead of many: of consecutive pointer motions only
+// the last position counts (each motion otherwise hit-tests, updates hover
+// state and fires mousemove), and consecutive wheel steps at one place add up
+// to one scroll. Order relative to every other notice is kept.
+static void coalesce(std::vector<std::string>& batch) {
+  std::vector<std::string> out;
+  out.reserve(batch.size());
+  for (auto& line : batch) {
+    if (!out.empty() && isMotion(line) && isMotion(out.back())) {
+      out.back() = std::move(line);
+      continue;
+    }
+    int id, x, y, dx, dy, id2, x2, y2, dx2, dy2;
+    if (!out.empty() &&
+        sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5 &&
+        sscanf(out.back().c_str(), "scroll %d %d %d %d %d", &id2, &x2, &y2, &dx2, &dy2) == 5 &&
+        id == id2 && x == x2 && y == y2) {
+      out.back() = nsPrintfCString("scroll %d %d %d %d %d", id, x, y, dx + dx2, dy + dy2).get();
+      continue;
+    }
+    out.push_back(std::move(line));
+  }
+  batch.swap(out);
+}
+
+// The window's frames: Gecko paints into `back`, which is compared with
+// `front` (what the windowserver shows) so only the band of rows that
+// changed is converted, written and composited. A frame that changed nothing
+// (a repaint after a mouse move over plain text) is not sent at all.
+struct Frames {
+  std::vector<uint8_t> front, back;
+  int width = 0, height = 0;
+  bool valid = false;  // front holds what is on screen
+
+  void ensure(int w, int h) {
+    if (w == width && h == height) return;
+    width = w;
+    height = h;
+    const size_t size = static_cast<size_t>(w) * h * 4;
+    front.assign(size, 0);
+    back.assign(size, 0);
+    valid = false;
+  }
+};
+
+static bool rowEqual(const uint8_t* a, const uint8_t* b, size_t bytes) {
+  // 8 bytes at a time: wasi-libc's memcmp goes byte by byte, which is ~8x
+  // slower over a 2240-pixel row.
+  const size_t words = bytes / 8;
+  for (size_t i = 0; i < words; i++) {
+    uint64_t x, y;
+    memcpy(&x, a + i * 8, 8);
+    memcpy(&y, b + i * 8, 8);
+    if (x != y) return false;
+  }
+  return memcmp(a + words * 8, b + words * 8, bytes - words * 8) == 0;
+}
+
+// Paint and present what changed. Returns false when the windowserver is gone.
+static bool paintFrame(WindowServer& window, Frames& frames, bool& firstFrame) {
+  frames.ensure(window.width, window.height);
+  if (!xul_paint_into(frames.back.data(), frames.width, frames.height)) return true;
+  const size_t stride = static_cast<size_t>(frames.width) * 4;
+  int top = 0, bottom = frames.height;  // the changed band is [top, bottom)
+  if (frames.valid) {
+    const uint8_t* now = frames.back.data();
+    const uint8_t* shown = frames.front.data();
+    while (top < bottom && rowEqual(now + stride * top, shown + stride * top, stride)) top++;
+    while (bottom > top && rowEqual(now + stride * (bottom - 1), shown + stride * (bottom - 1), stride)) bottom--;
+    if (top == bottom) return true;
+  }
+  if (!window.presentRows(frames.back.data(), top, bottom - top)) {
+    perror("firedog: windowserver present");
+    return false;
+  }
+  frames.front.swap(frames.back);
+  // back now holds the previous frame; it differs from front only inside the
+  // band, which the next paint overwrites anyway (it paints every pixel).
+  frames.valid = true;
+  if (firstFrame) {
+    fprintf(stderr, "firedog: first frame presented (%dx%d)\n", window.width, window.height);
+    firstFrame = false;
+  }
+  return true;
+}
+
+// Frames from Gecko's own compositor (WebRender's software renderer, SWGL).
+//
+// The headless widget has no surface of its own, so the compositor rendered
+// every frame into nothing ("RenderCompositorSWGL failed mapping default
+// framebuffer") while this program painted the window a second time with
+// RenderDocument. With gecko-fast-paint.patch the widget asks
+// firedog_remote_drawing for a draw target instead: the render thread then
+// rasterizes into `pixels` (off the application thread, reusing its cached
+// tiles) and reports the rectangles it changed, and the application thread
+// only converts and sends those rows.
+//
+// libxul without the patch never calls these hooks; the window then keeps
+// RenderDocument (see compositorFrames). FIREDOG_PAINT=document forces that
+// path for comparison.
+extern "C" {
+struct FireDogRemoteDrawing {
+  // Render thread. A new reference (the caller adopts it) to a draw target
+  // covering the whole widget from its origin, or null to skip the frame.
+  mozilla::gfx::DrawTarget* (*start)(nsIWidget* aWidget);
+  // Render thread, after a non-null start. aRects holds aCount rectangles
+  // (x, y, width, height in device pixels) that the frame changed.
+  void (*end)(nsIWidget* aWidget, const int32_t* aRects, size_t aCount);
+};
+}
+
+namespace {
+struct Composited {
+  // Held by the render thread from start to end: SWGL draws straight into
+  // `pixels`, and WebRender's partial present assumes the rows it did not
+  // redraw still hold the previous frame, so the application thread must not
+  // read a half-drawn frame or replace the buffer meanwhile.
+  std::mutex lock;
+  std::vector<uint8_t> pixels;
+  int width = 0, height = 0;
+  int top = 0, bottom = 0;  // rows changed since the last present
+};
+Composited g_composited;
+std::atomic<nsIWidget*> g_mainWidget{nullptr};
+std::atomic<bool> g_compositorEnabled{true};
+// Set by the first compositor frame; from then on the window shows them.
+std::atomic<bool> g_compositorFrames{false};
+// Rows are waiting in g_composited. Read without the lock, so the application
+// thread does not wait out a frame the render thread is still drawing.
+std::atomic<bool> g_damaged{false};
+thread_local bool g_drawing = false;
+}  // namespace
+
+static mozilla::gfx::DrawTarget* startDrawing(nsIWidget* aWidget) {
+  using namespace mozilla::gfx;
+  // Popups are separate widgets with compositors of their own; they are
+  // painted over the window by paint_popups_into instead.
+  if (!g_compositorEnabled.load() || !aWidget || aWidget != g_mainWidget.load()) return nullptr;
+  const auto size = aWidget->GetClientSize();
+  if (size.width <= 0 || size.height <= 0) return nullptr;
+  g_composited.lock.lock();
+  auto& c = g_composited;
+  if (c.width != size.width || c.height != size.height) {
+    // WebRender redraws everything after the widget size changed.
+    c.width = size.width;
+    c.height = size.height;
+    c.pixels.assign(static_cast<size_t>(c.width) * c.height * 4, 0xff);
+    c.top = 0;
+    c.bottom = c.height;
+  }
+  RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
+      BackendType::SKIA, c.pixels.data(), IntSize(c.width, c.height), c.width * 4,
+      SurfaceFormat::B8G8R8A8);
+  if (!dt) {
+    g_composited.lock.unlock();
+    return nullptr;
+  }
+  g_drawing = true;
+  g_compositorFrames.store(true);
+  return dt.forget().take();
+}
+
+static void endDrawing(nsIWidget*, const int32_t* aRects, size_t aCount) {
+  if (!g_drawing) return;
+  g_drawing = false;
+  auto& c = g_composited;
+  for (size_t i = 0; i < aCount; i++) {
+    const int y = aRects[i * 4 + 1], h = aRects[i * 4 + 3];
+    if (h <= 0) continue;
+    const int top = std::max(0, y), bottom = std::min(c.height, y + h);
+    if (bottom <= top) continue;
+    if (c.top >= c.bottom) { c.top = top; c.bottom = bottom; }
+    else { c.top = std::min(c.top, top); c.bottom = std::max(c.bottom, bottom); }
+  }
+  const bool changed = c.top < c.bottom;
+  if (changed) g_damaged.store(true);
+  g_composited.lock.unlock();
+  if (changed) wakeApplication();
+}
+
+extern "C" FireDogRemoteDrawing firedog_remote_drawing = {startDrawing, endDrawing};
+
+// Whether popups were drawn over the last presented compositor frame.
+static bool g_popupsShown = false;
+
+// Present the compositor's changed rows, with any open popups painted over
+// them. Returns false when the windowserver is gone.
+static bool presentComposited(WindowServer& window, Frames& frames, bool& firstFrame) {
+  auto& c = g_composited;
+  const bool popups = popups_visible();
+  std::unique_lock<std::mutex> lock(c.lock);
+  // Between a configure and the compositor's first frame at the new size the
+  // rows would have the wrong stride; that frame follows shortly.
+  if (c.width != window.width || c.height != window.height) return true;
+  g_damaged.store(false);
+  if (!popups && !g_popupsShown) {
+    if (c.top >= c.bottom) return true;
+    const int top = c.top, rows = c.bottom - c.top;
+    c.top = c.bottom = 0;
+    if (!window.presentRows(c.pixels.data(), top, rows)) {
+      perror("firedog: windowserver present");
+      return false;
+    }
+    frames.valid = false;  // `front` no longer mirrors the screen
+  } else {
+    // Popups overlap the frame, so compose a copy and send what differs from
+    // what is shown (closing a popup restores the rows it covered).
+    frames.ensure(window.width, window.height);
+    memcpy(frames.back.data(), c.pixels.data(), frames.back.size());
+    c.top = c.bottom = 0;
+    lock.unlock();
+    paint_popups_into(frames.back.data(), frames.width, frames.height);
+    const size_t stride = static_cast<size_t>(frames.width) * 4;
+    int top = 0, bottom = frames.height;
+    if (frames.valid) {
+      const uint8_t* now = frames.back.data();
+      const uint8_t* shown = frames.front.data();
+      while (top < bottom && rowEqual(now + stride * top, shown + stride * top, stride)) top++;
+      while (bottom > top && rowEqual(now + stride * (bottom - 1), shown + stride * (bottom - 1), stride)) bottom--;
+    }
+    if (top < bottom) {
+      if (!window.presentRows(frames.back.data(), top, bottom - top)) {
+        perror("firedog: windowserver present");
+        return false;
+      }
+      frames.front.swap(frames.back);
+      frames.valid = true;
+    }
+    g_popupsShown = popups;
+  }
+  // RenderDocument usually shows the first frame before the compositor's
+  // first one arrives, so say when the window switches over on its own.
+  static bool switched = false;
+  if (!switched) {
+    fprintf(stderr, "firedog: first frame presented from the compositor (%dx%d)\n", window.width, window.height);
+    switched = true;
+  }
+  firstFrame = false;
+  return true;
+}
+
 // Without a URL argument, open browser.startup.homepage like Firefox does.
 // Distributions set it in /usr/lib/firefox/browser/defaults/preferences/*.js. about:home and
 // about:newtab need the Firefox front-end, which this window does not have yet.
@@ -281,8 +568,8 @@ int main(int argc, char** argv) {
   if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
   mozilla::Preferences::SetUint("ui.key.accelKey", 224);  // ⌘ (see kAccel)
-  // The window repaints a few times a second, so the caret can blink as on
-  // other desktops (xul_init stops it for one-shot snapshots).
+  // The window repaints whenever the refresh driver paints, so the caret can
+  // blink as on other desktops (xul_init stops it for one-shot snapshots).
   mozilla::Preferences::SetInt("ui.caretBlinkTime", 530);
   // Before browser.xhtml loads: its script starts the endpoint from these prefs.
   if (switches.remoteDebuggingPort > 0) {
@@ -297,21 +584,48 @@ int main(int argc, char** argv) {
   const std::string url = startUrl(switches.url);
   if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
   fprintf(stderr, "firedog: page loading, entering the event loop\n");
+  if (const char* paint = getenv("FIREDOG_PAINT"); paint && strcmp(paint, "document") == 0) {
+    g_compositorEnabled.store(false);
+  }
+  std::thread(readNotices, &window).detach();
+  // A backstop for a change that never reaches the refresh driver: one paint a
+  // second costs one RenderDocument and, if nothing changed, no present. The
+  // timer also wakes the event loop when nothing else would.
+  nsCOMPtr<nsITimer> backstop;
+  NS_NewTimerWithCallback(getter_AddRefs(backstop), [](nsITimer*) {}, 1000,
+                          nsITimer::TYPE_REPEATING_SLACK, "firedog::backstop"_ns);
+  Frames frames;
   bool firstFrame = true;
+  uint64_t paintedGeneration = 0;
   auto lastPaint = std::chrono::steady_clock::now();
+  std::vector<std::string> batch;
   while (window.connected()) {
-    // Take every notice that is waiting before painting, so a click's down and
-    // up are not separated by a whole frame.
-    bool active = false;
-    std::string line;
-    int timeout = 16;
-    while (window.next(line, timeout)) {
-      if (!dispatch(window, line)) return 0;
-      active = true;
-      timeout = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_inboxLock);
+      batch.swap(g_inbox);
     }
-    NS_ProcessPendingEvents(nullptr, 0);
+    const bool active = !batch.empty();
+    // The compositor only draws a widget that is shown, sized to the window and
+    // allowed to paint; RenderDocument never needed any of that, so nothing
+    // else keeps it so (idempotent and cheap once it holds).
+    if (g_compositorEnabled.load()) gpu_ensure_active(window.width, window.height);
+    g_mainWidget.store(main_widget());
+    // Pointer motion alone repaints only if it changed something (a hover
+    // style, a cursor-dependent highlight): at 60 Hz of motion over plain
+    // content a RenderDocument per move cost ~13 ms of CPU for nothing.
+    bool onlyMotion = active;
     if (active) {
+      for (const auto& line : batch) {
+        if (!isMotion(line)) { onlyMotion = false; break; }
+      }
+      coalesce(batch);
+      for (const auto& line : batch) {
+        if (!dispatch(window, line)) return 0;
+      }
+      batch.clear();
+      // Let what the input started (handlers, focus changes) settle before
+      // painting, without waiting for anything.
+      NS_ProcessPendingEvents(nullptr, 0);
       // Tell the windowserver where text is typed, so the input method's
       // candidates open under the caret.
       int cx = 0, cy = 0, cw = 0, ch = 0;
@@ -329,22 +643,39 @@ int main(int argc, char** argv) {
         window.setClipboard(copied);
       }
     }
-    // Repaint after input; otherwise a few times a second for page updates.
     const auto now = std::chrono::steady_clock::now();
-    if (!active && !firstFrame && now - lastPaint < std::chrono::milliseconds(100)) continue;
-    lastPaint = now;
-    uint8_t* pixels = xul_paint(window.width, window.height);
-    if (!pixels) continue;
-    bool shown = window.present(pixels);
-    free(pixels);
-    if (!shown) {
-      perror("firedog: windowserver present");
-      return 1;
+    const uint64_t generation = paint_generation();
+    const auto since = now - lastPaint;
+    if (g_compositorFrames.load()) {
+      // The compositor draws the window. After input, paint at once instead of
+      // at the next refresh tick; the render thread's frame then wakes this
+      // loop (endDrawing) and only its rows are sent. Popups are painted here,
+      // so their changes (hover, a menu opening) follow the refresh driver.
+      if (active) paint_now_if_pending();
+      const bool popups = popups_visible();
+      if (g_damaged.load() || popups != g_popupsShown ||
+          (popups && (active || generation != paintedGeneration))) {
+        paintedGeneration = generation;
+        lastPaint = now;
+        if (!presentComposited(window, frames, firstFrame)) return 1;
+      }
+    } else if (
+        // RenderDocument: paint right after input (the change shows without
+        // waiting for a refresh tick), when Gecko painted on its own since the
+        // last frame (animations, smooth scrolling, the caret's blink, loads),
+        // when a paint has been pending a while, and once a second as a
+        // backstop.
+        (active && (!onlyMotion || paint_pending())) || firstFrame ||
+        generation != paintedGeneration ||
+        (paint_pending() && since >= std::chrono::milliseconds(100)) ||
+        since >= std::chrono::seconds(1)) {
+      paintedGeneration = generation;
+      lastPaint = now;
+      if (!paintFrame(window, frames, firstFrame)) return 1;
     }
-    if (firstFrame) {
-      fprintf(stderr, "firedog: first frame presented (%dx%d)\n", window.width, window.height);
-      firstFrame = false;
-    }
+    // Sleep until Gecko has something to run: a notice (the reader's runnable),
+    // a timer, a refresh tick, a network reply.
+    NS_ProcessNextEvent(nullptr, true);
   }
   return 0;
 }

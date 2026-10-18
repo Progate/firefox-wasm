@@ -1,6 +1,7 @@
 // Painting: software RenderDocument blit, GPU/WebRender present, and popup
 // compositing/overlay. Split from embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
+#include "nsRefreshDriver.h"
 // Paint the current document of the persistent browser to a fresh BGRA buffer
 // (width*height*4 bytes). Caller owns/free()s the buffer.
 // Composite any open popups (menus, context menus, the app-menu panel, <select>
@@ -74,17 +75,31 @@ static int composite_visible_popups(gfxContext* ctx, mozilla::PresShell* ps,
 }
 
 uint8_t* xul_paint(int width, int height) {
+  if (!g_docShell) return nullptr;
+  uint8_t* buf = (uint8_t*)calloc((size_t)height * width * 4, 1);
+  if (!buf) return nullptr;
+  if (!xul_paint_into(buf, width, height)) {
+    free(buf);
+    return nullptr;
+  }
+  return buf;  // BGRA8, width*height*4 bytes
+}
+
+// Paint into a caller-owned BGRA buffer (stride width*4). Every pixel is
+// written (RenderDocument fills the background first), so a buffer reused
+// across frames needs no clearing.
+bool xul_paint_into(uint8_t* buf, int width, int height) {
   using namespace mozilla;
   using namespace mozilla::gfx;
   using mozilla::dom::Document;
-  if (!g_docShell) return nullptr;
+  if (!g_docShell || !buf) return false;
   // Track the live window size: the JS side sends the current viewport dimensions
   // on every paint, so the chrome reflows to fill the window (resize support).
   EnsureSize(width, height);
   PresShell* ps = g_docShell->GetPresShell();
   if (!ps) {
     printf("xul_paint: no PresShell\n");
-    return nullptr;
+    return false;
   }
   ps->UnsuppressPainting();
   if (Document* doc2 = ps->GetDocument()) {
@@ -92,20 +107,15 @@ uint8_t* xul_paint(int width, int height) {
   }
 
   int32_t stride = width * 4;
-  uint8_t* buf = (uint8_t*)calloc((size_t)height * stride, 1);
   RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
       BackendType::SKIA, buf, IntSize(width, height), stride,
       SurfaceFormat::B8G8R8A8);
   if (!dt) {
     printf("xul_paint: CreateDrawTargetForData failed\n");
-    free(buf);
-    return nullptr;
+    return false;
   }
   UniquePtr<gfxContext> ctx = gfxContext::CreateOrNull(dt);
-  if (!ctx) {
-    free(buf);
-    return nullptr;
-  }
+  if (!ctx) return false;
   // The buffer is in device pixels; with layout.css.devPixelsPerPx (HiDPI) a
   // device pixel is smaller than a CSS pixel, so size the rect in device units.
   nsPresContext* pc = ps->GetPresContext();
@@ -127,7 +137,83 @@ uint8_t* xul_paint(int width, int height) {
 
   // Composite open popups onto the same buffer (no-op when nothing is open).
   composite_visible_popups(ctx.get(), ps, width, height, appPerDev);
-  return buf;  // BGRA8, width*height*4 bytes
+  return true;
+}
+
+// How many paints the refresh driver has started (its last transaction id).
+// It moves whenever Gecko painted the window on its own (a CSS animation, a
+// smooth-scroll step, a caret blink, a load), so a caller that paints with
+// xul_paint_into can repaint exactly when something changed instead of on a
+// fixed timer. Popups and in-process content documents share the root's
+// refresh driver, so their paints move it too.
+uint64_t paint_generation() {
+  if (!g_docShell) return 0;
+  mozilla::PresShell* ps = g_docShell->GetPresShell();
+  nsPresContext* pc = ps ? ps->GetPresContext() : nullptr;
+  nsRefreshDriver* rd = pc ? pc->RefreshDriver() : nullptr;
+  return rd ? rd->LastTransactionId().mId : 0;
+}
+
+// Whether something may look different from the last paint: the refresh
+// driver has a paint scheduled, or style or layout is dirty (a hover change is
+// only a pending restyle until the next tick turns it into a paint).
+bool paint_pending() {
+  if (!g_docShell) return false;
+  mozilla::PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return false;
+  if (ps->NeedStyleFlush() || ps->NeedLayoutFlush()) return true;
+  nsPresContext* pc = ps->GetPresContext();
+  nsRefreshDriver* rd = pc ? pc->RefreshDriver() : nullptr;
+  return rd && rd->IsPaintPending();
+}
+
+// Composite the open popups onto a caller-owned BGRA buffer (stride width*4)
+// that already holds the window's frame. For an embedder that takes the main
+// window's pixels from the compositor (popups have their own widgets, so the
+// compositor's frame never contains them). Returns how many were painted.
+int paint_popups_into(uint8_t* buf, int width, int height) {
+  using namespace mozilla;
+  using namespace mozilla::gfx;
+  if (!g_docShell || !buf) return 0;
+  PresShell* ps = g_docShell->GetPresShell();
+  if (!ps) return 0;
+  RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
+      BackendType::SKIA, buf, IntSize(width, height), width * 4,
+      SurfaceFormat::B8G8R8A8);
+  if (!dt) return 0;
+  UniquePtr<gfxContext> ctx = gfxContext::CreateOrNull(dt);
+  if (!ctx) return 0;
+  nsPresContext* pc = ps->GetPresContext();
+  int32_t appPerDev = pc ? pc->AppUnitsPerDevPixel() : AppUnitsPerCSSPixel();
+  return composite_visible_popups(ctx.get(), ps, width, height, appPerDev);
+}
+
+bool popups_visible() {
+  nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
+  if (!pm) return false;
+  nsTArray<nsMenuPopupFrame*> popups;
+  pm->GetVisiblePopups(popups);
+  return !popups.IsEmpty();
+}
+
+// The main window's widget (the one whose compositor frame is the window).
+nsIWidget* main_widget() {
+  if (!g_docShell) return nullptr;
+  mozilla::PresShell* ps = g_docShell->GetPresShell();
+  nsPresContext* pc = ps ? ps->GetPresContext() : nullptr;
+  return pc ? pc->GetRootWidget() : nullptr;
+}
+
+// Paint now rather than at the next refresh tick when input invalidated
+// something: the compositor then renders the change up to one vsync interval
+// (16 ms) sooner. The tick still runs its own paint afterwards; with nothing
+// changed in between, WebRender's retained display list makes that one cheap.
+void paint_now_if_pending() {
+  if (!g_docShell) return;
+  mozilla::PresShell* ps = g_docShell->GetPresShell();
+  nsPresContext* pc = ps ? ps->GetPresContext() : nullptr;
+  RefPtr<nsRefreshDriver> rd = pc ? pc->RefreshDriver() : nullptr;
+  if (rd && rd->IsPaintPending() && !rd->IsInRefresh()) rd->PaintIfNeeded();
 }
 
 // GPU mode (GECKO_GPU=1): the in-process WebRender compositor presents directly to
@@ -144,12 +230,18 @@ void gpu_ensure_active(int width, int height) {
   EnsureSize(width, height);  // track the live window size (resize support)
   PresShell* ps = g_docShell->GetPresShell();
   if (!ps) return;
-  // Clear the gates that keep a windowless browser from painting (one-time, cheap to
-  // re-assert): never-painting, inactive (top-level-always-active forces active),
-  // suppressed painting.
-  ps->SetNeverPainting(false);
-  ps->ActivenessMaybeChanged();
-  ps->UnsuppressPainting();
+  // Clear the gates that keep a windowless browser from painting: never-painting,
+  // inactive (top-level-always-active forces active), suppressed painting. Once per
+  // PresShell: they are not free to re-assert. Each call schedules a paint, and with
+  // the compositor's frames shown every frame wakes the loop that calls this, so a
+  // still page was composited at 60 Hz.
+  static PresShell* opened = nullptr;
+  if (opened != ps) {
+    opened = ps;
+    ps->SetNeverPainting(false);
+    ps->ActivenessMaybeChanged();
+    ps->UnsuppressPainting();
+  }
   bool resized = false;
   nsPoint offset;
   nsIWidget* widget = nsContentUtils::GetWidget(ps, &offset);
