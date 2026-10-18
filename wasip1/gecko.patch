@@ -610,10 +610,10 @@ index fb146b5dd4..65a4dd8fc4 100644
  /* #undef EVENT__HAVE_ARC4RANDOM_BUF */
  #endif
  
-+/* wasi-libc has arc4random and arc4random_buf. */
++/* BrowserOS's libc (musl) has getrandom, not arc4random. */
 +#ifdef __wasi__
-+#define EVENT__HAVE_ARC4RANDOM 1
-+#define EVENT__HAVE_ARC4RANDOM_BUF 1
++#define EVENT__HAVE_GETRANDOM 1
++#define EVENT__HAVE_SYS_RANDOM_H 1
 +#endif
 +
  /* Define to 1 if you have the <arpa/inet.h> header file. */
@@ -5911,3 +5911,42 @@ index 42ba00ad3c..a7bcc97782 100644
    // The in-process wasm interpreter (GECKO_WASM_INTERP) recurses one C++ frame
    // per guest wasm call, so worker threads running guest wasm (e.g.
    // embed-demo-in-embed-demo) need a much deeper physical stack than the JS
+diff --git a/mfbt/RandomNum.cpp b/mfbt/RandomNum.cpp
+--- a/mfbt/RandomNum.cpp
++++ b/mfbt/RandomNum.cpp
+@@ -26,9 +26,12 @@
+ #endif
+ 
+ #if defined(ANDROID) || defined(XP_DARWIN) || defined(__DragonFly__) ||    \
+-    defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+-    defined(__wasi__)
++    defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+ #  define USE_ARC4RANDOM
++#endif
++
++#if defined(__wasi__)
++#  include <sys/random.h>  // For getrandom.
+ #endif
+ 
+ #if defined(__linux__)
+@@ -97,6 +100,20 @@
+ 
+ #elif defined(XP_UNIX)  // defined(USE_ARC4RANDOM)
+ 
++#  if defined(__wasi__)
++
++  // BrowserOS's libc is musl over Linux system calls: it has getrandom()
++  // but not arc4random().
++  ssize_t bytesGenerated = getrandom(aBuffer, aLength, GRND_NONBLOCK);
++
++  if (static_cast<size_t>(bytesGenerated) == aLength) {
++    return true;
++  }
++
++  // Fall-through to UNIX behavior if failed
++
++#  endif  // defined(__wasi__)
++
+ #  if defined(__linux__)
+ 
+   long bytesGenerated = syscall(SYS_getrandom, aBuffer, aLength, GRND_NONBLOCK);
