@@ -1,0 +1,13 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+/* Where Gecko would draw Chromium's error page stylesheets (chromium/)
+ * differently from Chromium.app. Loaded after them. */
+
+/* Chromium's macOS UA stylesheet gives the network error page's buttons
+ * Arial (the SSL interstitial sets its own font); Japanese falls back to the
+ * page's font. */
+.neterror button {
+  font-family: Arial, system-ui, sans-serif;
+}

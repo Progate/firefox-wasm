@@ -13,6 +13,19 @@
 #include <unistd.h>
 #include <vector>
 
+static bool pwriteAll(int fd, const void* data, size_t size, off_t offset) {
+  auto bytes = static_cast<const uint8_t*>(data);
+  while (size) {
+    ssize_t n = pwrite(fd, bytes, size, offset);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return false;
+    bytes += n;
+    size -= n;
+    offset += n;
+  }
+  return true;
+}
+
 static bool writeAll(int fd, const void* data, size_t size) {
   auto bytes = static_cast<const uint8_t*>(data);
   while (size) {
@@ -34,8 +47,12 @@ WindowServer::~WindowServer() {
 }
 
 bool WindowServer::command(const std::string& text) {
+  if (!connected()) return false;
   const auto line = text + "\n";
-  return writeAll(socket_, line.data(), line.size());
+  std::lock_guard<std::mutex> lock(send_);
+  if (writeAll(socket_, line.data(), line.size())) return true;
+  lost();
+  return false;
 }
 
 bool WindowServer::setClipboard(const std::string& text) {
@@ -122,20 +139,19 @@ bool WindowServer::open(int w, int h) {
 }
 
 bool WindowServer::next(std::string& line, int timeoutMs) {
+  if (!connected()) return false;
   auto newline = pending_.find('\n');
   if (newline == std::string::npos) {
     pollfd fd{socket_, POLLIN, 0};
     int ready;
     do { ready = poll(&fd, 1, timeoutMs); } while (ready < 0 && errno == EINTR);
     if (ready == 0) return false;
-    if (ready < 0 || (fd.revents & (POLLERR | POLLNVAL))) {
-      close(socket_); socket_ = -1; return false;
-    }
+    if (ready < 0 || (fd.revents & (POLLERR | POLLNVAL))) { lost(); return false; }
     char bytes[4096];
     ssize_t size = read(socket_, bytes, sizeof(bytes));
-    if (size <= 0) { close(socket_); socket_ = -1; return false; }
+    if (size <= 0) { lost(); return false; }
     pending_.append(bytes, size);
-    if (pending_.size() > 65536) { close(socket_); socket_ = -1; return false; }
+    if (pending_.size() > 65536) { lost(); return false; }
     newline = pending_.find('\n');
     if (newline == std::string::npos) return false;
   }
@@ -144,14 +160,31 @@ bool WindowServer::next(std::string& line, int timeoutMs) {
   return true;
 }
 
-bool WindowServer::present(const uint8_t* bgra) {
+bool WindowServer::presentRows(const uint8_t* bgra, int top, int rows) {
   if (!bgra || surface_ < 0) return false;
-  const size_t size = static_cast<size_t>(width) * height * 4;
-  std::vector<uint8_t> rgba(size);
-  for (size_t i = 0; i < size; i += 4) {
-    rgba[i] = bgra[i + 2]; rgba[i + 1] = bgra[i + 1];
-    rgba[i + 2] = bgra[i]; rgba[i + 3] = 255;
+  if (top < 0) { rows += top; top = 0; }
+  if (top + rows > height) rows = height - top;
+  if (rows <= 0) return true;
+  const size_t stride = static_cast<size_t>(width) * 4;
+  const size_t size = stride * rows;
+  if (rgba_.size() < size) rgba_.resize(size);
+  // BGRA (Gecko's native 32-bit order) to the windowserver's RGBA, opaque.
+  // Done a 32-bit word at a time so the compiler can vectorize it with simd128.
+  const uint8_t* from = bgra + stride * top;
+  const size_t count = static_cast<size_t>(width) * rows;
+  for (size_t i = 0; i < count; i++) {
+    uint32_t pixel;
+    memcpy(&pixel, from + i * 4, 4);
+    pixel = (pixel & 0x0000ff00u) | ((pixel >> 16) & 0xffu) | ((pixel & 0xffu) << 16) | 0xff000000u;
+    memcpy(rgba_.data() + i * 4, &pixel, 4);
   }
-  return lseek(surface_, 0, SEEK_SET) == 0 && writeAll(surface_, rgba.data(), size) &&
-      command("commit " + std::to_string(id_) + " 0 " + std::to_string(height));
+  const off_t offset = static_cast<off_t>(stride * top);
+  // pwrite saves the lseek round trip through the syscall bridge; a surface
+  // that cannot pwrite (ENOTSUP from a file system without it) still takes
+  // lseek + write.
+  if (!pwriteAll(surface_, rgba_.data(), size, offset) &&
+      (lseek(surface_, offset, SEEK_SET) != offset || !writeAll(surface_, rgba_.data(), size))) {
+    return false;
+  }
+  return command("commit " + std::to_string(id_) + " " + std::to_string(top) + " " + std::to_string(rows));
 }

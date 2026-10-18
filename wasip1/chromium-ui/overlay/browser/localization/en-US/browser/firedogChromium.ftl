@@ -1,0 +1,11 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# The profile button between the address bar and the app menu.
+firedog-profile-button =
+    .tooltiptext = Profile
+
+# The last item of the page's context menu, which opens DevTools on the clicked element.
+firedog-context-inspect =
+    .label = Inspect

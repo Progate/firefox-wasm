@@ -80,3 +80,17 @@ pref("extensions.getAddons.showPane", false);
 pref("extensions.htmlaboutaddons.recommendations.enabled", false);
 pref("browser.ml.enable", false);
 pref("browser.ml.chat.enabled", false);
+
+// https:// inside BrowserOS. FireDog does not do TLS to the Internet itself:
+// it sends each https:// request as plaintext HTTP/1.1 with an absolute
+// request target ("GET https://host/path HTTP/1.1") to BrowserOS's gateway,
+// which replays it with the host page's fetch(). The host browser does the TLS
+// and the embedder's gateway decides which sites are reachable.
+pref("network.http.firedog.https_via_gateway", true);
+// These would move an https:// origin to another host, port or protocol
+// (Alt-Svc, HTTPS DNS records, QUIC) that keeps TLS in this process and so
+// never reaches the gateway.
+pref("network.http.altsvc.enabled", false);
+pref("network.http.http3.enable", false);
+pref("network.dns.use_https_rr_as_altsvc", false);
+pref("network.dns.native_https_query", false);
