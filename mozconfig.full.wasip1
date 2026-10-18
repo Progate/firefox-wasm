@@ -12,6 +12,9 @@ ac_add_options --disable-shared-memory
 ac_add_options --disable-tests
 ac_add_options --disable-debug
 ac_add_options --enable-optimize=-O2
+# wasip1/link.sh strips debug information from the program, and DWARF in
+# every object roughly doubles the size of the build directory.
+ac_add_options --disable-debug-symbols
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
 ac_add_options --disable-backgroundtasks

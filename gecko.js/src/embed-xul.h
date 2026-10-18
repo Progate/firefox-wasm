@@ -195,7 +195,7 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
               int buttons, int modifiers);                   // embed-input.cpp
 void do_wheel(int x, int y, double dx, double dy, int modifiers);
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
-            int modifiers);
+            int modifiers, const char* code = nullptr);
 bool set_clipboard_text(const char* utf8);
 std::string get_clipboard_text();
 void set_composition(const char* utf8);

@@ -5462,3 +5462,467 @@ index 42ba00ad3c..a7bcc97782 100644
    // The in-process wasm interpreter (GECKO_WASM_INTERP) recurses one C++ frame
    // per guest wasm call, so worker threads running guest wasm (e.g.
    // embed-demo-in-embed-demo) need a much deeper physical stack than the JS
+diff --git a/build/wasi-relocatable-link.py b/build/wasi-relocatable-link.py
+new file mode 100644
+index 0000000..7903076
+--- /dev/null
++++ b/build/wasi-relocatable-link.py
+@@ -0,0 +1,69 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++# Stands in for the shared library link on WASI (MKSHLIB in
++# build/moz.configure/toolchain.configure). wasm-ld has no shared libraries
++# for WASI and Gecko's libraries end up in one module (wasip1/link.sh in
++# firefox-wasm), so instead of linking, this writes the library's inputs to
++# the output path as a response file: one absolute path per line, objects and
++# static archives in link order. The final link passes it as `@libxul.so`.
++#
++#   wasi-relocatable-link.py <compiler> -o <output> <rules.mk link arguments>
++#
++# Flags are dropped (rules.mk appends the program link flags, -pthread and ELF
++# -z options, which a module link sets itself), and so are other libraries
++# (*.so): they are response files of their own, which the final link reads.
++
++import os
++import sys
++
++INPUT_SUFFIXES = (".o", ".obj", ".a", ".lo")
++
++
++def expand(arguments, cwd):
++    for argument in arguments:
++        if argument.startswith("-Wl,@"):
++            argument = argument[len("-Wl,") :]
++        if argument.startswith("@"):
++            # mozbuild's list files hold paths relative to the directory
++            # the link runs in (backend/common.py _make_list_file).
++            with open(os.path.join(cwd, argument[1:])) as listing:
++                yield from expand(listing.read().split(), cwd)
++        else:
++            yield argument
++
++
++def main(argv):
++    # argv[0] is the compiler mozbuild would have linked with.
++    arguments = argv[1:]
++    if "-o" not in arguments:
++        sys.stderr.write("wasi-relocatable-link.py: no -o output\n")
++        return 1
++    index = arguments.index("-o")
++    output = arguments[index + 1]
++    rest = arguments[:index] + arguments[index + 2 :]
++    cwd = os.getcwd()
++    inputs = []
++    seen = set()
++    for argument in expand(rest, cwd):
++        if argument.startswith("-") or not argument.endswith(INPUT_SUFFIXES):
++            continue
++        path = os.path.abspath(os.path.join(cwd, argument))
++        if path in seen:
++            continue
++        seen.add(path)
++        inputs.append(path)
++    missing = [path for path in inputs if not os.path.exists(path)]
++    if missing:
++        sys.stderr.write(
++            "wasi-relocatable-link.py: missing inputs:\n  %s\n" % "\n  ".join(missing)
++        )
++        return 1
++    with open(output, "w") as response:
++        response.write("".join(path + "\n" for path in inputs))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/ipc/chromium/src/base/process_util_wasi.cc b/ipc/chromium/src/base/process_util_wasi.cc
+new file mode 100644
+index 0000000..cb36106
+--- /dev/null
++++ b/ipc/chromium/src/base/process_util_wasi.cc
+@@ -0,0 +1,106 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// LaunchApp for WASI. process_util_linux.cc forks and then execs, but a wasm
++// module cannot fork. BrowserOS's libc has posix_spawn (the kernel starts the
++// program in a new worker), so the child is started the way posix_spawn
++// starts it: the working directory and the descriptor remapping are file
++// actions applied in the child before the program runs.
++
++#include "base/process_util.h"
++
++#include <spawn.h>
++#include <string>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include "base/eintr_wrapper.h"
++#include "base/logging.h"
++#include "mozilla/ipc/FileDescriptorShuffle.h"
++#include "mozilla/ipc/LaunchError.h"
++#include "mozilla/UniquePtr.h"
++#include "mozilla/Result.h"
++
++namespace {
++
++MOZ_RUNINIT static mozilla::EnvironmentLog gProcessLog("MOZ_PROCESS_LOG");
++
++// posix_spawn_file_actions_t owns allocations until destroyed.
++class FileActions {
++ public:
++  FileActions() { posix_spawn_file_actions_init(&mActions); }
++  ~FileActions() { posix_spawn_file_actions_destroy(&mActions); }
++  posix_spawn_file_actions_t* get() { return &mActions; }
++
++ private:
++  posix_spawn_file_actions_t mActions;
++};
++
++}  // namespace
++
++namespace base {
++
++Result<Ok, LaunchError> LaunchApp(const std::vector<std::string>& argv,
++                                  LaunchOptions&& options,
++                                  ProcessHandle* process_handle) {
++  mozilla::UniquePtr<char*[]> argv_cstr(new char*[argv.size() + 1]);
++  for (size_t i = 0; i < argv.size(); i++) {
++    argv_cstr[i] = const_cast<char*>(argv[i].c_str());
++  }
++  argv_cstr[argv.size()] = nullptr;
++
++  EnvironmentArray env_storage;
++  const EnvironmentArray& envp =
++      options.full_env ? options.full_env
++                       : (env_storage = BuildEnvironmentArray(options.env_map));
++
++  mozilla::ipc::FileDescriptorShuffle shuffle;
++  if (!shuffle.Init(options.fds_to_remap)) {
++    CHROMIUM_LOG(WARNING) << "FileDescriptorShuffle::Init failed";
++    return Err(LaunchError("FileDescriptorShuffle", errno));
++  }
++
++  FileActions actions;
++  if (!options.workdir.empty()) {
++    int error = posix_spawn_file_actions_addchdir_np(actions.get(),
++                                                     options.workdir.c_str());
++    if (error) {
++      return Err(LaunchError("posix_spawn_file_actions_addchdir_np", error));
++    }
++  }
++  for (const auto& fds : shuffle.Dup2Sequence()) {
++    int error =
++        posix_spawn_file_actions_adddup2(actions.get(), fds.first, fds.second);
++    if (error) {
++      return Err(LaunchError("posix_spawn_file_actions_adddup2", error));
++    }
++  }
++  // process_util_linux.cc closes every other descriptor in the child
++  // (CloseSuperfluousFds). posix_spawn has no file action for "all but
++  // these", so the temporary descriptors the shuffle made are closed instead;
++  // Gecko opens its other descriptors close-on-exec.
++  for (const auto& fds : shuffle.Dup2Sequence()) {
++    if (!shuffle.MapsTo(fds.first)) {
++      posix_spawn_file_actions_addclose(actions.get(), fds.first);
++    }
++  }
++
++  pid_t pid = 0;
++  int error = posix_spawn(&pid, argv_cstr[0], actions.get(), nullptr,
++                          argv_cstr.get(), envp.get());
++  if (error) {
++    CHROMIUM_LOG(WARNING) << "posix_spawn() failed: " << strerror(error);
++    return Err(LaunchError("posix_spawn", error));
++  }
++
++  gProcessLog.print("==> process %d launched child process %d\n",
++                    GetCurrentProcId(), pid);
++  if (options.wait) HANDLE_EINTR(waitpid(pid, nullptr, 0));
++
++  if (process_handle) *process_handle = pid;
++
++  return Ok();
++}
++
++}  // namespace base
+diff --git a/third_party/sqlite3/src/sqlite3_wasi_load_extension.c b/third_party/sqlite3/src/sqlite3_wasi_load_extension.c
+new file mode 100644
+index 0000000..ed5b6b7
+--- /dev/null
++++ b/third_party/sqlite3/src/sqlite3_wasi_load_extension.c
+@@ -0,0 +1,70 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/* WASI has no dynamic loading: a module cannot load another one into its
++ * address space, and BrowserOS's libc has no dlopen.
++ *
++ * sqlite3.c defines SQLITE_OMIT_LOAD_EXTENSION for __wasi__, which leaves out
++ * sqlite3_load_extension and sqlite3_enable_load_extension, but mozStorage
++ * (Connection::LoadExtension) and the suggest crate still call them. They are
++ * defined here to behave as SQLite's own versions do when the library cannot
++ * be loaded: enabling succeeds, loading fails with the loader's message.
++ *
++ * dlopen and friends are defined to fail the way dlopen fails for a library
++ * that is not there, with a message saying why. Being the only definitions in
++ * the program, they serve NSPR's PR_LoadLibrary. */
++
++#include <dlfcn.h>
++#include <stddef.h>
++
++#include "sqlite3.h"
++
++static const char kNoDynamicLoading[] =
++    "dynamic loading is not supported on WASI";
++static int gFailed = 0;
++
++void* dlopen(const char* aPath, int aMode) {
++  (void)aPath;
++  (void)aMode;
++  gFailed = 1;
++  return NULL;
++}
++
++char* dlerror(void) {
++  if (!gFailed) {
++    return NULL;
++  }
++  gFailed = 0;
++  return (char*)kNoDynamicLoading;
++}
++
++void* dlsym(void* aHandle, const char* aSymbol) {
++  (void)aHandle;
++  (void)aSymbol;
++  gFailed = 1;
++  return NULL;
++}
++
++int dlclose(void* aHandle) {
++  (void)aHandle;
++  return 0;
++}
++
++int sqlite3_enable_load_extension(sqlite3* aDb, int aOnOff) {
++  (void)aDb;
++  (void)aOnOff;
++  return SQLITE_OK;
++}
++
++int sqlite3_load_extension(sqlite3* aDb, const char* aFile,
++                           const char* aEntryPoint, char** aErrorMessage) {
++  (void)aDb;
++  (void)aEntryPoint;
++  if (aErrorMessage) {
++    /* The message sqlite3LoadExtension writes when dlopen fails. */
++    *aErrorMessage = sqlite3_mprintf("unable to open shared library [%s]: %s",
++                                     aFile ? aFile : "", kNoDynamicLoading);
++  }
++  return SQLITE_ERROR;
++}
+diff --git a/toolkit/components/processtools/ProcInfo_wasi.cpp b/toolkit/components/processtools/ProcInfo_wasi.cpp
+new file mode 100644
+index 0000000..9ae1841
+--- /dev/null
++++ b/toolkit/components/processtools/ProcInfo_wasi.cpp
+@@ -0,0 +1,85 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Process information on WASI (BrowserOS). There is no /proc to read other
++// processes from, so the numbers are this process's own, from getrusage and
++// the size of the wasm linear memory; other processes are listed with what
++// the request says about them and no usage. Gecko runs single-process here.
++
++#include "mozilla/ProcInfo.h"
++#include "mozilla/ipc/GeckoChildProcessHost.h"
++#include "nsMemoryReporterManager.h"
++
++#include <sys/resource.h>
++#include <time.h>
++#include <unistd.h>
++
++namespace mozilla {
++
++// The whole linear memory is the process's: it only grows, and BrowserOS
++// backs every page of it, so its size is the resident size.
++static uint64_t LinearMemoryBytes() {
++  return uint64_t(__builtin_wasm_memory_size(0)) * 65536u;
++}
++
++static uint64_t SelfCpuTimeNs() {
++  struct rusage usage;
++  if (getrusage(RUSAGE_SELF, &usage) != 0) {
++    return 0;
++  }
++  return (uint64_t(usage.ru_utime.tv_sec) + uint64_t(usage.ru_stime.tv_sec)) *
++             1'000'000'000u +
++         (uint64_t(usage.ru_utime.tv_usec) + uint64_t(usage.ru_stime.tv_usec)) *
++             1'000u;
++}
++
++nsresult GetCurrentProcessMemoryUsage(uint64_t* aResult) {
++  *aResult = LinearMemoryBytes();
++  return NS_OK;
++}
++
++int GetCycleTimeFrequencyMHz() { return 0; }
++
++nsresult GetCpuTimeSinceProcessStartInMs(uint64_t* aResult) {
++  *aResult = SelfCpuTimeNs() / PR_NSEC_PER_MSEC;
++  return NS_OK;
++}
++
++nsresult GetGpuTimeSinceProcessStartInMs(uint64_t* aResult) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++ProcInfoPromise::ResolveOrRejectValue GetProcInfoSync(
++    nsTArray<ProcInfoRequest>&& aRequests) {
++  ProcInfoPromise::ResolveOrRejectValue result;
++
++  HashMap<base::ProcessId, ProcInfo> gathered;
++  if (!gathered.reserve(aRequests.Length())) {
++    result.SetReject(NS_ERROR_OUT_OF_MEMORY);
++    return result;
++  }
++  const base::ProcessId self = getpid();
++  for (const auto& request : aRequests) {
++    ProcInfo info;
++    if (request.pid == self) {
++      info.cpuTime = SelfCpuTimeNs();
++      info.memory = LinearMemoryBytes();
++    }
++    info.pid = request.pid;
++    info.childId = request.childId;
++    info.type = request.processType;
++    info.origin = request.origin;
++    info.windows = std::move(request.windowInfo);
++    info.utilityActors = std::move(request.utilityInfo);
++    if (!gathered.put(request.pid, std::move(info))) {
++      result.SetReject(NS_ERROR_OUT_OF_MEMORY);
++      return result;
++    }
++  }
++
++  result.SetResolve(std::move(gathered));
++  return result;
++}
++
++}  // namespace mozilla
+diff --git a/widget/headless/HeadlessToolkitWidgets.cpp b/widget/headless/HeadlessToolkitWidgets.cpp
+new file mode 100644
+index 0000000..ee1124d
+--- /dev/null
++++ b/widget/headless/HeadlessToolkitWidgets.cpp
+@@ -0,0 +1,26 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// The widget factories each toolkit defines (gtk/nsWindow.cpp,
++// cocoa/nsCocoaWindow.mm, ...), for the headless-only toolkit of the WASI
++// build. Every window is a HeadlessWidget: the embedder (wasip1/main.cpp)
++// shows what Gecko paints into the top-level one in a windowserver window,
++// so there is no native window behind any of them.
++
++#include "nsIWidget.h"
++#include "nsIBidiKeyboard.h"
++
++already_AddRefed<nsIWidget> nsIWidget::CreateTopLevelWindow() {
++  return CreateHeadlessWidget();
++}
++
++already_AddRefed<nsIWidget> nsIWidget::CreateChildWindow() {
++  return CreateHeadlessWidget();
++}
++
++// No keyboard layout to ask whether it is right-to-left. As on Android,
++// nsIWidget::CreateBidiKeyboard's callers treat null as "no bidi keyboard".
++already_AddRefed<nsIBidiKeyboard> nsIWidget::CreateBidiKeyboardInner() {
++  return nullptr;
++}
+diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselineInterpret.cpp
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -9852,8 +9852,18 @@
+ MethodStatus CanEnterPortableBaselineInterpreter(JSContext* cx,
+                                                  RunState& state) {
+   if (!JitOptions.portableBaselineInterpreter) {
++    return MethodStatus::Method_CantCompile;
++  }
++  // On WASI the per-op DEBUG_CHECK above is compiled out, so this interpreter
++  // never reaches a breakpoint or a single step. Scripts the debugger is
++  // watching (a breakpoint, stepping, or a debugger observing all execution)
++  // stay in the C++ interpreter, which handles both; checked before the
++  // JitScript test because a warm script already has one.
++#ifdef __wasi__
++  if (state.script()->isDebuggee()) {
+     return MethodStatus::Method_CantCompile;
+   }
++#endif
+   if (state.script()->hasJitScript()) {
+     return MethodStatus::Method_Compiled;
+   }
+diff --git a/storage/BaseVFS.cpp b/storage/BaseVFS.cpp
+--- a/storage/BaseVFS.cpp
++++ b/storage/BaseVFS.cpp
+@@ -166,7 +166,19 @@
+         BaseFetch,                  /* xFetch */
+         BaseUnfetch                 /* xUnfetch */
+     };
+-    pFile->pMethods = &IOmethods;
++    // SQLite uses WAL only when xShmMap is set, so a file whose real methods
++    // have no shared memory (SQLite's unix VFS built for WASI) must not get
++    // these: SQLite would call through the missing pointer.
++    static const sqlite3_io_methods IOmethodsWithoutShm = [] {
++      sqlite3_io_methods methods = IOmethods;
++      methods.xShmMap = nullptr;
++      methods.xShmLock = nullptr;
++      methods.xShmBarrier = nullptr;
++      methods.xShmUnmap = nullptr;
++      return methods;
++    }();
++    pFile->pMethods =
++        p->pReal->pMethods->xShmMap ? &IOmethods : &IOmethodsWithoutShm;
+   }
+ 
+   return SQLITE_OK;
+diff --git a/storage/ObfuscatingVFS.cpp b/storage/ObfuscatingVFS.cpp
+--- a/storage/ObfuscatingVFS.cpp
++++ b/storage/ObfuscatingVFS.cpp
+@@ -185,6 +185,18 @@
+     obfsUnfetch                /* xUnfetch */
+ };
+ 
++// For a file whose underlying methods have no shared memory (SQLite's unix VFS
++// built for WASI). SQLite uses WAL only when xShmMap is set, and would call
++// through the missing pointer.
++static const sqlite3_io_methods obfs_io_methods_without_shm = [] {
++  sqlite3_io_methods methods = obfs_io_methods;
++  methods.xShmMap = nullptr;
++  methods.xShmLock = nullptr;
++  methods.xShmBarrier = nullptr;
++  methods.xShmUnmap = nullptr;
++  return methods;
++}();
++
+ static constexpr int kKeyBytes = 32;
+ static constexpr int kIvBytes = IPCStreamCipherStrategy::BlockPrefixLength;
+ static constexpr int kClearTextPrefixBytesOnFirstPage = 32;
+@@ -569,6 +581,9 @@
+   rc = pSubVfs->xOpen(pSubVfs, zName, pSubFile, flags, pOutFlags);
+   if (rc) {
+     return rc;
++  }
++  if (!pSubFile->pMethods->xShmMap) {
++    p->base.pMethods = &obfs_io_methods_without_shm;
+   }
+ 
+   resetMethods.release();
