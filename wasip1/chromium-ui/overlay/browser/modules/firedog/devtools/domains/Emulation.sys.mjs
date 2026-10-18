@@ -94,10 +94,11 @@ export class Emulation {
     return { result: true };
   }
 
-  setEmulatedMedia({ media, features = [] }) {
-    if (media !== undefined) {
-      this._context.mediumOverride = media;
-    }
+  // Like Chromium, each call replaces the whole emulation: the media type and
+  // every feature it does not name go back to the page's own, so
+  // setEmulatedMedia({}) or { features: [] } undoes an earlier call.
+  setEmulatedMedia({ media = "", features = [] }) {
+    const wanted = new Map();
     for (const { name, value } of features) {
       const known = MEDIA_FEATURES[name];
       if (!known) {
@@ -106,13 +107,17 @@ export class Emulation {
         }
         continue;
       }
-      const [property, values] = known;
-      if (!(value in values)) {
+      if (!(value in known[1])) {
         throw new InvalidParams(`Invalid value for ${name}: ${value}`);
       }
-      if (!this._set(property, values[value]) && value) {
+      if (value && !(known[0] in this._context)) {
         throw new InvalidParams(`Emulating the ${name} media feature is not supported`);
       }
+      wanted.set(name, value);
+    }
+    this._context.mediumOverride = media;
+    for (const [name, [property, values]] of Object.entries(MEDIA_FEATURES)) {
+      this._set(property, values[wanted.get(name) ?? ""]);
     }
   }
 
