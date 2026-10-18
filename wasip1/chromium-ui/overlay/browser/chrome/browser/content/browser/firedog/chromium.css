@@ -49,8 +49,14 @@
 
 #navigator-toolbox {
   /* macOS draws a light inner edge around the window; it shows over the frame,
-     including where the toolbar's top corners are cut away. */
-  background: var(--fd-frame-edge-top), var(--fd-frame-edge-left), var(--fd-frame-edge-right), var(--fd-frame) !important;
+     including where the toolbar's top corners are cut away. Each edge is a
+     1px strip: a gradient layer as large as the toolbox makes the software
+     renderer shade every pixel of it on each paint (most of an idle frame). */
+  background:
+    var(--fd-frame-edge-top) top / 100% 1px no-repeat,
+    var(--fd-frame-edge-left) left / 1px 100% no-repeat,
+    var(--fd-frame-edge-right) right / 1px 100% no-repeat,
+    var(--fd-frame) !important;
   border-bottom: 1px solid var(--fd-separator) !important;
   /* Chromium paints no shadow under the toolbar */
   box-shadow: none !important;
