@@ -6080,14 +6080,26 @@ diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.cpp b/netwerk/protocol/h
 diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget.cpp
 --- a/widget/headless/HeadlessWidget.cpp
 +++ b/widget/headless/HeadlessWidget.cpp
-@@ -232,6 +232,35 @@
+@@ -28,6 +28,14 @@
+ 
+ using mozilla::LogLevel;
+ 
++#if defined(__wasi__)
++// Defined here, outside namespace mozilla::widget, so that it is the extern
++// "C" variable HeadlessWidget.h declares. Inside the namespace it would be a
++// variable of its own that the embedder's definition never replaces.
++__attribute__((weak)) FireDogRemoteDrawing firedog_remote_drawing = {nullptr,
++                                                                     nullptr};
++#endif
++
+ #ifdef MOZ_LOGGING
+ 
+ #  include "mozilla/Logging.h"
+@@ -232,6 +240,32 @@
    return GetTopLevelWidget()->GetBounds().TopLeft();
  }
  
 +#if defined(__wasi__)
-+__attribute__((weak)) FireDogRemoteDrawing firedog_remote_drawing = {nullptr,
-+                                                                     nullptr};
-+
 +already_AddRefed<gfx::DrawTarget> HeadlessWidget::StartRemoteDrawingInRegion(
 +    const LayoutDeviceIntRegion& aInvalidRegion) {
 +  if (!firedog_remote_drawing.start) {
