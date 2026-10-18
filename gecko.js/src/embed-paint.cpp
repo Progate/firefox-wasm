@@ -230,12 +230,18 @@ void gpu_ensure_active(int width, int height) {
   EnsureSize(width, height);  // track the live window size (resize support)
   PresShell* ps = g_docShell->GetPresShell();
   if (!ps) return;
-  // Clear the gates that keep a windowless browser from painting (one-time, cheap to
-  // re-assert): never-painting, inactive (top-level-always-active forces active),
-  // suppressed painting.
-  ps->SetNeverPainting(false);
-  ps->ActivenessMaybeChanged();
-  ps->UnsuppressPainting();
+  // Clear the gates that keep a windowless browser from painting: never-painting,
+  // inactive (top-level-always-active forces active), suppressed painting. Once per
+  // PresShell: they are not free to re-assert. Each call schedules a paint, and with
+  // the compositor's frames shown every frame wakes the loop that calls this, so a
+  // still page was composited at 60 Hz.
+  static PresShell* opened = nullptr;
+  if (opened != ps) {
+    opened = ps;
+    ps->SetNeverPainting(false);
+    ps->ActivenessMaybeChanged();
+    ps->UnsuppressPainting();
+  }
   bool resized = false;
   nsPoint offset;
   nsIWidget* widget = nsContentUtils::GetWidget(ps, &offset);
