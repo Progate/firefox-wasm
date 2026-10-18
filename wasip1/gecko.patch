@@ -5870,3 +5870,59 @@ diff --git a/js/src/vm/PortableBaselineInterpret.cpp b/js/src/vm/PortableBaselin
    if (state.script()->hasJitScript()) {
      return MethodStatus::Method_Compiled;
    }
+diff --git a/storage/BaseVFS.cpp b/storage/BaseVFS.cpp
+--- a/storage/BaseVFS.cpp
++++ b/storage/BaseVFS.cpp
+@@ -166,7 +166,19 @@
+         BaseFetch,                  /* xFetch */
+         BaseUnfetch                 /* xUnfetch */
+     };
+-    pFile->pMethods = &IOmethods;
++    // SQLite uses WAL only when xShmMap is set, so a file whose real methods
++    // have no shared memory (SQLite's unix VFS built for WASI) must not get
++    // these: SQLite would call through the missing pointer.
++    static const sqlite3_io_methods IOmethodsWithoutShm = [] {
++      sqlite3_io_methods methods = IOmethods;
++      methods.xShmMap = nullptr;
++      methods.xShmLock = nullptr;
++      methods.xShmBarrier = nullptr;
++      methods.xShmUnmap = nullptr;
++      return methods;
++    }();
++    pFile->pMethods =
++        p->pReal->pMethods->xShmMap ? &IOmethods : &IOmethodsWithoutShm;
+   }
+ 
+   return SQLITE_OK;
+diff --git a/storage/ObfuscatingVFS.cpp b/storage/ObfuscatingVFS.cpp
+--- a/storage/ObfuscatingVFS.cpp
++++ b/storage/ObfuscatingVFS.cpp
+@@ -185,6 +185,18 @@
+     obfsUnfetch                /* xUnfetch */
+ };
+ 
++// For a file whose underlying methods have no shared memory (SQLite's unix VFS
++// built for WASI). SQLite uses WAL only when xShmMap is set, and would call
++// through the missing pointer.
++static const sqlite3_io_methods obfs_io_methods_without_shm = [] {
++  sqlite3_io_methods methods = obfs_io_methods;
++  methods.xShmMap = nullptr;
++  methods.xShmLock = nullptr;
++  methods.xShmBarrier = nullptr;
++  methods.xShmUnmap = nullptr;
++  return methods;
++}();
++
+ static constexpr int kKeyBytes = 32;
+ static constexpr int kIvBytes = IPCStreamCipherStrategy::BlockPrefixLength;
+ static constexpr int kClearTextPrefixBytesOnFirstPage = 32;
+@@ -569,6 +581,9 @@
+   rc = pSubVfs->xOpen(pSubVfs, zName, pSubFile, flags, pOutFlags);
+   if (rc) {
+     return rc;
++  }
++  if (!pSubFile->pMethods->xShmMap) {
++    p->base.pMethods = &obfs_io_methods_without_shm;
+   }
+ 
+   resetMethods.release();
