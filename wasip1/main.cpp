@@ -483,10 +483,14 @@ static bool presentComposited(WindowServer& window, Frames& frames, bool& firstF
     }
     g_popupsShown = popups;
   }
-  if (firstFrame) {
+  // RenderDocument usually shows the first frame before the compositor's
+  // first one arrives, so say when the window switches over on its own.
+  static bool switched = false;
+  if (!switched) {
     fprintf(stderr, "firedog: first frame presented from the compositor (%dx%d)\n", window.width, window.height);
-    firstFrame = false;
+    switched = true;
   }
+  firstFrame = false;
   return true;
 }
 
