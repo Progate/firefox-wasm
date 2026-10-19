@@ -53,6 +53,20 @@ bash /port/wasip1/link.sh           # writes /work/out/firedog.wasm
 ```
 
 `configure.sh` applies `gecko.patch` once and accepts an already-applied patch.
+
+Start a build after `gecko.patch` or `mozconfig.full.wasip1` changed from a
+fresh `/work/firefox` and objdir. A tree patched by an earlier version can pass
+that check and then fail hours later (`arc4random` undeclared, `PRIxPTR`
+format errors). Right after `configure.sh`, these two tell a current tree from
+a stale one:
+
+```sh
+grep -q getrandom /work/firefox/mfbt/RandomNum.cpp           # gecko.patch is applied
+grep -q -- "--sysroot=$BROWSEROS_SYSROOT" /work/obj-full-wasip1/config.status   # configured with this mozconfig
+```
+
+When only the embedder changed (`wasip1/*.cpp`, `gecko.js/src/embed-*.cpp`),
+`link.sh` alone rebuilds `firedog.wasm` in a few minutes.
 It re-checksums the vendored Rust crates the patch edits; cargo treats them as
 registry crates and does not rebuild them otherwise.
 
