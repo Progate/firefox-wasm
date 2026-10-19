@@ -182,7 +182,11 @@ extern bool g_mirror;                  // embed-xul.cpp (env, set in main)
 // ---- cross-file functions ----
 extern "C" int xul_init(const char* greDir);                 // embed-init.cpp
 
-bool xul_load(const char* url, int width, int height);       // embed-browser.cpp
+// waitForLoad: in the chrome build, pump the event loop until the opened page
+// has loaded (or 30 s pass) before returning. FireDog passes false so that its
+// first frame does not wait for the page.
+bool xul_load(const char* url, int width, int height,
+              bool waitForLoad = true);                      // embed-browser.cpp
 void EnsureSize(int width, int height);                      // embed-browser.cpp
 bool RunChromeScript(const nsACString& aScript, char** aOutResult = nullptr);
 

@@ -302,7 +302,10 @@ NS_IMPL_ISUPPORTS(TabLoadObserver, nsIObserver)
 // also attaches a one-shot nsIWebProgressListener that notifies "embed-tab-loaded"
 // when the top-level network load completes; we pump the event loop until that
 // fires (or a safety timeout), so load() returns when the page is actually loaded.
-static bool xul_chrome_load_content(const char* url, int width, int height) {
+// Without waitForLoad it returns once the tab is scheduled; the caller's event
+// loop opens it and the page draws as it loads.
+static bool xul_chrome_load_content(const char* url, int width, int height,
+                                    bool waitForLoad) {
   using namespace mozilla;
   if (!g_appWin) {
     printf("xul_chrome_load_content: no chrome window\n");
@@ -354,6 +357,10 @@ static bool xul_chrome_load_content(const char* url, int width, int height) {
     if (os) os->RemoveObserver(obs, "embed-tab-loaded");
     return false;
   }
+  if (!waitForLoad) {
+    if (os) os->RemoveObserver(obs, "embed-tab-loaded");
+    return true;
+  }
 
   // Pump until the load completes (observer fires) or a safety timeout. After we
   // return, the main command loop keeps pumping the event loop, so a still-loading
@@ -372,7 +379,7 @@ static bool xul_chrome_load_content(const char* url, int width, int height) {
   return true;
 }
 
-bool xul_load(const char* url, int width, int height) {
+bool xul_load(const char* url, int width, int height, bool waitForLoad) {
   using namespace mozilla;
   using mozilla::dom::Document;
   printf("xul_load: %dx%d url=%.60s\n", width, height, url);
@@ -385,7 +392,7 @@ bool xul_load(const char* url, int width, int height) {
   // chrome window itself stays at browser.xhtml). The chrome must already be up.
   if (g_isChrome && strncmp(url, "chrome:", 7) != 0 &&
       strncmp(url, "about:", 6) != 0) {
-    return xul_chrome_load_content(url, width, height);
+    return xul_chrome_load_content(url, width, height, waitForLoad);
   }
 
   nsCOMPtr<nsIURI> uri;

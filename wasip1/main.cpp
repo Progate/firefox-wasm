@@ -582,7 +582,13 @@ int main(int argc, char** argv) {
   // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
   const std::string url = startUrl(switches.url);
-  if ((!chrome || url != "about:blank") && !xul_load(url.c_str(), window.width, window.height)) return 1;
+  // The window is shown before the page has loaded, as other browsers do: a page
+  // that waits on a slow or unreachable host would otherwise hold back the first
+  // frame for the 30 s xul_load waits at most.
+  if ((!chrome || url != "about:blank") &&
+      !xul_load(url.c_str(), window.width, window.height, /* waitForLoad */ false)) {
+    return 1;
+  }
   fprintf(stderr, "firedog: page loading, entering the event loop\n");
   if (const char* paint = getenv("FIREDOG_PAINT"); paint && strcmp(paint, "document") == 0) {
     g_compositorEnabled.store(false);
