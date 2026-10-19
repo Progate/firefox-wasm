@@ -6706,3 +6706,78 @@ diff --git a/widget/headless/HeadlessCompositorWidget.cpp b/widget/headless/Head
  void HeadlessCompositorWidget::NotifyClientSizeChanged(
      const LayoutDeviceIntSize& aClientSize) {
    auto size = mClientSize.Lock();
+diff --git a/media/libsoundtouch/src/RLBoxSoundTouch.cpp b/media/libsoundtouch/src/RLBoxSoundTouch.cpp
+--- a/media/libsoundtouch/src/RLBoxSoundTouch.cpp
++++ b/media/libsoundtouch/src/RLBoxSoundTouch.cpp
+@@ -9,6 +9,65 @@
+ using namespace mozilla;
+ using namespace soundtouch;
+ 
++#ifdef __wasi__
++
++// SoundTouch is LGPL-2.1 and is built into liblgpllibs, which FireDog does not
++// link: FireDog is one wasm module, so linking it would put the LGPL code into
++// the program itself. Init() fails here, which AudioStream already handles by
++// playing without a time stretcher (playback rate changes then shift the
++// pitch). None of the other methods are reached without a successful Init(),
++// and they do not call into SoundTouch, so the link needs nothing from it.
++
++RLBoxSoundTouch::RLBoxSoundTouch() {}
++
++bool RLBoxSoundTouch::Init() { return false; }
++
++RLBoxSoundTouch::~RLBoxSoundTouch() {}
++
++void RLBoxSoundTouch::setSampleRate(uint aRate) { MOZ_CRASH("No SoundTouch"); }
++
++void RLBoxSoundTouch::setChannels(uint aChannels) {
++  MOZ_CRASH("No SoundTouch");
++}
++
++void RLBoxSoundTouch::setPitch(double aPitch) { MOZ_CRASH("No SoundTouch"); }
++
++void RLBoxSoundTouch::setSetting(int aSettingId, int aValue) {
++  MOZ_CRASH("No SoundTouch");
++}
++
++void RLBoxSoundTouch::setTempo(double aTempo) { MOZ_CRASH("No SoundTouch"); }
++
++void RLBoxSoundTouch::setRate(double aRate) { MOZ_CRASH("No SoundTouch"); }
++
++uint RLBoxSoundTouch::numChannels() { MOZ_CRASH("No SoundTouch"); }
++
++tainted_soundtouch<uint> RLBoxSoundTouch::numSamples() {
++  MOZ_CRASH("No SoundTouch");
++}
++
++tainted_soundtouch<uint> RLBoxSoundTouch::numUnprocessedSamples() {
++  MOZ_CRASH("No SoundTouch");
++}
++
++void RLBoxSoundTouch::putSamples(const AudioDataValue* aSamples,
++                                 uint aNumSamples) {
++  MOZ_CRASH("No SoundTouch");
++}
++
++uint RLBoxSoundTouch::receiveSamples(AudioDataValue* aOutput,
++                                     uint aMaxSamples) {
++  MOZ_CRASH("No SoundTouch");
++}
++
++void RLBoxSoundTouch::flush() { MOZ_CRASH("No SoundTouch"); }
++
++void RLBoxSoundTouch::resizeSampleBuffer(uint aNewSize) {
++  MOZ_CRASH("No SoundTouch");
++}
++
++#else
++
+ RLBoxSoundTouch::RLBoxSoundTouch() {}
+ 
+ bool RLBoxSoundTouch::Init() {
+@@ -160,3 +219,5 @@
+   mSampleBuffer = mSandbox.malloc_in_sandbox<AudioDataValue>(aNewSize);
+   MOZ_RELEASE_ASSERT(mSampleBuffer);
+ }
++
++#endif  // __wasi__

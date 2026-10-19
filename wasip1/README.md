@@ -54,7 +54,10 @@ bash /port/wasip1/link.sh           # writes /work/out/firedog.wasm
 
 `configure.sh` applies `gecko.patch` once and accepts an already-applied patch.
 It re-checksums the vendored Rust crates the patch edits; cargo treats them as
-registry crates and does not rebuild them otherwise.
+registry crates and does not rebuild them otherwise. `std.patch` goes into the
+image's rust-src, not into `/work`, so a new container on an existing `/work`
+needs `configure.sh` again before `mach build`; otherwise cargo rebuilds std
+without it and fails on `st_nlink`.
 
 Rust's std is built from source (`-Z build-std=std,panic_abort`, set in
 `config/makefiles/rust.mk` by `gecko.patch`). The prebuilt std of
@@ -68,7 +71,18 @@ rust-src. Both are applied once and accepted when already applied.
 The program is `/work/out/firedog.wasm`. The resources it reads at run time are
 `application.ini`, `platform.ini`, `omni.ja`, `browser/omni.ja` and
 `defaults/pref/channel-prefs.js` from `obj-full-wasip1/dist/firefox`, installed
-next to the program in `/usr/lib/firedog`.
+next to the program in `/usr/lib/firedog`, plus the fonts in `fonts/`. Gecko
+fails in `gfxFT2FontList::FindFonts` without any font; the published GRE has
+the four Liberation Sans faces that Gecko ships for pdf.js
+(`toolkit/components/pdfjs/content/web/standard_fonts/LiberationSans-*.ttf`).
+
+The program has no LGPL code. Gecko keeps its LGPL libraries in shared
+libraries, liblgpllibs (SoundTouch) and ffvpx (libmozavutil, libmozavcodec), so
+that they stay replaceable; FireDog is one module, so `link.sh` leaves them out
+and `gecko.patch` gives WASI an `RLBoxSoundTouch` that never calls SoundTouch.
+Playback-rate changes then shift the pitch. To check a build, list the
+function names and look for none from SoundTouch or FFmpeg (`soundtouch::`,
+`av_`, `ff_`).
 
 ## What is here
 
