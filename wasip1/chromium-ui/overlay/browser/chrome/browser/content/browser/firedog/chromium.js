@@ -50,18 +50,30 @@ var FireDogChromium = {
   // Chrome DevTools (devtools/DevToolsWindow.sys.mjs) on Chromium's keys:
   // F12 and ⌥⌘I open or close it, ⌥⌘J opens the Console, ⌥⌘C picks an
   // element, and "検証" (Inspect) at the end of the page's context menu opens
-  // it on the clicked element.
+  // it on the clicked element. Where the shortcuts use Ctrl (ui.key.accelKey,
+  // see wasip1/main.cpp) the keys are Ctrl+Shift+I, J and C, as in Chrome on
+  // Windows and Linux.
+  //
+  // App menu > More tools has a Developer Tools item too, as Chrome's menu
+  // does. When FireDog runs in a page of a host browser, that browser takes
+  // F12 and the DevTools shortcuts before the page sees them, so the menus are
+  // the only way in.
   addDevTools() {
     const { DevTools } = ChromeUtils.importESModule(
       "resource:///modules/firedog/devtools/DevToolsWindow.sys.mjs"
     );
     const frontendAction = (devtools, action) =>
       devtools?.whenLoaded(api => action(Cu.waiveXrays(api)));
+    const ctrlKeys =
+      Services.prefs.getIntPref("ui.key.accelKey", KeyEvent.DOM_VK_META) ==
+      KeyEvent.DOM_VK_CONTROL;
     window.addEventListener(
       "keydown",
       event => {
         const tab = gBrowser.selectedTab;
-        const command = event.metaKey && event.altKey && !event.ctrlKey;
+        const command = ctrlKeys
+          ? event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
+          : event.metaKey && event.altKey && !event.ctrlKey;
         if (event.key === "F12" || (command && event.code === "KeyI")) {
           DevTools.toggle(tab);
         } else if (command && event.code === "KeyJ") {
@@ -73,6 +85,30 @@ var FireDogChromium = {
         }
         event.preventDefault();
         event.stopPropagation();
+      },
+      true
+    );
+    // The More tools view is built from a template when it first opens, so
+    // the item goes in then.
+    window.addEventListener(
+      "ViewShowing",
+      event => {
+        if (
+          event.target.id != "appmenu-moreTools" ||
+          document.getElementById("firedog-appmenu-devtools")
+        ) {
+          return;
+        }
+        const button = document.createXULElement("toolbarbutton");
+        button.id = "firedog-appmenu-devtools";
+        button.className = "subviewbutton";
+        document.l10n.setAttributes(button, "firedog-appmenu-devtools");
+        button.setAttribute("shortcut", ctrlKeys ? "Ctrl+Shift+I" : "⌥⌘I");
+        button.addEventListener("command", () => {
+          PanelUI.hide();
+          DevTools.toggle(gBrowser.selectedTab);
+        });
+        document.getElementById("appmenu-developer-tools-view")?.append(button);
       },
       true
     );

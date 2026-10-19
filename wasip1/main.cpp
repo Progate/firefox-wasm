@@ -35,9 +35,6 @@ static int g_scale = 1;
 // (nsIDOMWindowUtils MODIFIER_ALT 1, CONTROL 2, SHIFT 4, META 8).
 static int g_buttons = 0;
 static int g_modifiers = 0;
-// The shortcut modifier. The desktop is laid out like macOS, so it is ⌘ (Meta)
-// as in Firefox for macOS (ui.key.accelKey, set in main).
-static const int kAccel = 8;
 // What the system clipboard holds, as far as this window knows. Gecko's
 // clipboard differing from it means the page copied something.
 static std::string g_clipboard;
@@ -567,7 +564,15 @@ int main(int argc, char** argv) {
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
-  mozilla::Preferences::SetUint("ui.key.accelKey", 224);  // ⌘ (see kAccel)
+  // The shortcut modifier. The desktop is laid out like macOS, so it is ⌘
+  // (Meta) as in Firefox for macOS. On a host whose keyboard has no ⌘ to hand
+  // (Windows and Linux, where the system takes the Windows key) the embedder
+  // passes FIREDOG_ACCEL=control and the shortcuts use Ctrl, as Firefox does
+  // there; otherwise copy, paste and the rest would need a key the user
+  // cannot press.
+  const char* accel = getenv("FIREDOG_ACCEL");
+  const bool controlAccel = accel && strcmp(accel, "control") == 0;
+  mozilla::Preferences::SetUint("ui.key.accelKey", controlAccel ? 17 : 224);
   // The window repaints whenever the refresh driver paints, so the caret can
   // blink as on other desktops (xul_init stops it for one-shot snapshots).
   mozilla::Preferences::SetInt("ui.caretBlinkTime", 530);
