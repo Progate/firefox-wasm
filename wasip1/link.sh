@@ -48,11 +48,19 @@ done
 # archives (see build/wasi-relocatable-link.py in gecko.patch). libxul goes in
 # whole: its objects register components and run static constructors. The
 # libraries it loads (NSS folded into libnss3, the codecs) carry private copies
-# of code libxul also has (fdlibm in ffvpx, rlbox's thread locals), hidden
-# inside their shared objects natively. In one module they become archives, so
-# only what libxul still needs is taken from them.
-LIBS=("@$OBJ/dist/bin/libxul.so")
-for lib in libnss3 libgkcodecs liblgpllibs libmozavutil libmozavcodec; do
+# of code libxul also has (rlbox's thread locals), hidden inside their shared
+# objects natively. In one module they become archives, so only what libxul
+# still needs is taken from them.
+#
+# The LGPL libraries are left out: liblgpllibs (SoundTouch) and ffvpx
+# (libmozavutil, libmozavcodec). Gecko keeps them in shared libraries so that
+# they stay replaceable; linked into this one module they would not be.
+# libxul reaches ffvpx only through dlopen, which fails on WASI. Its calls into
+# SoundTouch go through RLBoxSoundTouch, which gecko.patch replaces on WASI
+# with a version that never calls SoundTouch; that wrapper is Mozilla's own
+# code but is built into liblgpllibs, so its object is taken alone.
+LIBS=("@$OBJ/dist/bin/libxul.so" "$OBJ/media/libsoundtouch/src/RLBoxSoundTouch.o")
+for lib in libnss3 libgkcodecs; do
   objects=()
   while read -r path; do
     case "$path" in
