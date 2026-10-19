@@ -9,3 +9,7 @@ firedog-profile-button =
 # The last item of the page's context menu, which opens DevTools on the clicked element.
 firedog-context-inspect =
     .label = 検証
+
+# Developer Tools in the app menu's More tools view.
+firedog-appmenu-devtools =
+    .label = デベロッパー ツール
