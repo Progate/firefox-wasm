@@ -121,7 +121,15 @@ var FireDogChromium = {
     item.id = "firedog-context-inspect";
     document.l10n.setAttributes(item, "firedog-context-inspect");
     item.addEventListener("command", () => {
-      const node = gContextMenu?.target;
+      // The menu's data comes from the ContextMenu actor as a structured
+      // clone, so gContextMenu.target is not the node itself. Resolve it the
+      // way Firefox's own Inspect does (nsContextMenu.inspectNode).
+      const { ContentDOMReference } = ChromeUtils.importESModule(
+        "resource://gre/modules/ContentDOMReference.sys.mjs"
+      );
+      const node =
+        gContextMenu?.targetIdentifier &&
+        ContentDOMReference.resolve(gContextMenu.targetIdentifier);
       DevTools.open(gBrowser.selectedTab).inspectNode(node);
     });
     menu.append(separator, item);

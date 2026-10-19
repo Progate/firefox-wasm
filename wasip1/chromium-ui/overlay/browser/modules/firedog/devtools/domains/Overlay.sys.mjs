@@ -74,6 +74,7 @@ export class Overlay {
     this.session = session;
     this.target = session.target;
     this.enabled = false;
+    this.onEnabled = [];
     this.inspectMode = "none";
     this.content = null;
     this.highlight = null;
@@ -405,6 +406,21 @@ export class Overlay {
       throw new ProtocolError("DOM should be enabled first");
     }
     this.enabled = true;
+    for (const action of this.onEnabled.splice(0)) {
+      action();
+    }
+  }
+
+  // Runs `action` once the front-end has enabled this domain. Elements
+  // enables it after it has asked for the document, and an
+  // Overlay.inspectNodeRequested that arrives earlier is dropped (the panel
+  // then selects <body>).
+  whenEnabled(action) {
+    if (this.enabled) {
+      action();
+    } else {
+      this.onEnabled.push(action);
+    }
   }
 
   disable() {
