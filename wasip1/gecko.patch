@@ -699,6 +699,29 @@ index fd83f2348f..4c8aac7ab7 100644
  SOURCES += [
      'libevent/bufferevent_pair.c',       # conflicting types errors
      # 'libevent/evrpc.c', # Unused file. # conflicting TAILQ_ENTRY definition
+diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
+--- a/ipc/glue/GeckoChildProcessHost.cpp
++++ b/ipc/glue/GeckoChildProcessHost.cpp
+@@ -1913,6 +1913,19 @@
+     GeckoChildProcessHost* aHost) {
+   AssertIOThread();
+ 
++#ifdef __wasi__
++  // wasm32-wasip1-threads has no way to start another process, so Gecko runs
++  // everything in this one (FireDog forces non-remote tabs, extensions and
++  // networking). Anything that still asks for a child process (a utility or
++  // GMP process, say) gets a launch error it already handles, instead of
++  // reaching the profiler setup below, which asserts and kills the thread
++  // that runs the launch.
++  printf_stderr("GeckoChildProcessHost: no child processes on WASI (%s)\n",
++                XRE_GeckoProcessTypeToString(mProcessType));
++  return ProcessLaunchPromise::CreateAndReject(LaunchError("NoChildProcesses"),
++                                               __func__);
++#endif
++
+   // The ForkServer doesn't use IPC::Channel for communication, so we can skip
+   // initializing it.
+   if (mProcessType != GeckoProcessType_ForkServer) {
 diff --git a/ipc/glue/SharedMemoryPlatform_posix.cpp b/ipc/glue/SharedMemoryPlatform_posix.cpp
 index e9ee2054b2..987ab0ff8f 100644
 --- a/ipc/glue/SharedMemoryPlatform_posix.cpp
