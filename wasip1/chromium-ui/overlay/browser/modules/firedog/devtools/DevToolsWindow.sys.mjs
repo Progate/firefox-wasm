@@ -263,11 +263,13 @@ class DevToolsWindow {
       return;
     }
     this.whenLoaded(() => {
-      const dom = this.session.domain("DOM");
-      const backendNodeId = dom?._backendNodeIdFor?.(node);
-      if (backendNodeId) {
-        this.session.emit("Overlay.inspectNodeRequested", { backendNodeId });
-      }
+      this.session.domain("Overlay")?.whenEnabled(() => {
+        const dom = this.session.domain("DOM");
+        const backendNodeId = dom?._backendNodeIdFor?.(node);
+        if (backendNodeId) {
+          this.session.emit("Overlay.inspectNodeRequested", { backendNodeId });
+        }
+      });
     });
   }
 

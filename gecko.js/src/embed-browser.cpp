@@ -316,7 +316,14 @@ static bool xul_chrome_load_content(const char* url, int width, int height,
   safe.ReplaceSubstring("\"", "\\\"");
   nsAutoCString js;
   js.AppendLiteral(
-      "setTimeout(function(){try{"
+      // Open the tab only after the chrome window's load event. The tab is not
+      // remote, so its document is a subdocument of browser.xhtml: opened
+      // earlier, the window's load event waits for the page, and with it
+      // gBrowserInit.onLoad -- the address bar, the progress listeners and the
+      // menus stay uninitialized for as long as the page keeps loading.
+      "(function(go){if(document.readyState=='complete')setTimeout(go,0);"
+      "else window.addEventListener('load',function(){setTimeout(go,0);},"
+      "{once:true});})(function(){try{"
       "var sp=Services.scriptSecurityManager.getSystemPrincipal();"
       // The window starts with one empty tab; replace it instead of keeping it.
       "var blank=gBrowser.tabs.length==1&&"
@@ -344,7 +351,7 @@ static bool xul_chrome_load_content(const char* url, int width, int height,
       "gBrowser.addProgressListener(L);"
       "void t.linkedBrowser.docShell;"
       "}catch(e){console.error(\"embed load error\",e);"
-      "Services.obs.notifyObservers(null,'embed-tab-loaded','');}},0);");
+      "Services.obs.notifyObservers(null,'embed-tab-loaded','');}});");
   printf("xul_chrome_load_content: opening tab for %.80s\n", url);
   fflush(stdout);
 
