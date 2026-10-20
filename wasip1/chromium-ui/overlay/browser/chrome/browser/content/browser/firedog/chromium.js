@@ -135,6 +135,66 @@ var FireDogChromium = {
     menu.append(separator, item);
   },
 
+  // FireDog's tabs are not remote: the page is a subdocument of browser.xhtml.
+  // While it loads, its document has painting suppressed, hit testing stops at
+  // the tab's <browser>, and a right-click arrives as a contextmenu event on
+  // the <browser> itself. Its contextmenu="contentAreaContextMenu" attribute
+  // then opens the menu through the XUL popup listener, without the data the
+  // ContextMenu actor collects about the page: nsContextMenu throws in its
+  // constructor before it hides anything, and the menu shows every item
+  // (spelling, link, image and media items, undo/cut/paste, ...). In Firefox
+  // tabs are remote; that listener ignores remote browsers
+  // (nsXULPopupListener::HandleEvent, IsTopLevelRemoteTarget) and the page's
+  // process targets the event in the page, where ContextMenuChild builds the
+  // menu. Do the same: take the event off the <browser> and dispatch it at
+  // the page's element under the pointer. elementFromPoint ignores painting
+  // suppression, so it finds that element while the page is still loading.
+  forwardContextMenuToPage() {
+    window.addEventListener(
+      "contextmenu",
+      event => {
+        const browser = event.originalTarget;
+        if (
+          browser.localName != "browser" ||
+          browser.getAttribute("contextmenu") != "contentAreaContextMenu" ||
+          browser.isRemoteBrowser
+        ) {
+          return;
+        }
+        event.stopPropagation();
+        event.preventDefault();
+        const page = browser.contentDocument;
+        if (!page?.documentElement) {
+          return;
+        }
+        const box = browser.getBoundingClientRect();
+        const x = event.clientX - box.left;
+        const y = event.clientY - box.top;
+        const view = page.defaultView;
+        const target = page.elementFromPoint(x, y) ?? page.documentElement;
+        target.dispatchEvent(
+          new view.MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view,
+            button: event.button,
+            buttons: event.buttons,
+            clientX: x,
+            clientY: y,
+            screenX: event.screenX,
+            screenY: event.screenY,
+            ctrlKey: event.ctrlKey,
+            shiftKey: event.shiftKey,
+            altKey: event.altKey,
+            metaKey: event.metaKey,
+          })
+        );
+      },
+      true
+    );
+  },
+
   // Chromium shows the profile's avatar between the address bar and the app
   // menu. FireDog has no accounts, so this is the signed-out avatar.
   addProfileButton() {
@@ -229,4 +289,7 @@ var FireDogChromium = {
   },
 };
 
+// A right-click can come before the window's load event (the first tab is
+// there from the start), so this listens from the start too.
+FireDogChromium.forwardContextMenuToPage();
 window.addEventListener("load", () => FireDogChromium.init(), { once: true });
