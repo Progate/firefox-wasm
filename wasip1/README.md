@@ -98,6 +98,20 @@ Playback-rate changes then shift the pitch. To check a build, list the
 function names and look for none from SoundTouch or FFmpeg (`soundtouch::`,
 `av_`, `ff_`).
 
+## https://
+
+FireDog does TLS itself, with NSS, like any Firefox. Inside BrowserOS a
+connection to port 443 that leaves the BrowserOS world goes to BrowserOS's
+egress proxy (`@progate/browser-egress-proxy`), which is a TLS inspection
+proxy: it issues a certificate for the name from a CA made for that OS
+(`/etc/ssl/certs/browseros-local-ca.pem`) and passes the request on to the
+gateway. FireDog trusts that CA the way an enterprise makes Firefox trust its
+inspection proxy: `@progate/browser-gecko` ships
+`/usr/lib/firedog/distribution/policies.json` with `Certificates.Install`.
+The gecko.js embedder starts the enterprise policies and resolves the
+distribution directory as XRE does. QUIC, Alt-Svc and HTTPS DNS records are
+off (branding prefs), since BrowserOS sockets carry TCP only.
+
 ## What is here
 
 - `gecko.patch`: the changes to Gecko. Rust targets `wasm32-wasip1-threads`;

@@ -3,16 +3,19 @@
 // Split from the monolithic embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
 #include "nsUserIdleService.h"
+#include "nsXULAppAPI.h"
 #include "mozilla/GenericFactory.h"
 #include "mozilla/ModuleUtils.h"
 // For the chrome build, NS_InitXPCOM is given binDir = the APP dir (/gre/browser)
 // so resource:/// (NS_XPCOM_CURRENT_PROCESS_DIR) resolves to the Firefox front-end
 // (its modules/sessionstore/... live under /gre/browser), while NS_GRE_DIR stays at
 // the GRE (/gre) -- the standard Firefox GRE/app directory split. This provider
-// mimics the parts of nsXREDirProvider the front-end needs: NS_GRE_DIR and the
-// NS_APP_PREFS_DEFAULTS_DIR_LIST (so $app/defaults/preferences/firefox.js loads --
-// without an omnijar, the pref service only finds the browser default prefs via
-// this dir list). Everything else falls through to the default provider.
+// mimics the parts of nsXREDirProvider the front-end needs: NS_GRE_DIR, the
+// distribution directory (XRE_APP_DISTRIBUTION_DIR, where the enterprise
+// policies read policies.json) and the NS_APP_PREFS_DEFAULTS_DIR_LIST (so
+// $app/defaults/preferences/firefox.js loads -- without an omnijar, the pref
+// service only finds the browser default prefs via this dir list). Everything
+// else falls through to the default provider.
 class GreDirProvider final : public nsIDirectoryServiceProvider2 {
  public:
   NS_DECL_ISUPPORTS
@@ -23,6 +26,13 @@ class GreDirProvider final : public nsIDirectoryServiceProvider2 {
     if (!strcmp(aProp, NS_GRE_DIR) || !strcmp(aProp, NS_GRE_BIN_DIR)) {
       *aPersistent = true;
       return NS_NewNativeLocalFile(mGreDir, aResult);
+    }
+    if (!strcmp(aProp, XRE_APP_DISTRIBUTION_DIR)) {
+      // $GRE/distribution, as nsXREDirProvider::GetFile resolves it.
+      *aPersistent = true;
+      nsresult rv = NS_NewNativeLocalFile(mGreDir, aResult);
+      NS_ENSURE_SUCCESS(rv, rv);
+      return (*aResult)->AppendNative("distribution"_ns);
     }
     return NS_ERROR_FAILURE;
   }
@@ -673,6 +683,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         obs->NotifyObservers(nullptr, "profile-do-change", u"startup");
         printf("xul_init: profile-do-change done\n");
         fflush(stdout);
+        // Start the enterprise policies right after profile-do-change, as
+        // nsXREDirProvider::DoStartup does. Without it distribution/policies.json
+        // is never read, so Certificates.Install never adds BrowserOS's local CA
+        // and every https:// page through the egress proxy fails with
+        // SEC_ERROR_UNKNOWN_ISSUER.
+        nsCOMPtr<nsIObserver> policies =
+            do_GetService("@mozilla.org/enterprisepolicies;1");
+        if (policies) {
+          policies->Observe(nullptr, "policies-startup", nullptr);
+          printf("xul_init: started enterprise policies\n");
+          fflush(stdout);
+        }
         // profile-after-change is the second half of the standard profile-startup
         // sequence (XRE fires both). We were skipping it, which left several
         // profile-after-change observers uninitialized -- notably
