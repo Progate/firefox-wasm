@@ -81,15 +81,17 @@ pref("extensions.htmlaboutaddons.recommendations.enabled", false);
 pref("browser.ml.enable", false);
 pref("browser.ml.chat.enabled", false);
 
-// https:// inside BrowserOS. FireDog does not do TLS to the Internet itself:
-// it sends each https:// request as plaintext HTTP/1.1 with an absolute
-// request target ("GET https://host/path HTTP/1.1") to BrowserOS's gateway,
-// which replays it with the host page's fetch(). The host browser does the TLS
-// and the embedder's gateway decides which sites are reachable.
-pref("network.http.firedog.https_via_gateway", true);
-// These would move an https:// origin to another host, port or protocol
-// (Alt-Svc, HTTPS DNS records, QUIC) that keeps TLS in this process and so
-// never reaches the gateway.
+// https:// inside BrowserOS is real TLS. FireDog verifies the server's
+// certificate with NSS like any Firefox. Connections that leave the BrowserOS
+// world go to BrowserOS's egress proxy (the kernel redirects port 443 to it),
+// which acts as a TLS inspection proxy: it issues a certificate for the name
+// from a CA made for this OS, and FireDog trusts that CA through the
+// Certificates.Install enterprise policy that the embedder ships in
+// distribution/policies.json.
+//
+// BrowserOS sockets carry TCP only, and the egress proxy speaks HTTP/1.1, so
+// these would move an https:// origin to QUIC or to another host or port
+// that the proxy never sees (Alt-Svc, HTTPS DNS records).
 pref("network.http.altsvc.enabled", false);
 pref("network.http.http3.enable", false);
 pref("network.dns.use_https_rr_as_altsvc", false);
