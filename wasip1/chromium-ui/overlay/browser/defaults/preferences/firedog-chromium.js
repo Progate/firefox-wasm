@@ -39,6 +39,18 @@ pref("browser.urlbar.showSearchTerms.enabled", false);
 pref("browser.newtabpage.enabled", false);
 pref("browser.startup.homepage", "about:blank");
 
+// No AI chatbot. FireDog follows Chrome, whose menus have no "Ask an AI
+// chatbot" item, and the chatbot opens third-party sites in a sidebar that
+// FireDog's Chrome-like window does not show. These are the prefs Firefox's
+// own AI controls (the AIControls / GenerativeAI policies, Settings) turn off:
+// the chatbot itself and its page feature, which drives the page and tab
+// context menu item even without a provider; the context menu item; and the
+// shortcuts shown over selected text.
+pref("browser.ml.chat.enabled", false);
+pref("browser.ml.chat.page", false);
+pref("browser.ml.chat.menu", false);
+pref("browser.ml.chat.shortcuts", false);
+
 // Japanese by default: the window, menus, error pages and the languages pages
 // are asked for (Accept-Language, navigator.languages) are those of a
 // Japanese Chromium. repack.mjs packages the Japanese strings.
