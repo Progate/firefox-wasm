@@ -22,7 +22,16 @@ from `./mach package`'s output.
     are measured from Chromium.app.
   - `chromium.js` adds what Firefox's markup does not have (the traffic lights,
     the profile button) and replays the first page's location change, which
-    FireDog's embedder starts before the window listens for it.
+    FireDog's embedder starts before the window listens for it. FireDog's tabs
+    are not remote, so it also hands a right-click that lands on a tab's
+    `<browser>` (while the page loads, hit testing stops there) to the page,
+    as a remote tab's process would; otherwise the context menu opens without
+    the ContextMenu actor's data and shows every item.
+  - `newtab.html` is the blank page that new tabs, new windows and Home show,
+    in Progate's design. `repack.mjs` puts it in place of Firefox's
+    `blanktab.html` with a chrome.manifest `override`, and
+    `firedog-chromium.js` turns the new tab page off and makes the homepage
+    blank, which is what loads `blanktab.html`.
   - `icons/` are Chromium's vector icons as SVG, written by
     `tools/generate-icons.mjs` from a Chromium checkout
     (`git clone --depth 1 --filter=blob:none --sparse --branch 158.0.8109.0 https://github.com/chromium/chromium.git`,

@@ -28,6 +28,17 @@ pref("browser.tabs.inTitlebar", 1);
 // Chromium does not dim the address bar's page action icons until hovered.
 pref("browser.urlbar.showSearchTerms.enabled", false);
 
+// New tabs, new windows and Home show FireDog's blank page (firedog/newtab.html,
+// which repack.mjs puts in place of blanktab.html): the new tab page is off,
+// as Settings > Home > "Blank Page" or the NewTabPage policy turns it off, and
+// the homepage is a blank page, which HomePage.sys.mjs maps to blanktab.html.
+// Firefox Home (the newtab add-on) draws an empty page in FireDog: its
+// content comes from Mozilla's services, which FireDog turns off. A
+// distribution that sets browser.startup.homepage keeps its own homepage, and
+// FireDog still opens a URL it is started with.
+pref("browser.newtabpage.enabled", false);
+pref("browser.startup.homepage", "about:blank");
+
 // Japanese by default: the window, menus, error pages and the languages pages
 // are asked for (Accept-Language, navigator.languages) are those of a
 // Japanese Chromium. repack.mjs packages the Japanese strings.
