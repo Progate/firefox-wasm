@@ -47,7 +47,11 @@ from `./mach package`'s output.
     `tools/generate-neterror.mjs` from the same checkout, with
     `git sparse-checkout add` of the paths listed at the top of that script.
   - `defaults/preferences/firedog-chromium.js` sets the toolbar layout, the
-    address bar's trimming and the Japanese locale.
+    address bar's trimming and the Japanese locale. It also turns off
+    Firefox's AI chatbot (`browser.ml.chat.enabled`, `.page`, `.menu`,
+    `.shortcuts`, the prefs Firefox's AI controls use): Chrome's menus have
+    no "Ask an AI chatbot" item, and the chatbot's sidebar is not part of
+    FireDog's Chrome-like window.
   - `localization/{en-US,ja}/browser/firedogChromium.ftl` are FireDog's own strings.
 - `repack.mjs` also packages Japanese next to en-US as a multi-locale build
   does: the Firefox Nightly language pack of the mozilla-central day the Gecko
