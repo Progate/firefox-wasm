@@ -886,6 +886,26 @@ index 77bda3959e..69df1c499d 100644
 +if CONFIG["OS_TARGET"] not in ("EMSCRIPTEN", "WASI"):
      DIRS += ["shell"]
  TEST_DIRS += ["tests"]
+diff --git a/layout/generic/nsSubDocumentFrame.cpp b/layout/generic/nsSubDocumentFrame.cpp
+index aeb1d63..d87c606 100644
+--- a/layout/generic/nsSubDocumentFrame.cpp
++++ b/layout/generic/nsSubDocumentFrame.cpp
+@@ -246,7 +246,14 @@ mozilla::PresShell* nsSubDocumentFrame::GetSubdocumentPresShellForPainting(
+         return nullptr;
+       }
+     }
+-    if (!ps->IsPaintingSuppressed() || (aFlags & IGNORE_PAINT_SUPPRESSION)) {
++    // A pres shell that has not been initialized yet has no frames: layout
++    // only starts (and PresShell::Initialize suppresses painting) once the
++    // document's blocking style sheets have loaded, so until then it paints
++    // just an empty canvas. Treat it like a suppressed one and keep showing
++    // the previous page, as a remote browser does until its new document's
++    // first paint arrives.
++    if ((ps->DidInitialize() && !ps->IsPaintingSuppressed()) ||
++        (aFlags & IGNORE_PAINT_SUPPRESSION)) {
+       return ps;
+     }
+   }
 diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
 index f958ef7438..3e82edcf9c 100644
 --- a/layout/painting/nsDisplayList.cpp

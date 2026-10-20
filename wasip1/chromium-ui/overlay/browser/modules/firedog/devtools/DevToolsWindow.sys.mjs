@@ -141,9 +141,12 @@ class DevToolsWindow {
     stack.prepend(browser);
     this.browser = browser;
     this.stack = stack;
-    this.pageBrowser.classList.add("firedog-devtools-inspected");
-    // Until the front-end has laid itself out, the page keeps its place at
-    // the dock side Chrome would use.
+    // The page keeps the whole content area, covering the front-end's
+    // browser, until the front-end has laid itself out and sends its first
+    // setInspectedPageBounds; Chrome likewise shows docked DevTools only once
+    // the front-end has loaded (DevToolsWindow::ScheduleShow). Taking the
+    // page out of the layout here left the content area blank for the
+    // seconds the front-end takes to load.
     this.observer = (subject, topic) => this.onDocument(subject, topic);
     Services.obs.addObserver(this.observer, "document-element-inserted");
     browser.loadURI(Services.io.newURI(FRONTEND_URL), {
@@ -274,6 +277,7 @@ class DevToolsWindow {
   }
 
   setInspectedPageBounds({ x, y, width, height }) {
+    this.pageBrowser.classList.add("firedog-devtools-inspected");
     const style = this.pageBrowser.style;
     style.marginInlineStart = `${x}px`;
     style.marginTop = `${y}px`;
