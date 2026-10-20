@@ -10,6 +10,8 @@
 //   - overlay/browser/ added to browser/omni.ja (stylesheet, script, icons,
 //     default prefs, FireDog's own strings),
 //   - browser.xhtml loading chromium.css and chromium.js,
+//   - FireDog's blank page (firedog/newtab.html) in place of Firefox's
+//     blanktab.html, which about:newtab and a blank homepage show,
 //   - Japanese packaged next to en-US, as a multi-locale build does: the
 //     Firefox Nightly language pack of the same mozilla-central day as the
 //     Gecko source (LANGPACK), with FireDog's branding in place of Nightly's,
@@ -72,6 +74,24 @@ const overrideErrorPage = (browser, gre) => {
   }
   appendLines(join(browser, 'chrome/chrome.manifest'), [
     'override chrome://global/content/aboutNetError.html chrome://browser/content/firedog/neterror/neterror.html',
+  ])
+}
+
+/**
+ * Shows FireDog's blank page (the overlay's firedog/newtab.html) in place of
+ * Firefox's empty one. Firefox loads chrome://browser/content/blanktab.html
+ * for about:newtab when the new tab page is off (browser.newtabpage.enabled,
+ * which firedog-chromium.js turns off) and for a blank homepage, so a
+ * chrome.manifest override of that URL covers both.
+ *
+ * @param {string} browser the extracted browser/omni.ja
+ */
+const overrideBlankPage = (browser) => {
+  if (!existsSync(join(browser, 'chrome/browser/content/browser/blanktab.html'))) {
+    throw new Error('blanktab.html is not in this Gecko; update overrideBlankPage')
+  }
+  appendLines(join(browser, 'chrome/chrome.manifest'), [
+    'override chrome://browser/content/blanktab.html chrome://browser/content/firedog/newtab.html',
   ])
 }
 
@@ -318,6 +338,7 @@ try {
   cpSync(join(here, 'overlay/browser'), browser, {recursive: true})
   patchBrowserXhtml(join(browser, 'chrome/browser/content/browser/browser.xhtml'))
   overrideErrorPage(browser, gre)
+  overrideBlankPage(browser)
   emptyMozillaMarks(browser, 'browser/')
   pruneDevtoolsClient(browser, gre)
   zip(browser, join(output, 'browser/omni.ja'))
