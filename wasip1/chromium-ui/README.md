@@ -68,6 +68,13 @@ from `./mach package`'s output.
   `repack.mjs` keeps only the client modules that the rest of the browser
   imports, and the pref `devtools.policy.disabled` keeps F12 and the menus from
   opening the missing toolbox.
+- Other parts of Firefox that FireDog turns off are left out too
+  (`pruneUnusedFeatures`), each with the pref Firefox has for it set in
+  `firedog-chromium.js`: Firefox Home (the newtab built-in add-on, about
+  4.7 MB; new tabs show FireDog's blank page), the on-device machine learning
+  libraries (about 4 MB; `browser.ml.enable`, Translations), the Remote
+  Settings dumps only those features read, and the hyphenation patterns of
+  languages other than English (about 4.2 MB).
 
 ## Chrome DevTools
 

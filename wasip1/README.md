@@ -137,3 +137,22 @@ off (branding prefs), since BrowserOS sockets carry TCP only.
   `nlink_t`.
 - `Dockerfile`, `configure.sh`, `rehash-vendored.py`: the toolchain and the
   configure step.
+- `update-icu-data.py`: `configure.sh` rebuilds Gecko's ICU data file
+  (`config/external/icu/data/icudt*.dat`, embedded in the program) the way
+  `intl/update-icu.sh` does, for the locale filter `gecko.patch` adds to
+  `intl/icu/data_filter.json`: English and Japanese, FireDog's UI locales.
+  Mozilla's filter keeps every locale's main data, so dates and numbers are
+  formatted in every locale; the other locales' display names (languages,
+  regions, currencies, units, time zones; about 10 MB of the program) fall
+  back to the root locale's. It builds ICU for the host once (a few minutes);
+  a stamp next to the data file skips it while the filter is unchanged.
+
+## Size
+
+`mozconfig.full.wasip1` builds with `--enable-release` (link-time optimization
+of gkrust, among Mozilla's release options) and without JPEG XL and the Web
+Speech API. `gecko.patch` leaves out the Remote Settings dumps that
+application-services embeds for features FireDog turns off (Translations and
+its engine, the summarizer's models, the region boundaries; about 7 MB of the
+program), and `chromium-ui/repack.mjs` leaves the matching resources out of
+the omni.ja archives.

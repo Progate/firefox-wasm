@@ -32,12 +32,26 @@ pref("browser.urlbar.showSearchTerms.enabled", false);
 // which repack.mjs puts in place of blanktab.html): the new tab page is off,
 // as Settings > Home > "Blank Page" or the NewTabPage policy turns it off, and
 // the homepage is a blank page, which HomePage.sys.mjs maps to blanktab.html.
-// Firefox Home (the newtab add-on) draws an empty page in FireDog: its
-// content comes from Mozilla's services, which FireDog turns off. A
-// distribution that sets browser.startup.homepage keeps its own homepage, and
-// FireDog still opens a URL it is started with.
+// Firefox Home (the newtab add-on) is not packaged (repack.mjs): its content
+// comes from Mozilla's services, which FireDog turns off. A distribution that
+// sets browser.startup.homepage keeps its own homepage, and FireDog still
+// opens a URL it is started with.
 pref("browser.newtabpage.enabled", false);
 pref("browser.startup.homepage", "about:blank");
+// The about:home startup cache is a prerendered Firefox Home.
+pref("browser.startup.homepage.abouthome_cache.enabled", false);
+
+// No on-device machine learning: repack.mjs leaves out the inference engine's
+// libraries. browser.ml.enable is the switch for the engine (Settings > AI
+// controls); the features that run models are turned off with it so that
+// they are not offered: Translations (whose engine runs the same way and whose
+// models come from Mozilla's services), link previews and suggested tab
+// group names.
+pref("browser.ml.enable", false);
+pref("browser.translations.enable", false);
+pref("browser.translations.select.enable", false);
+pref("browser.ml.linkPreview.enabled", false);
+pref("browser.tabs.groups.smart.enabled", false);
 
 // No AI chatbot. FireDog follows Chrome, whose menus have no "Ask an AI
 // chatbot" item, and the chatbot opens third-party sites in a sidebar that
