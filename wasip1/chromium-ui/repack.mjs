@@ -17,6 +17,9 @@
 //     Gecko source (LANGPACK), with FireDog's branding in place of Nightly's,
 //   - the images listed in mozilla-marks.txt made empty,
 //   - Firefox's DevTools front-end left out (see pruneDevtoolsClient),
+//   - Firefox Home, the on-device machine learning libraries, their Remote
+//     Settings dumps and the non-English hyphenation patterns left out (see
+//     pruneUnusedFeatures),
 //   - Chromium's DevTools front-end as devtools-frontend.zip (see
 //     writeDevtoolsFrontend).
 // Both archives are written stored (no compression), as `./mach package`
@@ -93,6 +96,69 @@ const overrideBlankPage = (browser) => {
   appendLines(join(browser, 'chrome/chrome.manifest'), [
     'override chrome://browser/content/blanktab.html chrome://browser/content/firedog/newtab.html',
   ])
+}
+
+/**
+ * Leaves out parts of Firefox that FireDog turns off, each with the pref
+ * Firefox itself has for it (firedog-chromium.js), so nothing loads them:
+ *
+ * - Firefox Home, the newtab built-in add-on (about 4.7 MB): new tabs and the
+ *   homepage show FireDog's blank page. It is also dropped from
+ *   built_in_addons.json, so the add-on manager does not look for it, and
+ *   gecko.patch makes about:home and Activity Stream do without it.
+ * - The libraries of on-device machine learning (transformers.js, ONNX
+ *   Runtime, wllama, the OpenAI client; about 4 MB), which the inference
+ *   process imports when a feature runs a model. `browser.ml.enable` is off.
+ * - Remote Settings dumps for those features (Translations, the AI window) and
+ *   Firefox Home's wallpapers, and their entries in last_modified.json, which
+ *   tells Remote Settings which dumps are packaged.
+ * - Hyphenation patterns other than English (about 4.2 MB). Gecko lists the
+ *   patterns it finds in the archive, so text in other languages is not
+ *   hyphenated, as in a build that does not ship their dictionaries; Japanese
+ *   has none.
+ *
+ * @param {string} browser the extracted browser/omni.ja
+ * @param {string} gre the extracted omni.ja
+ */
+const pruneUnusedFeatures = (browser, gre) => {
+  const remove = (path) => {
+    if (!existsSync(path)) throw new Error(`${relative(work, path)} is not in this Gecko; update pruneUnusedFeatures`)
+    rmSync(path, {recursive: true})
+  }
+
+  remove(join(browser, 'chrome/browser/builtin-addons/newtab'))
+  const builtIns = join(browser, 'chrome/browser/content/browser/built_in_addons.json')
+  const list = JSON.parse(readFileSync(builtIns, 'utf8'))
+  list.builtins = list.builtins.filter((addon) => addon.addon_id !== 'newtab@mozilla.org')
+  writeFileSync(builtIns, JSON.stringify(list))
+
+  const ml = join(gre, 'chrome/toolkit/content/global/ml')
+  for (const library of [
+    'transformers.js',
+    'transformers-dev.js',
+    'ort.webgpu.mjs',
+    'ort.webgpu-dev.mjs',
+    'ort-wasm-simd-threaded.jsep.mjs',
+    'wllama-module.mjs',
+    'wllama-module-dev.mjs',
+    'openai.mjs',
+    'openai-dev.mjs',
+  ]) {
+    remove(join(ml, library))
+  }
+
+  const settings = join(browser, 'defaults/settings')
+  const dumps = ['main/ai-window-prompts', 'main/newtab-wallpapers-v2', 'main/translations-models', 'main/translations-wasm']
+  for (const dump of dumps) remove(join(settings, `${dump}.json`))
+  const lastModified = JSON.parse(readFileSync(join(settings, 'last_modified.json'), 'utf8'))
+  for (const dump of dumps) delete lastModified[dump]
+  writeFileSync(join(settings, 'last_modified.json'), JSON.stringify(lastModified))
+
+  const hyphenation = join(gre, 'hyphenation')
+  if (!existsSync(join(hyphenation, 'hyph_en_US.hyf'))) throw new Error('hyph_en_US.hyf is not in this Gecko; update pruneUnusedFeatures')
+  for (const file of readdirSync(hyphenation)) {
+    if (file !== 'hyph_en_US.hyf') rmSync(join(hyphenation, file))
+  }
 }
 
 /** Downloads the language pack once into ~/.cache and checks it against LANGPACK.sha256. */
@@ -324,7 +390,6 @@ try {
   const packaged = readFileSync(join(gre, 'res/multilocale.txt'), 'utf8').trim().split(',')
   if (!packaged.includes(locale)) writeFileSync(join(gre, 'res/multilocale.txt'), [...packaged, locale].join(','))
   emptyMozillaMarks(gre, 'gre/')
-  zip(gre, join(output, 'omni.ja'))
 
   // Browser (browser/omni.ja): the same for the browser's strings, then the overlay.
   const browser = join(work, 'browser')
@@ -341,6 +406,8 @@ try {
   overrideBlankPage(browser)
   emptyMozillaMarks(browser, 'browser/')
   pruneDevtoolsClient(browser, gre)
+  pruneUnusedFeatures(browser, gre)
+  zip(gre, join(output, 'omni.ja'))
   zip(browser, join(output, 'browser/omni.ja'))
 
   await writeDevtoolsFrontend(output)

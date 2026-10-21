@@ -21,6 +21,9 @@ crates=$(grep -o '^+++ b/third_party/rust/[^/]*' "$HERE/wasip1/gecko.patch" | cu
 if [ -n "$crates" ]; then
   python3 "$HERE/wasip1/rehash-vendored.py" $crates
 fi
+# The ICU data embedded in the program is rebuilt for the locale filter that
+# gecko.patch sets in intl/icu/data_filter.json (update-icu-data.py).
+./mach python "$HERE/wasip1/update-icu-data.py"
 # Rust std is built from source (-Z build-std, config/makefiles/rust.mk) so that
 # it uses BrowserOS's libc values. Vendor std's own dependencies, give std's libc
 # crate the same values as Gecko's (std-libc.patch) and make std report the

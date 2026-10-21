@@ -6673,3 +6673,185 @@ diff --git a/media/libsoundtouch/src/RLBoxSoundTouch.cpp b/media/libsoundtouch/s
  }
 +
 +#endif  // __wasi__
+diff --git a/browser/components/newtab/AboutNewTabRedirector.sys.mjs b/browser/components/newtab/AboutNewTabRedirector.sys.mjs
+index 328842c..919d164 100644
+--- a/browser/components/newtab/AboutNewTabRedirector.sys.mjs
++++ b/browser/components/newtab/AboutNewTabRedirector.sys.mjs
+@@ -29,6 +29,8 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+ const lazy = {};
+ 
+ ChromeUtils.defineESModuleGetters(lazy, {
++  AboutNewTabResourceMapping:
++    "resource:///modules/AboutNewTabResourceMapping.sys.mjs",
+   BasePromiseWorker: "resource://gre/modules/PromiseWorker.sys.mjs",
+ });
+ 
+@@ -539,9 +541,12 @@ export class AboutNewTabRedirectorParent extends BaseAboutNewTabRedirector {
+   newChannel(uri, loadInfo) {
+     let chromeURI = this.getChromeURI(uri);
+ 
++    // Without the newtab built-in add-on there is no Firefox Home, and both
++    // pages show the blank page.
+     if (
+-      uri.spec.startsWith("about:home") ||
+-      (uri.spec.startsWith("about:newtab") && lazy.BUILTIN_NEWTAB_ENABLED)
++      lazy.AboutNewTabResourceMapping.builtinAddonPackaged &&
++      (uri.spec.startsWith("about:home") ||
++        (uri.spec.startsWith("about:newtab") && lazy.BUILTIN_NEWTAB_ENABLED))
+     ) {
+       chromeURI = Services.io.newURI(this.defaultURL);
+     }
+diff --git a/browser/components/newtab/AboutNewTabResourceMapping.sys.mjs b/browser/components/newtab/AboutNewTabResourceMapping.sys.mjs
+index 0f088e3..1735cfa 100644
+--- a/browser/components/newtab/AboutNewTabResourceMapping.sys.mjs
++++ b/browser/components/newtab/AboutNewTabResourceMapping.sys.mjs
+@@ -118,6 +118,41 @@ export var AboutNewTabResourceMapping = {
+     return this._addonIsXPI;
+   },
+ 
++  /**
++   * Whether the built-in newtab add-on is packaged in this build. A build can
++   * leave it out of the omni jar; there is then no Firefox Home, about:home
++   * shows the blank page about:newtab shows when the new tab page is off, and
++   * Activity Stream does not start.
++   *
++   * @type {boolean}
++   */
++  get builtinAddonPackaged() {
++    if (this._builtinAddonPackaged === undefined) {
++      const manifestURI = Services.io.newURI(
++        "newtab/manifest.json",
++        null,
++        lazy.resProto.getSubstitution("builtin-addons")
++      );
++      try {
++        Services.io
++          .newChannelFromURI(
++            manifestURI,
++            null,
++            Services.scriptSecurityManager.getSystemPrincipal(),
++            null,
++            Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
++            Ci.nsIContentPolicy.TYPE_OTHER
++          )
++          .open()
++          .close();
++        this._builtinAddonPackaged = true;
++      } catch {
++        this._builtinAddonPackaged = false;
++      }
++    }
++    return this._builtinAddonPackaged;
++  },
++
+   /**
+    * This should be called early on in the lifetime of the browser, before any
+    * attempt to load a resource from resource://newtab or chrome://newtab.
+@@ -311,6 +346,12 @@ export var AboutNewTabResourceMapping = {
+    */
+   registerNewTabResources() {
+     const RES_PATH = "newtab";
++    if (!this.builtinAddonPackaged) {
++      // Nothing to map, but about:home and about:newtab loads wait for this
++      // notification before they resume.
++      lazy.aboutRedirector.wrappedJSObject.notifyBuiltInAddonInitialized();
++      return;
++    }
+     try {
+       const { isXPI, version, rootURI } = this.getPreferredMapping();
+       this._rootURISpec = rootURI.spec;
+diff --git a/browser/modules/AboutNewTab.sys.mjs b/browser/modules/AboutNewTab.sys.mjs
+index 4d6b04e..9dd5d6e 100644
+--- a/browser/modules/AboutNewTab.sys.mjs
++++ b/browser/modules/AboutNewTab.sys.mjs
+@@ -186,6 +186,10 @@ export const AboutNewTab = {
+     if (this.activityStream && this.activityStream.initialized) {
+       return;
+     }
++    // Activity Stream is part of the newtab built-in add-on.
++    if (!lazy.AboutNewTabResourceMapping.builtinAddonPackaged) {
++      return;
++    }
+ 
+     // We want to block newtab startup on two things:
+     //  - The built-in addon has reported that it has finished
+diff --git a/intl/icu/data_filter.json b/intl/icu/data_filter.json
+index 6278231..f79ffae 100644
+--- a/intl/icu/data_filter.json
++++ b/intl/icu/data_filter.json
+@@ -1,5 +1,9 @@
+ {
+     "collationUCAData": "implicithan",
++    "localeFilter": {
++        "filterType": "language",
++        "includelist": [ "en", "ja" ]
++    },
+     "featureFilters": {
+         "brkitr_dictionaries": {
+             "filterType": "exclude"
+diff --git a/third_party/application-services/components/remote_settings/src/client.rs b/third_party/application-services/components/remote_settings/src/client.rs
+index b951d45..88c4f7d 100644
+--- a/third_party/application-services/components/remote_settings/src/client.rs
++++ b/third_party/application-services/components/remote_settings/src/client.rs
+@@ -93,13 +93,9 @@ struct RemoteSettingsClientConfig {
+ impl<C: ApiClient> RemoteSettingsClient<C> {
+     // One line per bucket + collection
+     packaged_collections! {
+-        ("main", "regions"),
+         ("main", "search-config-icons"),
+         ("main", "search-config-v2"),
+         ("main", "search-telemetry-v2"),
+-        ("main", "summarizer-models-config"),
+-        ("main", "translations-models"),
+-        ("main", "translations-wasm"),
+     }
+ 
+     // You have to specify
+@@ -113,10 +109,6 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
+     // and check for the folder + name in
+     // `remote_settings/dumps/{bucket}/attachments/{collection}/{filename}
+     packaged_attachments! {
+-        ("main", "regions") => [
+-            "world",
+-            "world-buffered",
+-        ],
+         ("main", "search-config-icons") => [
+             "001500a9-1a6c-3f5a-ba15-a5f5a075d256",
+             "06cf7432-efd7-f244-927b-5e423005e1ea",
+@@ -189,9 +181,6 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
+             "fca3e3ee-56cd-f474-dc31-307fd24a891d",
+             "fe75ce3f-1545-400c-b28c-ad771054e69f",
+             "fed4f021-ff3e-942a-010e-afa43fda2136",
+-        ],
+-        ("main", "translations-wasm") => [
+-            "4fd32605-9889-4dd9-9fc7-577ad1136746",
+         ]
+     }
+ }
+@@ -1631,7 +1620,7 @@ mod test_reset_storage {
+ 
+     #[test]
+     fn test_reset_storage_reverts_to_packaged_data() {
+-        let collection_url = "http://rs.example.com/v1/buckets/main/collections/regions";
++        let collection_url = "http://rs.example.com/v1/buckets/main/collections/search-telemetry-v2";
+ 
+         let mut api_client = MockApiClient::new();
+         api_client
+@@ -1666,7 +1655,7 @@ mod test_reset_storage {
+         assert_eq!(records_before[0].id, "custom-synced-record");
+ 
+         let rs_client = RemoteSettingsClient::new_from_parts(
+-            "regions".into(),
++            "search-telemetry-v2".into(),
+             storage,
+             JexlFilter::new(None),
+             api_client,
+@@ -1683,7 +1672,7 @@ mod test_reset_storage {
+         let records = records.unwrap();
+         assert!(
+             !records.is_empty(),
+-            "Packaged regions data should not be empty"
++            "Packaged search-telemetry-v2 data should not be empty"
+         );
+         assert!(
+             !records.iter().any(|r| r.id == "custom-synced-record"),
