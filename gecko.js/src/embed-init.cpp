@@ -728,6 +728,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         printf("xul_init: addon integration service unavailable\n");
       }
       fflush(stdout);
+      // final-ui-startup comes next, before the first window opens, as in
+      // XRE_mainRun. BrowserGlue starts session restore on it
+      // (SessionStartup.init, which reads the session file). Without it the
+      // window is never tracked by SessionStore: "reopen closed tab" stays
+      // empty, and a tab's context menu throws in SessionStore
+      // (getLastClosedTabCount) before it hides the items that do not apply.
+      nsCOMPtr<nsIObserverService> obs =
+          do_GetService("@mozilla.org/observer-service;1");
+      if (obs) {
+        obs->NotifyObservers(nullptr, "final-ui-startup", nullptr);
+        printf("xul_init: final-ui-startup done\n");
+        fflush(stdout);
+      }
     }
     // Keep the runtime alive (no NS_ShutdownXPCOM): we proceed to render.
     printf("xul_init: *** XPCOM INITIALIZED *** (runtime kept alive)\n");
