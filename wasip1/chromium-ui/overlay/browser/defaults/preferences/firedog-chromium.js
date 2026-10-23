@@ -4,8 +4,7 @@
 
 // FireDog's toolbars follow Chromium's layout (chromium.css draws them):
 // the tab strip holds the tab search button, the tabs and the new tab button;
-// the toolbar holds back, forward, reload, the address bar, the profile
-// button and the app menu. currentVersion is CustomizableUI's kVersion so the
+// the toolbar holds back, forward, reload, the address bar and the app menu. currentVersion is CustomizableUI's kVersion so the
 // migrations for older layouts do not run over this one.
 pref("browser.uiCustomization.state", "{\"placements\":{\"widget-overflow-fixed-list\":[],\"unified-extensions-area\":[],\"nav-bar\":[\"back-button\",\"forward-button\",\"stop-reload-button\",\"urlbar-container\"],\"toolbar-menubar\":[\"menubar-items\"],\"TabsToolbar\":[\"alltabs-button\",\"tabbrowser-tabs\",\"new-tab-button\"],\"vertical-tabs\":[],\"PersonalToolbar\":[\"personal-bookmarks\"]},\"seen\":[\"save-to-pocket-button\",\"developer-button\",\"sidebar-button\",\"firefox-view-button\"],\"dirtyAreaCache\":[\"nav-bar\",\"TabsToolbar\",\"toolbar-menubar\",\"PersonalToolbar\",\"vertical-tabs\"],\"currentVersion\":24,\"newElementCount\":0}");
 pref("browser.proton.toolbar.version", 3);
@@ -22,8 +21,7 @@ pref("browser.urlbar.scotchBonnet.enableOverride", false);
 pref("browser.urlbar.scotchBonnet.disableOneOffs", true);
 pref("browser.urlbar.trimHttps", false);
 pref("browser.urlbar.trimURLs", true);
-// Chromium keeps the tab strip in the window's title bar, with the window's
-// traffic lights at its start (chromium.js draws them).
+// Chromium keeps the tab strip in the window's title bar.
 pref("browser.tabs.inTitlebar", 1);
 // Chromium does not dim the address bar's page action icons until hovered.
 pref("browser.urlbar.showSearchTerms.enabled", false);
@@ -84,3 +82,53 @@ pref("devtools.jsonview.enabled", false);
 // a port is set.
 pref("firedog.devtools.remote-debugging-port", 0);
 pref("firedog.devtools.remote-allow-origins", "");
+
+// Features FireDog leaves out, with the prefs Firefox itself has for them.
+// FireDog runs inside a tab of a learning page as the browser a learner checks
+// their site in; chromium.css hides the menu items of these features and
+// chromium.js their shortcuts. @progate/browser-gecko's enterprise policies turn
+// off the rest (accounts, private windows, passwords, printing, feedback).
+//
+// Container tabs and Firefox accounts (sync, send tab to device).
+pref("privacy.userContext.enabled", false);
+pref("privacy.userContext.ui.enabled", false);
+pref("identity.fxaccounts.enabled", false);
+// Tab groups and split view, which Chrome draws differently.
+pref("browser.tabs.groups.enabled", false);
+pref("browser.tabs.splitView.enabled", false);
+// Reader View, Picture-in-Picture (and its toggle over every video), Pocket
+// and screenshots: Firefox's own page tools.
+pref("reader.parse-on-load.enabled", false);
+pref("media.videocontrols.picture-in-picture.enabled", false);
+pref("media.videocontrols.picture-in-picture.video-toggle.enabled", false);
+pref("extensions.pocket.enabled", false);
+pref("extensions.screenshots.disabled", true);
+pref("screenshots.browser.component.enabled", false);
+// The address bar's dropdown shows the learner's history and the search
+// engine's suggestions, as Chrome's does; Firefox Suggest, its group labels,
+// trending searches and the dropdown's tips are left out.
+pref("browser.urlbar.quicksuggest.enabled", false);
+pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
+pref("browser.urlbar.suggest.quicksuggest.nonsponsored", false);
+pref("browser.urlbar.groupLabels.enabled", false);
+pref("browser.urlbar.trending.featureGate", false);
+pref("browser.urlbar.suggest.topsites", false);
+pref("browser.urlbar.suggest.engines", false);
+pref("browser.urlbar.quickactions.enabled", false);
+pref("browser.urlbar.suggest.quickactions", false);
+pref("browser.urlbar.tipShownCount.searchTip_onboard", 999);
+pref("browser.urlbar.tipShownCount.searchTip_redirect", 999);
+// Firefox's onboarding, what's-new and default-browser prompts, and the
+// recommendations in the extensions page.
+pref("browser.aboutwelcome.enabled", false);
+pref("browser.shell.checkDefaultBrowser", false);
+pref("browser.messaging-system.whatsNewPanel.enabled", false);
+pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons", false);
+pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features", false);
+pref("extensions.htmlaboutaddons.recommendations.enabled", false);
+pref("extensions.getAddons.showPane", false);
+// Settings' "same settings, new look" notice, which only means something to
+// someone who used Firefox's settings before.
+pref("browser.settings-redesign.promo.dismissed", true);
+// The bookmark panel's import prompt and the bookmarks toolbar's import button.
+pref("browser.bookmarks.addedImportButton", false);

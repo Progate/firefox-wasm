@@ -1,0 +1,27 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+/* FireDog's Settings (about:preferences): what a learner checking their site
+   needs, as in Chrome's settings — search engine, privacy (cookies, history,
+   site permissions), appearance (fonts, zoom), tabs and browsing,
+   accessibility and languages — and the link to extensions. The panes of the
+   features FireDog leaves out are hidden: home and startup (new tabs show
+   FireDog's blank page), passwords, downloads, AI controls, Firefox Labs,
+   Firefox accounts and sync, "More from Mozilla", the about and support
+   links, and the notice that an organization manages the browser (the
+   enterprise policies are FireDog's own, see @progate/browser-gecko).
+   repack.mjs adds this stylesheet to preferences.xhtml. */
+
+#category-home,
+#category-passwords-autofill,
+#category-downloads,
+#category-ai-features,
+#category-experimental,
+#category-about-firefox,
+#category-more-from-mozilla,
+#category-sync,
+#helpButton,
+#policies-container-content {
+  display: none !important;
+}

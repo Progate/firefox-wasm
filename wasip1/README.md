@@ -125,10 +125,12 @@ off (branding prefs), since BrowserOS sockets carry TCP only.
   scale and translate pointer, keyboard, IME and clipboard events into Gecko's.
 - `link.sh`: links the entry point, the gecko.js embedder and Gecko's libraries
   into `firedog.wasm`, with shared imported memory for wasi-threads.
-- `branding/firedog`: names, icons and default prefs. The prefs turn off the
-  services Mozilla runs for Firefox (updates, telemetry, studies, accounts,
-  remote settings, Safe Browsing); `gecko.patch` replaces the bundled search
-  configuration with one that has no partner codes.
+- `branding/firedog`: names, icons and default prefs. The icons are Progate's
+  mark (the white P on Progate's purple); the PNGs are drawn from
+  `content/about-logo.svg`. The prefs turn off the services Mozilla runs for
+  Firefox (updates, telemetry, studies, accounts, remote settings, Safe
+  Browsing); `gecko.patch` replaces the bundled search configuration with one
+  that has no partner codes.
 - `std-libc.patch`: the same `wasi` values as `gecko.patch` gives Gecko's
   `libc` crate, for the `libc` crate std depends on (0.2.178 for Rust 1.95).
 - `std.patch`: std (rust-src `library/`) reports the errno that its preview1

@@ -27,7 +27,6 @@ const ICONS = {
   'reload.svg': [COMPONENTS, 'refresh'], // ReloadButton
   'stop.svg': [APP, 'close'], // ReloadButton while loading
   'menu.svg': [APP, 'more_vert'], // BrowserAppMenuButton
-  'avatar.svg': [APP, 'account_circle'], // AvatarToolbarButton, signed out
   'star.svg': [APP, 'star'], // StarView, not bookmarked
   'star-filled.svg': [COMPONENTS, 'star_filled'], // StarView, bookmarked
   'info.svg': [APP, 'info'], // LocationIconView on http pages

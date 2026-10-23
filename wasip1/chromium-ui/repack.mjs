@@ -12,6 +12,8 @@
 //   - browser.xhtml loading chromium.css and chromium.js,
 //   - FireDog's blank page (firedog/newtab.html) in place of Firefox's
 //     blanktab.html, which about:newtab and a blank homepage show,
+//   - Settings trimmed to what a learner needs (see patchSettings), and the
+//     extensions page made Chrome's (see patchAboutAddons),
 //   - Japanese packaged next to en-US, as a multi-locale build does: the
 //     Firefox Nightly language pack of the same mozilla-central day as the
 //     Gecko source (LANGPACK), with FireDog's branding in place of Nightly's,
@@ -96,6 +98,67 @@ const overrideBlankPage = (browser) => {
   appendLines(join(browser, 'chrome/chrome.manifest'), [
     'override chrome://browser/content/blanktab.html chrome://browser/content/firedog/newtab.html',
   ])
+}
+
+/**
+ * Gives Settings (about:preferences) FireDog's stylesheet (the overlay's
+ * firedog/settings.css), which keeps the panes a learner checking their site
+ * needs and hides those of the features FireDog leaves out. Settings stays
+ * whole: leaving it out would save little (about 1.2 MB before compression)
+ * and take away the search engine, fonts, cookies and permissions.
+ *
+ * @param {string} browser the extracted browser/omni.ja
+ */
+const patchSettings = (browser) => {
+  const path = join(browser, 'chrome/browser/content/browser/preferences/preferences.xhtml')
+  const anchor = '<link rel="stylesheet" href="chrome://browser/content/preferences/widgets/setting-control.css" />'
+  const link = '<link rel="stylesheet" href="chrome://browser/content/firedog/settings.css" />'
+  const text = readFileSync(path, 'utf8')
+  if (text.includes(link)) return
+  if (!text.includes(anchor)) throw new Error('preferences.xhtml does not have the expected stylesheets; update patchSettings')
+  writeFileSync(path, text.replace(anchor, `${anchor}\n  ${link}`))
+}
+
+/**
+ * Makes the extensions page (about:addons) Chrome's: titled "Extensions" in the
+ * tab and the sidebar, and without what is Firefox's own there: the links to
+ * Settings and to Mozilla's add-on support page, the plugins and recommendations categories,
+ * addons.mozilla.org's search and its "get extensions" message, and the
+ * add-on compatibility warnings. FireDog keeps extensions: they install from a
+ * file or a site, as in Chrome.
+ *
+ * @param {string} gre the extracted omni.ja
+ */
+const patchAboutAddons = (gre) => {
+  const stylesheet = join(gre, 'chrome/toolkit/content/mozapps/extensions/aboutaddons.css')
+  if (!existsSync(stylesheet)) throw new Error('aboutaddons.css is not in this Gecko; update patchAboutAddons')
+  const rule = [
+    'categories-box moz-page-nav-button[slot="secondary-nav"],',
+    '#category-plugin,',
+    '#category-discover,',
+    'addon-page-header .search-label,',
+    'addon-page-header search-addons,',
+    'global-warnings,',
+    '#empty-addons-message {',
+    '  display: none !important;',
+    '}',
+    '',
+  ].join('\n')
+  const text = readFileSync(stylesheet, 'utf8')
+  if (!text.includes(rule)) writeFileSync(stylesheet, `${text.replace(/\n?$/, '\n')}\n/* FireDog (repack.mjs patchAboutAddons) */\n${rule}`)
+  const titles = {'en-US': 'Extensions', ja: '拡張機能'}
+  for (const [locale, title] of Object.entries(titles)) {
+    const strings = join(gre, 'localization', locale, 'toolkit/about/aboutAddons.ftl')
+    const before = readFileSync(strings, 'utf8')
+    const sidebar = /^(aboutaddons-sidebar =\n {4}\.heading = ).*$/m
+    if (!/^addons-page-title = /m.test(before) || !sidebar.test(before)) {
+      throw new Error(`addons-page-title or aboutaddons-sidebar is not in ${locale}'s aboutAddons.ftl; update patchAboutAddons`)
+    }
+    writeFileSync(
+      strings,
+      before.replace(/^addons-page-title = .*$/m, `addons-page-title = ${title}`).replace(sidebar, `$1${title}`),
+    )
+  }
 }
 
 /**
@@ -404,6 +467,8 @@ try {
   patchBrowserXhtml(join(browser, 'chrome/browser/content/browser/browser.xhtml'))
   overrideErrorPage(browser, gre)
   overrideBlankPage(browser)
+  patchSettings(browser)
+  patchAboutAddons(gre)
   emptyMozillaMarks(browser, 'browser/')
   pruneDevtoolsClient(browser, gre)
   pruneUnusedFeatures(browser, gre)

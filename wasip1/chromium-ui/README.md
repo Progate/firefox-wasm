@@ -1,8 +1,10 @@
 # FireDog's Chromium-style window and Japanese locale
 
 FireDog keeps Gecko and Firefox's front-end (tabs, address bar, menus,
-shortcuts), and draws its window like Chromium's on macOS. It starts in
-Japanese. None of this needs a Gecko rebuild: `repack.mjs` adds it to the
+shortcuts), and draws its window like Chromium's on macOS. It runs inside a
+tab of a learning page, as the browser a learner checks their site in, so it
+draws no window frame and keeps what Chrome's menus keep for browsing; the
+rest of Firefox's features are left out (see below). It starts in Japanese. None of this needs a Gecko rebuild: `repack.mjs` adds it to the
 `omni.ja` archives that `./mach package` wrote.
 
 ```sh
@@ -18,20 +20,25 @@ from `./mach package`'s output.
   - `chrome/browser/content/browser/firedog/chromium.css` lays out and paints
     the window. Sizes come from Chromium 158's
     `chrome/browser/ui/layout_constants.cc` and `chrome/browser/ui/tabs/tab_style.cc`;
-    colors and the window's own edges (traffic lights, the light inner border)
-    are measured from Chromium.app.
-  - `chromium.js` adds what Firefox's markup does not have (the traffic lights,
-    the profile button) and replays the first page's location change, which
+    colors and the light inner border are measured from Chromium.app. It also
+    hides the menu items and panel parts of the features FireDog leaves out.
+  - `chromium.js` adds what Firefox's markup does not have (Chrome DevTools on
+    Chromium's keys), removes the keyboard shortcuts of the features FireDog
+    leaves out, and replays the first page's location change, which
     FireDog's embedder starts before the window listens for it. FireDog's tabs
     are not remote, so it also hands a right-click that lands on a tab's
     `<browser>` (while the page loads, hit testing stops there) to the page,
     as a remote tab's process would; otherwise the context menu opens without
     the ContextMenu actor's data and shows every item.
   - `newtab.html` is the blank page that new tabs, new windows and Home show,
-    in Progate's design. `repack.mjs` puts it in place of Firefox's
+    in Progate's design with its Ninja Wanko (`@progate/illustrations`'
+    `wanko-laptop.svg`, inline). `repack.mjs` puts it in place of Firefox's
     `blanktab.html` with a chrome.manifest `override`, and
     `firedog-chromium.js` turns the new tab page off and makes the homepage
     blank, which is what loads `blanktab.html`.
+  - `settings.css` trims Settings to what a learner needs (search engine,
+    privacy, appearance, tabs and browsing, accessibility, languages);
+    `repack.mjs` adds it to `preferences.xhtml` (`patchSettings`).
   - `icons/` are Chromium's vector icons as SVG, written by
     `tools/generate-icons.mjs` from a Chromium checkout
     (`git clone --depth 1 --filter=blob:none --sparse --branch 158.0.8109.0 https://github.com/chromium/chromium.git`,
@@ -51,7 +58,10 @@ from `./mach package`'s output.
     Firefox's AI chatbot (`browser.ml.chat.enabled`, `.page`, `.menu`,
     `.shortcuts`, the prefs Firefox's AI controls use): Chrome's menus have
     no "Ask an AI chatbot" item, and the chatbot's sidebar is not part of
-    FireDog's Chrome-like window.
+    FireDog's Chrome-like window. It turns off the other features FireDog
+    leaves out with the prefs Firefox has for them (container tabs, accounts,
+    tab groups, Reader View, Picture-in-Picture, Pocket, screenshots, Firefox
+    Suggest, onboarding and recommendations).
   - `localization/{en-US,ja}/browser/firedogChromium.ftl` are FireDog's own strings.
 - `repack.mjs` also packages Japanese next to en-US as a multi-locale build
   does: the Firefox Nightly language pack of the mozilla-central day the Gecko
@@ -68,6 +78,16 @@ from `./mach package`'s output.
   `repack.mjs` keeps only the client modules that the rest of the browser
   imports, and the pref `devtools.policy.disabled` keeps F12 and the menus from
   opening the missing toolbox.
+- The features FireDog leaves out: accounts and sync, private windows,
+  passwords, downloads and saving files, printing, toolbar customization, Firefox's Library window, sidebars and Firefox View, container
+  tabs, tab groups and split view, Reader View, Picture-in-Picture,
+  screenshots, translations, sending tabs to devices, help and feedback, and
+  quitting. Each is turned off where Firefox has a switch for it (the prefs
+  above, `@progate/browser-gecko`'s enterprise policies in
+  `distribution/policies.json`, the `--disable-printing` build), and its menu
+  items and shortcuts are removed (`chromium.css`, `chromium.js`). Extensions
+  stay, and so does Settings, trimmed to what a learner needs (`settings.css`).
+  `repack.mjs` makes the extensions page Chrome's (`patchAboutAddons`).
 - Other parts of Firefox that FireDog turns off are left out too
   (`pruneUnusedFeatures`), each with the pref Firefox has for it set in
   `firedog-chromium.js`: Firefox Home (the newtab built-in add-on, about
