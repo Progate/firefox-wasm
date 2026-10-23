@@ -27,9 +27,16 @@ ac_add_options --disable-ctypes
 ac_add_options --enable-release
 # Features a FireDog build leaves out, each a configure option Gecko has for
 # builds without it: JPEG XL images (Nightly-only) and the Web Speech API
-# (speech synthesis and recognition have no backend on WASI).
+# (speech synthesis and recognition have no backend on WASI); printing (FireDog
+# runs inside a tab of a learning page, which has no printer, and
+# @progate/browser-gecko's PrintingEnabled policy hides it); parental controls
+# and Negotiate/Kerberos authentication, which have no operating system service
+# on BrowserOS to talk to.
 ac_add_options --disable-jxl
 ac_add_options --disable-webspeech
+ac_add_options --disable-printing
+ac_add_options --disable-parental-controls
+ac_add_options --disable-negotiateauth
 ac_add_options --disable-bootstrap
 # bindgen must parse wasi-sdk's libc++ with the same LLVM.
 ac_add_options --with-libclang-path=${LIBCLANG_PATH:-$WASI_SDK_PATH/lib}
