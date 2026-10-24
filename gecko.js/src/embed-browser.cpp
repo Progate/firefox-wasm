@@ -473,20 +473,15 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
     }
   }
 
-  // Register the desktop JSWindowActors. BrowserGlue normally does this (via
-  // DesktopActorRegistry.init() in its _init), but BrowserGlue doesn't fully run in
-  // this minimal embedding, so e.g. the ContextMenu actor is missing -- content
-  // right-clicks then open contentAreaContextMenu with null contentData and
-  // nsContextMenu crashes (ownerDoc undefined). Do it once, now that the chrome
-  // window/global exists.
+  // Startup work the Firefox front-end leaves to this embedding. BrowserGlue
+  // (registered by the app-startup category in xul_init) registers the desktop
+  // JSWindowActors, ExtensionsUI, PageActions and the bookmarks toolbar itself.
+  // Do it once, now that the chrome window/global exists.
   if (g_isChrome) {
     static bool s_actorsRegistered = false;
     if (!s_actorsRegistered) {
       s_actorsRegistered = true;
       RunChromeScript(
-          "try{ChromeUtils.importESModule('moz-src:///browser/components/"
-          "DesktopActorRegistry.sys.mjs').DesktopActorRegistry.init();}"
-          "catch(e){console.error('DesktopActorRegistry.init: '+e);}"
           // Map resource://newtab (and chrome://newtab) for about:newtab/about:home.
           // The new-tab page lives in a built-in add-on whose resources are normally
           // wired up by AboutNewTabResourceMapping during BrowserGlue startup; that
@@ -496,45 +491,6 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
           "try{ChromeUtils.importESModule('resource:///modules/"
           "AboutNewTabResourceMapping.sys.mjs').AboutNewTabResourceMapping.init();}"
           "catch(e){console.error('AboutNewTabResourceMapping.init: '+e);}"
-          // Register ExtensionsUI's observers. It's the listener for
-          // "webextension-permission-prompt" (fired by AddonManager during an
-          // install) -- it shows the permission doorhanger and resolves the
-          // install's promptHandler when the user clicks Add. BrowserGlue normally
-          // calls ExtensionsUI.init(); without it the notification has no observer,
-          // promptHandler's promise never resolves, and the install hangs forever at
-          // "Verifying". init() addObserver's synchronously (before its first await),
-          // so the prompt works even though the later delayedStartupPromise await may
-          // reject in this minimal embedding (harmless).
-          "try{ChromeUtils.importESModule('resource:///modules/"
-          "ExtensionsUI.sys.mjs').ExtensionsUI.init();}"
-          "catch(e){console.error('ExtensionsUI.init: '+e);}"
-          // Unblock the bookmarks toolbar. PlacesToolbarHelper.init() (delayed
-          // startup) awaits PlacesUIUtils.canLoadToolbarContentPromise, resolved
-          // only by PlacesUIUtils.unblockToolbars -- a 'browser-idle-startup'
-          // category task that BrowserGlue._onWindowsRestored dispatches on
-          // 'sessionstore-windows-restored', which never fires here (SessionStore
-          // doesn't fully run). Without it the toolbar's PlacesToolbar view is
-          // never constructed: no bookmark items, no "Import bookmarks" message.
-          // Resolving the promise directly is order-independent and side-effect
-          // free (vs firing the whole windows-restored notification).
-          "try{ChromeUtils.importESModule('moz-src:///browser/components/places/"
-          "PlacesUIUtils.sys.mjs').PlacesUIUtils.unblockToolbars();}"
-          "catch(e){console.error('unblockToolbars: '+e);}"
-          // Register the built-in page actions (the urlbar bookmark star).
-          // PageActions.init is a 'browser-first-window-ready' category task;
-          // BrowserGlue._onFirstWindowLoaded dispatches that category but aborts
-          // first in _maybeOfferProfileReset (Services.appinfo.replacedLockTime
-          // -> NS_ERROR_NOT_AVAILABLE: no XRE profile lock here). Without it
-          // PageActions.actionForID('bookmark') is null and Ctrl+D throws
-          // "PageActions: No anchor node for <no action>" (StarUI can't anchor).
-          // Late init is the normal flow (per-window BrowserPageActions.init runs
-          // first in real Firefox too); onActionAdded places the star button.
-          // Deliberately NOT dispatching the whole browser-first-window-ready
-          // category: it also contains ProcessHangMonitor/TabCrashHandler/DoH/
-          // profile services, which this embedding must not run.
-          "try{ChromeUtils.importESModule('resource:///modules/"
-          "PageActions.sys.mjs').PageActions.init();}"
-          "catch(e){console.error('PageActions.init: '+e);}"
           // Round popup/menu corners like desktop Firefox. The headless/other-platform
           // theme leaves them square; register an agent !important sheet (beats author
           // rules) so menupopups and panels get a small radius. Our compositor paints
@@ -546,28 +502,17 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
           "'menupopup,panel,.menupopup-arrowscrollbox{border-radius:8px !important}'));"
           "if(!s.sheetRegistered(u,s.AGENT_SHEET))s.loadAndRegisterSheet(u,s.AGENT_SHEET);}"
           "catch(e){console.error('round css: '+e);}"_ns);
-      printf("xul_load: registered desktop JSWindowActors + rounded-popup sheet\n");
+      printf("xul_load: registered newtab mapping + rounded-popup sheet\n");
       fflush(stdout);
 
       // Build already-installed WebExtension background pages at startup.
       // ExtensionParent gates the APP_STARTUP background build on
       // browserStartupPromise, which resolves from 'sessionstore-windows-restored'
-      // OR 'extensions-late-startup'. SessionStore doesn't fully run here, so a
-      // persistent background (e.g. uBlock Origin loaded from the profile at
-      // startup) never builds and its primed webRequestBlocking listener suspends
-      // every request forever (no tab loads). 'extensions-late-startup' is exactly
-      // the no-SessionStore signal ExtensionParent.sys.mjs documents; it's narrowly
-      // observed (ExtensionParent), so firing it has no other side effects.
-      // NOTE: do NOT fire 'browser-delayed-startup-finished' to resolve the
-      // browserPaintedPromise (used only for primed event-page WAKEUPS, not for
-      // persistent backgrounds): that notification makes BrowserGlue run its entire
-      // _onFirstWindowLoaded first-window init ('browser-first-window-ready'
-      // modules, profile-reset, etc.), which in this minimal embedding errors out
-      // and tries to spin up a content subprocess -> tab loads then fail
-      // (nsIWebNavigation.fixupAndLoadURIString NS_ERROR_NOT_AVAILABLE). Promises
-      // resolve async, so an onManifestEntry registering its .then() afterward
-      // still runs. Fresh installs (ADDON_INSTALL) build immediately, no signal
-      // needed. (Set GECKO_NO_EXT_BG_STARTUP to skip, for A/B debugging.)
+      // OR 'extensions-late-startup'. SessionStore sends the former once it has
+      // restored the first window; firing 'extensions-late-startup' as well keeps
+      // the build from depending on it, and only ExtensionParent observes it.
+      // Fresh installs (ADDON_INSTALL) build immediately, no signal needed. (Set
+      // GECKO_NO_EXT_BG_STARTUP to skip, for A/B debugging.)
       //
       // *** TIMING: fire it DEFERRED, not during chrome startup. ***
       // Firing it here (right after browser.xhtml loads, while gBrowserInit is still
@@ -581,7 +526,7 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
       // So defer the signal until the chrome window has finished its delayed startup
       // (gBrowserInit fires 'browser-delayed-startup-finished' itself), with a
       // timeout fallback. We only OBSERVE that notification for timing; we never fire
-      // it (firing it has the BrowserGlue side effects described above).
+      // it (BrowserGlue starts its first-window tasks on it).
       if (!getenv("GECKO_NO_EXT_BG_STARTUP")) {
         // After the chrome has settled, (1) fire 'extensions-late-startup' so the
         // APP_STARTUP background build is unblocked, and (2) RELOAD each active

@@ -5096,6 +5096,38 @@ index b8c8a03c3d..0bc2cf1294 100644
      )
  
  
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+index 18c0f69889..ecfa4fd2aa 100644
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -312,6 +312,8 @@
+ extern const char gToolkitBuildID[];
+ 
+ static nsIProfileLock* gProfileLock;
++
++void XRE_SetProfileLock(nsIProfileLock* aLock) { gProfileLock = aLock; }
+ #if defined(MOZ_HAS_REMOTE)
+ constinit static RefPtr<nsRemoteService> gRemoteService;
+ constinit static RefPtr<nsStartupLock> gStartupLock;
+diff --git a/toolkit/xre/nsAppRunner.h b/toolkit/xre/nsAppRunner.h
+index 5050bc00f0..814a5d326d 100644
+--- a/toolkit/xre/nsAppRunner.h
++++ b/toolkit/xre/nsAppRunner.h
+@@ -109,6 +109,14 @@
+                             nsIProfileUnlocker** aUnlocker,
+                             nsIProfileLock** aResult);
+ 
++/**
++ * Hands XRE the lock of the profile in use, for an embedder that starts XPCOM
++ * without XRE_main and locks the profile itself (NS_LockProfilePath).
++ * nsIXULRuntime.replacedLockTime reads it, as it reads the lock XRE takes.
++ * The caller keeps the lock alive for as long as the profile is in use.
++ */
++void XRE_SetProfileLock(nsIProfileLock* aLock);
++
+ void WriteConsoleLog();
+ 
+ /**
 diff --git a/tools/profiler/core/ProfilerUtils.cpp b/tools/profiler/core/ProfilerUtils.cpp
 index 64e7831e34..c55582c051 100644
 --- a/tools/profiler/core/ProfilerUtils.cpp
