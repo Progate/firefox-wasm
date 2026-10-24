@@ -141,3 +141,29 @@ pref("nimbus.profilesdatastoreservice.enabled", false);
 // Firefox Translations: its translation models come from Remote Settings,
 // which FireDog does not use, so the page translation offer could not work.
 pref("browser.translations.enable", false);
+// Background services that start after the window appears and that FireDog
+// does not use. Each one runs in the same interpreted JavaScript as the
+// window, so it competes with the page a learner opens. repack.mjs takes the
+// startup tasks of the features above out of the component manifest
+// (UNUSED_STARTUP_TASKS); these are the services BrowserGlue starts itself.
+//
+// Safe Browsing downloads Google's lists with an API key FireDog does not
+// have, so its lists stay empty.
+pref("browser.safebrowsing.malware.enabled", false);
+pref("browser.safebrowsing.phishing.enabled", false);
+pref("browser.safebrowsing.downloads.enabled", false);
+pref("browser.safebrowsing.blockedURIs.enabled", false);
+// Web Push connects to Mozilla's push service; pages see no PushManager, as
+// in a browser without push.
+pref("dom.push.enabled", false);
+// DNS over HTTPS: names are resolved by BrowserOS (5 is "off by choice", so
+// the rollout does not turn it on).
+pref("network.trr.mode", 5);
+// The hidden about:newtab browser kept ready for the next new tab. FireDog's
+// new tab is a blank page.
+pref("browser.newtab.preload", false);
+// Records of how long each page was looked at, for Firefox's history
+// recommendations.
+pref("browser.places.interactions.enabled", false);
+// Telemetry on pages that show a CAPTCHA.
+pref("captchadetection.actor.enabled", false);
