@@ -25,7 +25,11 @@
 //     Settings dumps and the non-English hyphenation patterns left out (see
 //     pruneUnusedFeatures),
 //   - Chromium's DevTools front-end as devtools-frontend.zip (see
-//     writeDevtoolsFrontend).
+//     writeDevtoolsFrontend),
+//   - firedog-cache-key, a hash of both archives. The embedding empties a
+//     profile's startup caches when it differs from the key they were written
+//     with (embed-init.cpp PrepareStartupCache), as XRE does on a new build:
+//     a repack changes the scripts without relinking Gecko.
 // Both archives are written stored (no compression), as `./mach package`
 // writes them; the published files are compressed on the wire.
 import {execFileSync} from 'node:child_process'
@@ -536,8 +540,12 @@ try {
   zip(gre, join(output, 'omni.ja'))
   zip(browser, join(output, 'browser/omni.ja'))
 
+  const archives = createHash('sha256')
+  for (const file of ['omni.ja', 'browser/omni.ja']) archives.update(readFileSync(join(output, file)))
+  writeFileSync(join(output, 'firedog-cache-key'), `${archives.digest('hex')}\n`)
+
   await writeDevtoolsFrontend(output)
-  for (const file of ['omni.ja', 'browser/omni.ja', 'devtools-frontend.zip']) console.log(`wrote ${join(output, file)}`)
+  for (const file of ['omni.ja', 'browser/omni.ja', 'firedog-cache-key', 'devtools-frontend.zip']) console.log(`wrote ${join(output, file)}`)
 } finally {
   rmSync(work, {recursive: true, force: true})
 }
