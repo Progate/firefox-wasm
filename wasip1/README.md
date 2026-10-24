@@ -18,7 +18,7 @@ which pins the commit of this repository it was built from.
   `2e1e835a5da5907e5ceef19aade58a7493f1e34d`, with `gecko.patch` applied.
 - wasi-sdk 34.0, Rust 1.95.0, Ubuntu 24.04; see `Dockerfile`.
 - BrowserOS libc: the Progate/libc commit that
-  `packages/browser-libc/build.mjs` pins as `LIBC_COMMIT` (branch
+  `packages/browser-system-libs/build.mjs` pins as `LIBC_COMMIT` (branch
   `browseros-linux-syscall`), built with `buildSysroot` using
   `targets: ['wasm32-wasip1-threads']`. Its constants and structs (errno,
   `O_*`, `AT_*`, sockets, `POLL*`, `struct stat`, `struct dirent`, the
@@ -34,9 +34,11 @@ docker build -t browser-firefox-wasip1:dev -f wasip1/Dockerfile .
 ```
 
 Run it with this repository mounted at `/port` and a writable build directory
-at `/work`. A full build takes hours; give the container at least 6 GB of
-memory plus swap and keep `-j` low (2–3), or the linker and rustc run out of
-memory. Inside the container, build the BrowserOS sysroot with `buildSysroot`,
+at `/work`. With `--enable-release`, gkrust (Gecko's Rust code) is compiled
+with link-time optimization, and rustc then needs several gigabytes on its own.
+With 16 cores and 50 GB for the container, `-j10` built everything in about an
+hour and peaked at 12 GB; with less memory, lower `-j` so that the C++ jobs
+running next to that rustc still fit. Inside the container, build the BrowserOS sysroot with `buildSysroot`,
 extract the pinned Gecko source to `/work/firefox`, then:
 
 ```sh
@@ -47,12 +49,15 @@ export MOZCONFIG=/port/mozconfig.full.wasip1 RUSTC_BOOTSTRAP=1
 
 bash /port/wasip1/configure.sh      # applies gecko.patch and the branding, runs mach configure
 cd /work/firefox
-./mach build --keep-going -j2
+./mach build -j10
 ./mach package                      # writes the resources to dist/firefox (omni.ja, …)
 bash /port/wasip1/link.sh           # writes /work/out/firedog.wasm
 ```
 
 `configure.sh` applies `gecko.patch` once and accepts an already-applied patch.
+
+Leave out `--keep-going`: the first error then stops the build. With it, a
+failure in gkrust can go unnoticed while the C++ keeps compiling for hours.
 
 Start a build after `gecko.patch` or `mozconfig.full.wasip1` changed from a
 fresh `/work/firefox` and objdir. A tree patched by an earlier version can pass
@@ -125,10 +130,12 @@ off (branding prefs), since BrowserOS sockets carry TCP only.
   scale and translate pointer, keyboard, IME and clipboard events into Gecko's.
 - `link.sh`: links the entry point, the gecko.js embedder and Gecko's libraries
   into `firedog.wasm`, with shared imported memory for wasi-threads.
-- `branding/firedog`: names, icons and default prefs. The prefs turn off the
-  services Mozilla runs for Firefox (updates, telemetry, studies, accounts,
-  remote settings, Safe Browsing); `gecko.patch` replaces the bundled search
-  configuration with one that has no partner codes.
+- `branding/firedog`: names, icons and default prefs. The icons are Progate's
+  mark (the white P on Progate's purple); the PNGs are drawn from
+  `content/about-logo.svg`. The prefs turn off the services Mozilla runs for
+  Firefox (updates, telemetry, studies, accounts, remote settings, Safe
+  Browsing); `gecko.patch` replaces the bundled search configuration with one
+  that has no partner codes.
 - `std-libc.patch`: the same `wasi` values as `gecko.patch` gives Gecko's
   `libc` crate, for the `libc` crate std depends on (0.2.178 for Rust 1.95).
 - `std.patch`: std (rust-src `library/`) reports the errno that its preview1

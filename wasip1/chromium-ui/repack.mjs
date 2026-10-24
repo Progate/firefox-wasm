@@ -12,6 +12,10 @@
 //   - browser.xhtml loading chromium.css and chromium.js,
 //   - FireDog's blank page (firedog/newtab.html) in place of Firefox's
 //     blanktab.html, which about:newtab and a blank homepage show,
+//   - Settings trimmed to what a learner needs and opening on the search pane
+//     (see patchSettings), with its categories named in Japanese (see
+//     nameSettingsCategories), and the extensions page made Chrome's (see
+//     patchAboutAddons),
 //   - Japanese packaged next to en-US, as a multi-locale build does: the
 //     Firefox Nightly language pack of the same mozilla-central day as the
 //     Gecko source (LANGPACK), with FireDog's branding in place of Nightly's,
@@ -96,6 +100,125 @@ const overrideBlankPage = (browser) => {
   appendLines(join(browser, 'chrome/chrome.manifest'), [
     'override chrome://browser/content/blanktab.html chrome://browser/content/firedog/newtab.html',
   ])
+}
+
+/**
+ * Gives Settings (about:preferences) FireDog's stylesheet (the overlay's
+ * firedog/settings.css), which keeps the panes a learner checking their site
+ * needs and hides those of the features FireDog leaves out. Settings stays
+ * whole: leaving it out would save little (about 1.2 MB before compression)
+ * and take away the search engine, fonts, cookies and permissions.
+ *
+ * Settings opens on the search pane. The redesigned Settings opens on
+ * "Account and sync", which settings.css hides, so a learner would land on a
+ * pane that is not in the sidebar.
+ *
+ * @param {string} browser the extracted browser/omni.ja
+ */
+const patchSettings = (browser) => {
+  const path = join(browser, 'chrome/browser/content/browser/preferences/preferences.xhtml')
+  const anchor = '<link rel="stylesheet" href="chrome://browser/content/preferences/widgets/setting-control.css" />'
+  const link = '<link rel="stylesheet" href="chrome://browser/content/firedog/settings.css" />'
+  const text = readFileSync(path, 'utf8')
+  if (text.includes(link)) return
+  if (!text.includes(anchor)) throw new Error('preferences.xhtml does not have the expected stylesheets; update patchSettings')
+  writeFileSync(path, text.replace(anchor, `${anchor}\n  ${link}`))
+
+  const script = join(browser, 'chrome/browser/content/browser/preferences/preferences.js')
+  const defaults = [
+    ['? "paneSync"\n    : "paneGeneral";', '? "paneSearch"\n    : "paneGeneral";'],
+    ['const kDefaultCategory = redesignEnabled ? "sync" : "general";', 'const kDefaultCategory = redesignEnabled ? "search" : "general";'],
+  ]
+  let code = readFileSync(script, 'utf8')
+  for (const [from, to] of defaults) {
+    if (!code.includes(from)) throw new Error('preferences.js does not pick its first pane as expected; update patchSettings')
+    code = code.replace(from, to)
+  }
+  writeFileSync(script, code)
+}
+
+/**
+ * Settings strings the language pack leaves in English or gets wrong, in the
+ * panes FireDog keeps, with the words FireDog uses: message id, attribute and
+ * text, per packaged locale. tabs-group-header2 is "Tabs" in English and
+ * "Tab groups" in the language pack, a feature FireDog turns off.
+ */
+const SETTINGS_STRINGS = {
+  ja: [
+    ['tabs-group-header2', 'label', 'タブ'],
+    ['preferences-web-appearance-choice-light2', 'label', 'ライト'],
+    ['preferences-web-appearance-choice-dark2', 'label', 'ダーク'],
+    ['browser-theme-group', 'description', '{ -brand-short-name } を好みの見た目に。テーマの色は、ツールバー、メニュー、メッセージに使われます。'],
+  ],
+}
+
+/**
+ * Names Settings' categories in the language pack's locale, and puts
+ * SETTINGS_STRINGS in place. The language pack translates the tooltip
+ * (.title) of the redesigned categories but still has the English label for
+ * some (pane-tabs-browsing-title2 = Tabs and browsing, .title = タブとブラウジング);
+ * the label then takes the tooltip's words.
+ *
+ * @param {string} browser the extracted browser/omni.ja, with the language pack's strings
+ * @param {string} locale the language pack's locale
+ */
+const nameSettingsCategories = (browser, locale) => {
+  const file = 'browser/preferences/preferences.ftl'
+  const english = readFileSync(join(browser, 'localization/en-US', file), 'utf8')
+  const path = join(browser, 'localization', locale, file)
+  let text = readFileSync(path, 'utf8').replace(
+    /^(pane-[\w-]+-title2) = (.+)\n( +\.title = (.+))$/gm,
+    (message, id, label, title, tooltip) =>
+      english.includes(`\n${id} = ${label}\n`) ? `${id} = ${tooltip}\n${title}` : message,
+  )
+  for (const [id, attribute, words] of SETTINGS_STRINGS[locale] ?? []) {
+    const line = new RegExp(`^(${id} =\\n(?: +\\..+\\n)*? +\\.${attribute} = ).+$`, 'm')
+    if (!line.test(text)) throw new Error(`${locale} ${file} has no ${id}.${attribute}; update SETTINGS_STRINGS`)
+    text = text.replace(line, `$1${words}`)
+  }
+  writeFileSync(path, text)
+}
+
+/**
+ * Makes the extensions page (about:addons) Chrome's: titled "Extensions" in the
+ * tab and the sidebar, and without what is Firefox's own there: the links to
+ * Settings and to Mozilla's add-on support page, the plugins and recommendations categories,
+ * addons.mozilla.org's search and its "get extensions" message, and the
+ * add-on compatibility warnings. FireDog keeps extensions: they install from a
+ * file or a site, as in Chrome.
+ *
+ * @param {string} gre the extracted omni.ja
+ */
+const patchAboutAddons = (gre) => {
+  const stylesheet = join(gre, 'chrome/toolkit/content/mozapps/extensions/aboutaddons.css')
+  if (!existsSync(stylesheet)) throw new Error('aboutaddons.css is not in this Gecko; update patchAboutAddons')
+  const rule = [
+    'categories-box moz-page-nav-button[slot="secondary-nav"],',
+    '#category-plugin,',
+    '#category-discover,',
+    'addon-page-header .search-label,',
+    'addon-page-header search-addons,',
+    'global-warnings,',
+    '#empty-addons-message {',
+    '  display: none !important;',
+    '}',
+    '',
+  ].join('\n')
+  const text = readFileSync(stylesheet, 'utf8')
+  if (!text.includes(rule)) writeFileSync(stylesheet, `${text.replace(/\n?$/, '\n')}\n/* FireDog (repack.mjs patchAboutAddons) */\n${rule}`)
+  const titles = {'en-US': 'Extensions', ja: '拡張機能'}
+  for (const [locale, title] of Object.entries(titles)) {
+    const strings = join(gre, 'localization', locale, 'toolkit/about/aboutAddons.ftl')
+    const before = readFileSync(strings, 'utf8')
+    const sidebar = /^(aboutaddons-sidebar =\n {4}\.heading = ).*$/m
+    if (!/^addons-page-title = /m.test(before) || !sidebar.test(before)) {
+      throw new Error(`addons-page-title or aboutaddons-sidebar is not in ${locale}'s aboutAddons.ftl; update patchAboutAddons`)
+    }
+    writeFileSync(
+      strings,
+      before.replace(/^addons-page-title = .*$/m, `addons-page-title = ${title}`).replace(sidebar, `$1${title}`),
+    )
+  }
 }
 
 /**
@@ -404,6 +527,9 @@ try {
   patchBrowserXhtml(join(browser, 'chrome/browser/content/browser/browser.xhtml'))
   overrideErrorPage(browser, gre)
   overrideBlankPage(browser)
+  patchSettings(browser)
+  nameSettingsCategories(browser, locale)
+  patchAboutAddons(gre)
   emptyMozillaMarks(browser, 'browser/')
   pruneDevtoolsClient(browser, gre)
   pruneUnusedFeatures(browser, gre)

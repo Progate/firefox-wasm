@@ -4,6 +4,10 @@
 #include "embed-xul.h"
 #include "nsUserIdleService.h"
 #include "nsXULAppAPI.h"
+#include "nsCommandLine.h"
+#include "nsAppRunner.h"
+#include "nsIProfileUnlocker.h"
+#include "nsIToolkitProfile.h"
 #include "mozilla/GenericFactory.h"
 #include "mozilla/ModuleUtils.h"
 // For the chrome build, NS_InitXPCOM is given binDir = the APP dir (/gre/browser)
@@ -223,6 +227,33 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     return (int)rv;
   }
 
+  // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
+  // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so
+  // point gAppData at a static app descriptor. Values mirror a Firefox build (ID
+  // is the Firefox application id, so add-ons targeting Firefox match, and
+  // runtime.getBrowserInfo().version is defined). Set it before NS_InitXPCOM, as
+  // XRE does: the component manager reads the chrome manifests during init and
+  // drops every entry flagged application={id} that does not match the running
+  // application. With gAppData still null, that dropped BrowserComponents'
+  // "category app-startup nsBrowserGlue", so the Firefox front-end's startup
+  // (BrowserGlue: SessionStore, the desktop actors, the first-window tasks)
+  // never ran.
+  // Keep in sync with browser/config/version.txt (GRE_MILESTONE / the build's
+  // app version); MOZ_APP_VERSION isn't a C macro in this embedder's compile.
+  static const char* const kAppVersion = "153.0a1";
+  static const mozilla::StaticXREAppData kStaticAppData = {
+      .vendor = "Mozilla",
+      .name = "Firefox",
+      .remotingName = "firefox",
+      .version = kAppVersion,
+      .buildID = "20990101000000",
+      .ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",  // Firefox application id
+  };
+  static mozilla::XREAppData sAppData(kStaticAppData);
+  gAppData = &sAppData;
+  printf("xul_init: set gAppData (appinfo version=%s)\n", kAppVersion);
+  fflush(stdout);
+
   printf("xul_init: calling NS_InitXPCOM (binDir=%s)...\n", binPath.get());
   fflush(stdout);
   nsCOMPtr<nsIServiceManager> servMan;
@@ -262,34 +293,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         fflush(stdout);
       }
     }
-
-    // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
-    // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so
-    // gAppData stays null -> the nsIXULAppInfo interface is not exposed and
-    // appinfo.version/ID/appBuildID are all `undefined`. That breaks version-gated
-    // logic: WebExtensions can't match a target application (isCompatible=false ->
-    // "incompatible with {app} {$version}", $version blank) and add-on background
-    // code that reads runtime.getBrowserInfo().version (e.g. uBlock Origin) gets
-    // undefined and misbehaves. Point gAppData at a static app descriptor. Values
-    // mirror a Firefox build (ID is the Firefox app id so add-ons targeting Firefox
-    // match); platformVersion/platformBuildID come from gToolkitVersion/BuildID
-    // (compile-time) once the interface is exposed. Set after NS_InitXPCOM so init
-    // itself is unaffected; appinfo consumers (AddonManager, front-end) run later.
-    // Keep in sync with browser/config/version.txt (GRE_MILESTONE / the build's
-    // app version); MOZ_APP_VERSION isn't a C macro in this embedder's compile.
-    static const char* const kAppVersion = "153.0a1";
-    static const mozilla::StaticXREAppData kStaticAppData = {
-        .vendor = "Mozilla",
-        .name = "Firefox",
-        .remotingName = "firefox",
-        .version = kAppVersion,
-        .buildID = "20990101000000",
-        .ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",  // Firefox application id
-    };
-    static mozilla::XREAppData sAppData(kStaticAppData);
-    gAppData = &sAppData;
-    printf("xul_init: set gAppData (appinfo version=%s)\n", kAppVersion);
-    fflush(stdout);
 
     // Initialize sqlite for mozStorage. XREMain normally constructs an
     // AutoSQLiteLifetime to call sqlite3_config()/sqlite3_initialize(); this
@@ -609,6 +612,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
           dirSvc->Set(NS_APP_USER_PROFILE_LOCAL_50_DIR, profDir);
           printf("xul_init: profile dir = %s\n", profPath);
         }
+        // Lock the profile as XRE does when it selects one, and hand the lock to
+        // XRE. Without it nsIXULRuntime.replacedLockTime throws, which aborts
+        // BrowserGlue's first-window startup (_maybeOfferProfileReset) before the
+        // browser-first-window-ready tasks run. It also keeps a second FireDog
+        // from opening the same profile.
+        static nsCOMPtr<nsIProfileLock> sProfileLock;
+        nsresult lrv = NS_LockProfilePath(profDir, profDir, nullptr,
+                                          getter_AddRefs(sProfileLock));
+        if (NS_SUCCEEDED(lrv)) XRE_SetProfileLock(sProfileLock);
+        printf("xul_init: profile lock rv=0x%08x\n", (unsigned)lrv);
       }
     }
 
@@ -664,7 +677,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // MozXULElement etc. in chrome documents via a document-element-inserted
       // observer) and BrowserGlue (the Firefox front-end's startup). Without it the
       // chrome custom elements (tabs, urlbar, toolbar buttons) never initialize.
-      NS_CreateServicesFromCategory("app-startup", nullptr, "app-startup",
+      // XRE hands the category a command line in its initial-launch state, and
+      // BrowserGlue reads flags from it (findFlag) on app-startup. With nullptr it
+      // threw there. This embedding has no command-line flags to pass on.
+      nsCOMPtr<nsIFile> workingDir;
+      NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR, getter_AddRefs(workingDir));
+      nsCOMPtr<nsICommandLineRunner> cmdLine = new nsCommandLine();
+      const char* const argv[] = {"firedog"};
+      cmdLine->Init(1, argv, workingDir, nsICommandLine::STATE_INITIAL_LAUNCH);
+      NS_CreateServicesFromCategory("app-startup", cmdLine, "app-startup",
                                     nullptr);
       printf("xul_init: ran app-startup category\n");
       fflush(stdout);
@@ -728,6 +749,19 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         printf("xul_init: addon integration service unavailable\n");
       }
       fflush(stdout);
+      // final-ui-startup comes next, before the first window opens, as in
+      // XRE_mainRun. BrowserGlue starts session restore on it (SessionStartup,
+      // which reads the session file, and SessionStore). Without it the
+      // window is never tracked by SessionStore: "reopen closed tab" stays
+      // empty, and a tab's context menu throws in SessionStore
+      // (getLastClosedTabCount) before it hides the items that do not apply.
+      nsCOMPtr<nsIObserverService> obs =
+          do_GetService("@mozilla.org/observer-service;1");
+      if (obs) {
+        obs->NotifyObservers(nullptr, "final-ui-startup", nullptr);
+        printf("xul_init: final-ui-startup done\n");
+        fflush(stdout);
+      }
     }
     // Keep the runtime alive (no NS_ShutdownXPCOM): we proceed to render.
     printf("xul_init: *** XPCOM INITIALIZED *** (runtime kept alive)\n");

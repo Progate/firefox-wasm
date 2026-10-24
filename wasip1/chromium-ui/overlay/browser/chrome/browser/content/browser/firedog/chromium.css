@@ -6,7 +6,7 @@
  *
  * Sizes come from Chromium 158's chrome/browser/ui/layout_constants.cc and
  * chrome/browser/ui/tabs/tab_style.cc; colors and the window's own edges
- * (traffic lights, the light inner border) are measured from Chromium.app.
+ * (the light inner border) are measured from Chromium.app.
  * Lengths are CSS pixels; at GDK_SCALE=2 every 0.5px is one device pixel. */
 
 :root {
@@ -24,7 +24,6 @@
   --fd-tab-search-background: #edf3fd;
   --fd-tab-search-icon: #0b1d46;
   --fd-favicon: #606368;
-  --fd-avatar: #2451c1;
   /* layout_constants.cc */
   --fd-tab-strip-height: 40px;
   --fd-tab-top: 6px;
@@ -99,58 +98,14 @@
   min-height: 0 !important;
 }
 
-/* Traffic lights: 14px circles with a half pixel darker ring, 23px apart,
-   centered 20.5px from the top as macOS places them in a Chromium window. */
-
-#firedog-traffic-lights {
-  flex: none;
-  width: 79px;
-  padding-inline-start: 13px;
-  padding-top: 13.5px;
-  align-items: flex-start;
-  gap: 9px;
-}
-
-.firedog-traffic-light {
-  appearance: none !important;
-  -moz-box-sizing: border-box;
-  box-sizing: border-box;
-  width: 14px !important;
-  height: 14px !important;
-  min-width: 14px;
-  margin: 0 !important;
-  padding: 0 !important;
-  border-radius: 50%;
-  border: 0.5px solid;
-}
-
-.firedog-traffic-light > .toolbarbutton-icon,
-.firedog-traffic-light > .toolbarbutton-text {
-  display: none;
-}
-
-.firedog-traffic-light-close {
-  background: #ec6765 !important;
-  border-color: #e5322e !important;
-}
-
-.firedog-traffic-light-minimize {
-  background: #f2ca44 !important;
-  border-color: #ecb702 !important;
-}
-
-.firedog-traffic-light-zoom {
-  background: #65c466 !important;
-  border-color: #2eaf30 !important;
-}
-
 /* Tab search: a 28px rounded square at the start of the tab strip
-   (TabStripComboButton), 13px after the traffic lights. */
+   (TabStripComboButton). FireDog's window has no traffic lights before it, so
+   it keeps only the strip's 8px inset. */
 
 #TabsToolbar #alltabs-button {
   appearance: none !important;
   flex: none;
-  margin: var(--fd-tab-top) 0 0 13px !important;
+  margin: var(--fd-tab-top) 0 0 8px !important;
   padding: 0 !important;
   width: 28px !important;
   height: 28px !important;
@@ -456,23 +411,8 @@
 #PersonalToolbar,
 #tracking-protection-icon-container,
 #notification-popup-box,
-#urlbar-searchmode-switcher,
-#searchmode-switcher-chicklet {
+#urlbar .searchmode-switcher {
   display: none !important;
-}
-
-#nav-bar #firedog-profile-button {
-  list-style-image: url("chrome://browser/content/firedog/icons/avatar.svg") !important;
-  color: var(--fd-avatar) !important;
-  margin-inline-start: 9px !important;
-  margin-inline-end: 2px !important;
-}
-
-#firedog-profile-button > .toolbarbutton-icon {
-  width: 20px !important;
-  height: 20px !important;
-  -moz-context-properties: fill;
-  fill: currentColor !important;
 }
 
 #PanelUI-button {
@@ -483,7 +423,6 @@
   height: var(--fd-toolbar-height);
 }
 
-#firedog-profile-button,
 #PanelUI-menu-button {
   align-self: center !important;
 }
@@ -652,4 +591,199 @@
 .browserStack > browser.firedog-devtools-inspected {
   justify-self: start;
   align-self: start;
+}
+
+/* The ways into what FireDog leaves out. FireDog runs inside a tab of a
+   learning page, as the browser a learner checks their site in, so it keeps
+   what Chrome's menus keep for browsing and leaves out the rest: accounts and
+   sync, private windows, passwords, downloads and saving files, printing,
+   Settings, toolbar customization, Firefox's Library window, sidebars and
+   Firefox View, container tabs, tab groups and split view, Reader View,
+   Picture-in-Picture, screenshots, translations, sending tabs to devices,
+   help and feedback, and quitting. Extensions stay. Most of these are also
+   turned off by their prefs (firedog-chromium.js) or by @progate/browser-gecko's
+   enterprise policies; hiding the items keeps an empty or disabled item from
+   showing where a pref leaves one behind. chromium.js removes their keyboard
+   shortcuts. */
+
+/* App menu: Chrome's new tab, new window, bookmarks, history, extensions,
+   find, zoom, Settings and More tools (Developer Tools). */
+#appMenu-fxa-status2,
+#appMenu-fxa-separator,
+#appMenu-profiles-button,
+#appMenu-empty-profiles-button,
+#appMenu-new-private-window-button2,
+#appMenu-new-ai-window-button,
+#appMenu-new-classic-window-button,
+#appMenu-chats-history-button,
+#appMenu-tab-groups-button,
+#appMenu-downloads-button,
+#appMenu-passwords-button,
+#appMenu-print-button2,
+#appMenu-save-file-button2,
+#appMenu-translate-button,
+#appMenu-report-broken-site-button,
+#appMenu-help-button2,
+#appMenu-quit-button2,
+#appMenu-restoreSession,
+#appmenu-moreTools-button,
+#appmenu-abouttranslations-button,
+#appmenu-abouttranslations-button + toolbarseparator,
+#appmenu-developer-tools,
+#appmenu-developer-tools-view > :not(#firedog-appmenu-devtools),
+#appMenu-restoreSession + toolbarseparator,
+#appMenuClearRecentHistory,
+#appMenu_historyMenu + toolbarseparator,
+#PanelUI-historyMore,
+#panelMenu_viewBookmarksToolbar,
+#panelMenu_showAllBookmarks,
+#appMenu-viewCache {
+  display: none !important;
+}
+
+/* The separator before Quit, which would otherwise end the menu. */
+#appMenu-help-button2 + toolbarseparator {
+  display: none !important;
+}
+
+/* Tab search (the start of the tab strip): the tabs of this window, as
+   Chrome lists them, without Firefox's search, duplicate, container, synced
+   and group entries. */
+#allTabsMenu-searchTabs,
+#allTabsMenu-syncedTabs,
+#allTabsMenu-closeDuplicateTabs,
+#allTabsMenu-containerTabsButton,
+#allTabsMenu-containerTabsButton + toolbarseparator,
+#allTabsMenu-groupsView,
+#allTabsMenu-groupsSeparator,
+#allTabsMenu-hiddenTabsButton,
+#allTabsMenu-hiddenTabsSeparator,
+#allTabsMenu-allTabsView [data-l10n-id="all-tabs-menu-current-window-header"] {
+  display: none !important;
+}
+
+/* A tab's context menu: Chrome's new tab to the right, reload, duplicate,
+   pin, mute, bookmark, move and close items. */
+#context_moveTabToNewGroup,
+#context_moveSplitViewToNewGroup,
+#context_moveTabToGroup,
+#open-tab-groups-separator-upper,
+#open-tab-groups-separator-lower,
+#context_moveTabToSavedGroup,
+#context_ungroupTab,
+#context_ungroupSplitView,
+#context_moveTabToSplitView,
+#context_separateSplitView,
+#context_reverseSplitView,
+#context_unloadTab,
+#context_askChat,
+#context_reopenInContainer,
+#context_selectAllTabs,
+#tabContextMenu > [contexttype="fullscreen"],
+#tabContextMenu > .share-tab-url-item,
+#context_shareSelectedTabs,
+#context_shareSelectedTabsSeparator,
+#context_sendTabToDevice,
+#context_sendTabToDeviceSeparator,
+#context_closeDuplicateTabs {
+  display: none !important;
+}
+
+/* The tab strip's and the toolbar's context menu: new tab, reload, bookmark
+   and reopen closed tabs. Firefox lists its toolbars here (menu bar,
+   bookmarks toolbar) and offers vertical tabs, the sidebar and customizing;
+   an extension's button keeps its manage and remove items. */
+#toolbar-context-report-extension[hidden] + menuseparator,
+#toolbar-context-selectAllTabs,
+#tabbarItemsMenuSeparator,
+#toolbar-context-customize-sidebar,
+#toolbar-context-toggle-vertical-tabs,
+#sidebarRevampSeparator,
+#toolbar-context-move-to-panel,
+#toolbar-context-autohide-downloads-button,
+#toolbar-context-always-open-downloads-panel,
+#toolbarDownloadsAnchorMenuSeparator,
+#toolbar-context-always-show-extensions-button,
+#toolbar-context-remove-from-toolbar,
+#toolbar-context-pin-to-toolbar,
+#customizationMenuSeparator,
+#viewToolbarsMenuSeparator,
+#toolbar-context-menu > [toolbarId],
+#toolbar-context-customize,
+#toolbar-context-menu > [contexttype="fullscreen"],
+#toolbar-context-full-screen-autohide,
+#toolbar-context-full-screen-exit {
+  display: none !important;
+}
+
+/* The page's context menu: Chrome's navigation, link, image, media, editing,
+   search, view source and Inspect items. */
+#context-openlinkincontainertab,
+#context-openlinkinsplitview,
+#context-openlinkinusercontext-menu,
+#context-openlinkprivate,
+#context-openlinksmartwindow,
+#context-previewlink,
+#context-savelink,
+#context-stripOnShareLink,
+#context-sendlinktodevice,
+#context-sep-sendlinktodevice,
+#context-video-pictureinpicture,
+#context-saveimage,
+#context-video-saveimage,
+#context-savevideo,
+#context-saveaudio,
+#context-sendimage,
+#context-sendvideo,
+#context-sendaudio,
+#context-imagetext,
+#context-viewimageinfo,
+#context-visual-search,
+#context-sep-setbackground,
+#context-setDesktopBackground,
+#context-sep-sharing,
+#context-savepage,
+#fill-login,
+#fill-login-generated-password,
+#use-relay-mask,
+#manage-saved-logins,
+#passwordmgr-items-separator,
+#context-print-selection,
+#context-take-screenshot,
+#context-sep-screenshots,
+#context-add-engine,
+#context-searchselect-private,
+#context-translate-selection,
+#context-ask-chat,
+#context-saveframe,
+#context-printframe,
+#print-frame-sep,
+#context-viewframeinfo,
+#context-frameOsPid,
+#context-inspect-a11y,
+#context-sep-sendpagetodevice,
+#context-sendpagetodevice,
+#context-media-eme-separator,
+#context-media-eme-learnmore {
+  display: none !important;
+}
+
+/* The site information panel: the connection and the site's data, as in
+   Chrome's, without Firefox's tracking protection (its banner, toggle, blocked
+   trackers and the link to its settings) and Firefox Monitor's breach alerts.
+   The bookmark panel does not offer to turn itself off. */
+#trustpanel-graphic-section,
+#trustpanel-toggle-section,
+#trustpanel-blocker-section,
+#trustpanel-smartblock-section,
+#trustpanel-breach-alert-section,
+#trustpanel-privacy-link,
+#editBookmarkPanel_showForNewBookmarks {
+  display: none !important;
+}
+
+/* The address bar's dropdown: links open in a tab or a window, as in Chrome. */
+#urlbarView-context-menu-open-in-container-tab,
+#urlbarView-context-menu-open-in-private-window {
+  display: none !important;
 }

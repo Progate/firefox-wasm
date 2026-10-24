@@ -2,17 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Chromium-style parts of FireDog's window that Firefox's markup does not
-// have: the window's traffic lights at the start of the tab strip and the
-// profile button before the app menu. chromium.css lays out and paints the
-// rest of the window.
+// The parts of FireDog's window that Firefox's markup does not have or has
+// too much of: Chrome DevTools on Chromium's keys, and none of the keyboard
+// shortcuts of the features FireDog leaves out. chromium.css lays out and
+// paints the window and hides the menu items of those features.
+//
+// FireDog runs inside a tab of a learning page, so it draws no window frame
+// (no traffic lights) and no profile button: there is no window to close and
+// no account to sign in to.
 
 "use strict";
 
 var FireDogChromium = {
   init() {
-    this.addTrafficLights();
-    this.addProfileButton();
+    this.removeUnusedKeys();
     this.replayFirstLocation();
     this.addDevTools();
     // The Chrome DevTools Protocol endpoint, when its pref sets a port.
@@ -26,25 +29,40 @@ var FireDogChromium = {
     }
   },
 
-  // The close, minimize and zoom buttons macOS draws at the start of a
-  // Chromium window's tab strip. Close closes the window; the windowserver has
-  // no minimized or zoomed state for a window yet, so the other two only show.
-  addTrafficLights() {
-    const toolbar = document.getElementById("TabsToolbar");
-    if (!toolbar || document.getElementById("firedog-traffic-lights")) {
-      return;
+  // The keyboard shortcuts of what FireDog leaves out: downloads and saving
+  // files, printing, private windows, Firefox's Library window and sidebars,
+  // Reader View, Picture-in-Picture, screenshots, split view, page info,
+  // about:processes, the clear-history dialog and quitting (FireDog's window
+  // lives in the learning page's tab, so quitting only leaves it empty). The
+  // menu items of the same features are hidden in chromium.css; a shortcut
+  // left behind would still open Firefox's own UI.
+  removeUnusedKeys() {
+    for (const id of [
+      "key_openDownloads",
+      "openFileKb",
+      "key_savePage",
+      "printKb",
+      "key_privatebrowsing",
+      "showAllHistoryKb",
+      "manBookmarkKb",
+      "key_gotoHistory",
+      "viewBookmarksSidebarKb",
+      "viewBookmarksToolbarKb",
+      "viewGenaiChatSidebarKb",
+      "viewOpenTabsSidebarKb",
+      "toggleSidebarKb",
+      "key_toggleReaderMode",
+      "key_togglePictureInPicture",
+      "key_screenshot",
+      "key_addTabSplitView",
+      "key_separateTabSplitView",
+      "key_viewInfo",
+      "key_aboutProcesses",
+      "key_sanitize",
+      "key_quitApplication",
+    ]) {
+      document.getElementById(id)?.remove();
     }
-    const box = document.createXULElement("hbox");
-    box.id = "firedog-traffic-lights";
-    for (const kind of ["close", "minimize", "zoom"]) {
-      const button = document.createXULElement("toolbarbutton");
-      button.className = `firedog-traffic-light firedog-traffic-light-${kind}`;
-      if (kind === "close") {
-        button.addEventListener("command", () => window.close());
-      }
-      box.append(button);
-    }
-    toolbar.prepend(box);
   },
 
   // Chrome DevTools (devtools/DevToolsWindow.sys.mjs) on Chromium's keys:
@@ -103,7 +121,9 @@ var FireDogChromium = {
         button.id = "firedog-appmenu-devtools";
         button.className = "subviewbutton";
         document.l10n.setAttributes(button, "firedog-appmenu-devtools");
-        button.setAttribute("shortcut", ctrlKeys ? "Ctrl+Shift+I" : "⌥⌘I");
+        // FireDog's fonts (Liberation Sans, Noto Sans JP) have no ⌥, so the
+        // Option key is spelled out, as Firefox's own labels spell out Shift.
+        button.setAttribute("shortcut", ctrlKeys ? "Ctrl+Shift+I" : "Option+⌘I");
         button.addEventListener("command", () => {
           PanelUI.hide();
           DevTools.toggle(gBrowser.selectedTab);
@@ -195,20 +215,6 @@ var FireDogChromium = {
     );
   },
 
-  // Chromium shows the profile's avatar between the address bar and the app
-  // menu. FireDog has no accounts, so this is the signed-out avatar.
-  addProfileButton() {
-    const menuButton = document.getElementById("PanelUI-button");
-    if (!menuButton || document.getElementById("firedog-profile-button")) {
-      return;
-    }
-    const button = document.createXULElement("toolbarbutton");
-    button.id = "firedog-profile-button";
-    button.className = "toolbarbutton-1";
-    document.l10n.setAttributes(button, "firedog-profile-button");
-    menuButton.before(button);
-  },
-
   // FireDog's embedder opens the first page in a tab as soon as browser.xhtml
   // is parsed, before gBrowserInit registers XULBrowserWindow as a progress
   // listener. That page's location change then reaches nobody: the address
@@ -238,8 +244,6 @@ var FireDogChromium = {
     const selectors = [
       "#navigator-toolbox",
       "#TabsToolbar",
-      "#firedog-traffic-lights",
-      ".firedog-traffic-light-close",
       "#alltabs-button",
       "#alltabs-button .toolbarbutton-badge-stack",
       "#tabbrowser-tabs",
@@ -263,7 +267,6 @@ var FireDogChromium = {
       "#identity-box",
       "#urlbar-input",
       "#star-button-box",
-      "#firedog-profile-button",
       "#PanelUI-menu-button",
       "#browser",
     ];

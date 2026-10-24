@@ -17,7 +17,7 @@ WASI_FLAGS=(
   -pthread -msimd128
   -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS
   -D_WASI_EMULATED_GETPID
-  -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh
+  -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false
 )
 CXXFLAGS=(
   -std=gnu++20 -fno-exceptions -fno-rtti -fno-sized-deallocation -fno-aligned-new
