@@ -48,11 +48,12 @@ export CC="$WASI_SDK_PATH/bin/clang --target=wasm32-wasip1-threads --sysroot=$BR
 export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads --sysroot=$BROWSEROS_SYSROOT"
 export AR="$WASI_SDK_PATH/bin/llvm-ar"
 export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
-# setjmp/longjmp use the legacy wasm exception instructions, as BrowserOS's
-# clang.wasm does. The emulated mman/signal/clock/getpid headers are where
+# setjmp/longjmp use the wasm exception instructions with exnref (try_table),
+# as BrowserOS's libc and clang.wasm do: an engine rejects a module that mixes
+# them with the legacy try/catch/delegate ones. The emulated mman/signal/clock/getpid headers are where
 # wasi-libc keeps those POSIX declarations.
 WASI_EMULATION="-D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
-WASI_SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh"
+WASI_SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false"
 export CFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread -msimd128 $WASI_EMULATION $WASI_SJLJ -I$topsrcdir/modules/freetype2/include"
 # wasi-sdk 34 (clang 23) reports -Wunused-template under -Wall, which Gecko's
 # warnings-as-errors directories do not expect.
