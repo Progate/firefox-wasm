@@ -167,3 +167,13 @@ pref("browser.newtab.preload", false);
 pref("browser.places.interactions.enabled", false);
 // Telemetry on pages that show a CAPTCHA.
 pref("captchadetection.actor.enabled", false);
+// Firefox's in-product messages (ASRouter): onboarding, recommendations and
+// Mozilla's campaigns, which FireDog's enterprise policies already keep from
+// being shown (UserMessaging). With a provider enabled, ASRouter still loads
+// its messages and evaluates their targeting after startup, which starts the
+// profile backup service (off here, browser.backup.enabled) and failed on the
+// documents directory BrowserOS does not have.
+pref("browser.newtabpage.activity-stream.asrouter.providers.message-groups", "{\"id\":\"message-groups\",\"enabled\":false,\"type\":\"remote-settings\",\"collection\":\"message-groups\",\"updateCycleInMs\":3600000}");
+pref("browser.newtabpage.activity-stream.asrouter.providers.onboarding", "{\"id\":\"onboarding\",\"type\":\"local\",\"localProvider\":\"OnboardingMessageProvider\",\"enabled\":false,\"exclude\":[]}");
+pref("browser.newtabpage.activity-stream.asrouter.providers.cfr", "{\"id\":\"cfr\",\"enabled\":false,\"type\":\"remote-settings\",\"collection\":\"cfr\",\"updateCycleInMs\":3600000}");
+pref("browser.newtabpage.activity-stream.asrouter.providers.messaging-experiments", "{\"id\":\"messaging-experiments\",\"enabled\":false,\"type\":\"remote-experiments\",\"updateCycleInMs\":3600000}");
