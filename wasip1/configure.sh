@@ -2,7 +2,7 @@
 # Configure a pinned Gecko tree with the BrowserOS WASIp1 pthread sysroot.
 set -euo pipefail
 : "${WASI_SDK_PATH:?set WASI_SDK_PATH}"
-: "${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT to browser-libc buildSysroot output}"
+: "${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT to browser-system-libs buildSysroot output}"
 : "${GECKO_SOURCE:?set GECKO_SOURCE to the pinned Gecko source directory}"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 export MOZCONFIG="$HERE/mozconfig.full.wasip1"
