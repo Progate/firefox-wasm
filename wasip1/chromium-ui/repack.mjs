@@ -24,6 +24,8 @@
 //   - Firefox Home, the on-device machine learning libraries, their Remote
 //     Settings dumps and the non-English hyphenation patterns left out (see
 //     pruneUnusedFeatures),
+//   - the startup tasks of the features FireDog leaves out taken out of the
+//     component manifest (see UNUSED_STARTUP_TASKS),
 //   - Chromium's DevTools front-end as devtools-frontend.zip (see
 //     writeDevtoolsFrontend),
 //   - firedog-cache-key, a hash of both archives. The embedding empties a
@@ -497,6 +499,91 @@ const writeDevtoolsFrontend = async (output) => {
   zip(staging, join(output, 'devtools-frontend.zip'))
 }
 
+/**
+ * The startup tasks of features FireDog leaves out, as `<object>.<method>` of
+ * their `category browser-*` entries in browser/omni.ja's
+ * components/components.manifest (BrowserComponents.manifest in the source).
+ * BrowserGlue and the window call every entry of these categories while
+ * starting up, whether or not the feature is turned on, so each one imports its
+ * modules and some start services: in a wasm Gecko that interprets its
+ * JavaScript this was about 230 modules and seconds of the main thread in the
+ * first half minute after the window appeared. Their prefs and FireDog's
+ * enterprise policies already turn the features themselves off.
+ */
+const UNUSED_STARTUP_TASKS = [
+  // Studies and rollouts (DisableFirefoxStudies), Firefox accounts, private
+  // browsing (DisablePrivateBrowsing) and the prerendered Firefox Home, which
+  // is not packaged.
+  'Normandy.init',
+  'AccountsGlue.init',
+  'ResetPBMPanel.init',
+  'AboutHomeStartupCache.init',
+  // Enterprise data loss prevention agents, which need a native agent.
+  'ContentAnalysis.initialize',
+  // Machine learning features (browser.ml.enable) and the AI window.
+  'LinkPreview.init',
+  'GenAI.init',
+  'AIWindow.init',
+  'AIWindow.onFirstWindowReady',
+  // Page tools FireDog's prefs turn off: Reader View, whose handler threw on
+  // every location change without its button; Translations;
+  // Picture-in-Picture; tab notes; and the recommendations (CFR).
+  'AboutReaderParent.onLocationChange',
+  'TranslationsParent.onLocationChange',
+  'PictureInPicture.onLocationChange',
+  'TabNotesController.browserFirstWindowReady',
+  'TabNotesController.browserWindowDelayedStartup',
+  'CFRPageActions.onLocationChange',
+  // Feedback (DisableFeedbackCommands) and telemetry (DisableTelemetry).
+  'ReportBrokenSite.init',
+  'CaptchaDetectionPingUtils.init',
+  'StartupTelemetry.browserIdleStartup',
+  'StartupTelemetry.bestEffortIdleStartup',
+  'RustLogForwarder.init',
+  // Windows taskbar tabs.
+  'TaskbarTabsPageAction.init',
+  // Firefox Home's thumbnails and the profile switcher (browser.profiles.enabled).
+  // The profiles database also failed to open: it takes a lock the profile's
+  // file system cannot give.
+  'PageThumbs.init',
+  'ProfilesDatastoreService.init',
+  'SelectableProfileService.init',
+  // The DNS over HTTPS rollout (BrowserOS resolves names itself) and the VPN.
+  'DoHController.init',
+  'IPProtectionActivator.init',
+  // Lists Firefox downloads from Remote Settings (Mozilla's services), which
+  // FireDog does not reach: the add-on blocklist, CRLite and intermediates,
+  // Firefox Suggest, search result categorization, content relevancy and
+  // the colorway theme notice.
+  'Blocklist.loadBlocklistAsync',
+  'RemoteSecuritySettings.init',
+  'QuickSuggest.init',
+  'SERPCategorization.init',
+  'ContentRelevancyManager.init',
+  'ColorwayThemeMigration.maybeWarn',
+  // Unloading tabs on the OS's low-memory notifications, which BrowserOS
+  // does not send, and search terms kept in the address bar
+  // (browser.urlbar.showSearchTerms.enabled).
+  'TabUnloader.init',
+  'UrlbarSearchTermsPersistence.init',
+]
+
+/**
+ * Takes the startup tasks in UNUSED_STARTUP_TASKS out of browser/omni.ja's
+ * component manifest.
+ *
+ * @param {string} browser the extracted browser/omni.ja
+ */
+const pruneStartupTasks = (browser) => {
+  const manifest = join(browser, 'components/components.manifest')
+  const lines = readFileSync(manifest, 'utf8').split('\n')
+  const task = (line) => (line.startsWith('category browser-') ? line.trim().split(/\s+/).at(-1) : null)
+  const unused = new Set(UNUSED_STARTUP_TASKS)
+  const missing = UNUSED_STARTUP_TASKS.filter((name) => !lines.some((line) => task(line) === name))
+  if (missing.length) throw new Error(`${missing.join(', ')} not in components.manifest; update UNUSED_STARTUP_TASKS`)
+  writeFileSync(manifest, lines.filter((line) => !unused.has(task(line))).join('\n'))
+}
+
 const work = mkdtempSync(join(tmpdir(), 'firedog-repack-'))
 try {
   if (input !== output) {
@@ -537,6 +624,7 @@ try {
   emptyMozillaMarks(browser, 'browser/')
   pruneDevtoolsClient(browser, gre)
   pruneUnusedFeatures(browser, gre)
+  pruneStartupTasks(browser)
   zip(gre, join(output, 'omni.ja'))
   zip(browser, join(output, 'browser/omni.ja'))
 
