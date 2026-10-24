@@ -444,6 +444,22 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
 
   const char* profPath = getenv("PROFILE_DIR");
   if (!profPath || !*profPath) profPath = "/profile";
+  // Mount the persistent /profile provider backend (WasmFS) before anything
+  // touches the profile, so cookies/IndexedDB/places persist via the consumer's
+  // FsProvider. PrepareProfile and PrepareStartupCache below create directories
+  // in it; mounted after them, the mount would find profPath taken (EEXIST) and
+  // the profile would silently live in memory. Gated on the ENV flag index.ts
+  // sets when a profile provider exists (the JS Module.geckoProviders the hooks
+  // read isn't visible on this pthread, but ENV is). Backend + hooks:
+  // emsdk-patches/provider_backend.h + build/provider-fs.js.
+#if defined(__EMSCRIPTEN__)
+  if (getenv("GECKO_PROFILE_PROVIDER")) {
+    backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
+    int mrv = wasmfs_create_directory(profPath, 0777, pb);
+    printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
+    fflush(stdout);
+  }
+#endif
   PrepareProfile(profPath, greDir);
   PrepareStartupCache(profPath, greDir);
 
@@ -777,21 +793,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
 
     // Real sites need storage: cookies, IndexedDB, cache, places history all
     // require a profile directory. Register ProfD/ProfLD at PROFILE_DIR (WasmFS:
-    // a native-OPFS mount at /opfs/<path>, or a provider-backed /profile below).
+    // a native-OPFS mount at /opfs/<path>, or the provider-backed /profile mounted
+    // before NS_InitXPCOM).
     {
-      // Mount the persistent /profile provider backend (WasmFS) BEFORE ProfD setup,
-      // so cookies/IndexedDB/places persist via the consumer's FsProvider. Gated on
-      // the ENV flag index.ts sets when a profile provider exists (the JS
-      // Module.geckoProviders the hooks read isn't visible on this pthread, but ENV
-      // is). Backend + hooks: emsdk-patches/provider_backend.h + build/provider-fs.js.
-#if defined(__EMSCRIPTEN__)
-      if (getenv("GECKO_PROFILE_PROVIDER")) {
-        backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
-        int mrv = wasmfs_create_directory(profPath, 0777, pb);
-        printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
-        fflush(stdout);
-      }
-#endif
       nsCOMPtr<nsIFile> profDir;
       if (NS_SUCCEEDED(NS_NewNativeLocalFile(nsDependentCString(profPath),
                                              getter_AddRefs(profDir)))) {
