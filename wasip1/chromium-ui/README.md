@@ -37,8 +37,10 @@ from `./mach package`'s output.
     `firedog-chromium.js` turns the new tab page off and makes the homepage
     blank, which is what loads `blanktab.html`.
   - `settings.css` trims Settings to what a learner needs (search engine,
-    privacy, appearance, tabs and browsing, accessibility, languages);
-    `repack.mjs` adds it to `preferences.xhtml` (`patchSettings`).
+    privacy, appearance, tabs and browsing, accessibility, languages), down
+    to the groups and settings of Firefox's own features inside those panes;
+    `repack.mjs` adds it to `preferences.xhtml` and opens Settings on the
+    search pane (`patchSettings`).
   - `icons/` are Chromium's vector icons as SVG, written by
     `tools/generate-icons.mjs` from a Chromium checkout
     (`git clone --depth 1 --filter=blob:none --sparse --branch 158.0.8109.0 https://github.com/chromium/chromium.git`,
@@ -66,7 +68,8 @@ from `./mach package`'s output.
 - `repack.mjs` also packages Japanese next to en-US as a multi-locale build
   does: the Firefox Nightly language pack of the mozilla-central day the Gecko
   source branched from (pinned by URL and SHA-256), with FireDog's branding in
-  place of Nightly's.
+  place of Nightly's. Settings strings the language pack leaves in English or
+  gets wrong are replaced (`nameSettingsCategories`, `SETTINGS_STRINGS`).
 
 - `mozilla-marks.txt` lists the images in the archives that show Mozilla's
   and Firefox's trademarks (the Firefox logo, the fox and Kit illustrations,

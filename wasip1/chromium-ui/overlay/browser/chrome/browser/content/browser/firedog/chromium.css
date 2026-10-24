@@ -411,8 +411,7 @@
 #PersonalToolbar,
 #tracking-protection-icon-container,
 #notification-popup-box,
-#urlbar-searchmode-switcher,
-#searchmode-switcher-chicklet {
+#urlbar .searchmode-switcher {
   display: none !important;
 }
 
@@ -679,8 +678,9 @@
 #context_unloadTab,
 #context_askChat,
 #context_reopenInContainer,
-#select-all-tabs,
+#context_selectAllTabs,
 #tabContextMenu > [contexttype="fullscreen"],
+#tabContextMenu > .share-tab-url-item,
 #context_shareSelectedTabs,
 #context_shareSelectedTabsSeparator,
 #context_sendTabToDevice,

@@ -25,3 +25,48 @@
 #policies-container-content {
   display: none !important;
 }
+
+/* Inside the panes FireDog keeps, the groups and settings of Firefox's own
+   features. Privacy: Firefox's security status and warnings, Enhanced
+   Tracking Protection and its dashboard, Global Privacy Control, Relay and
+   Do Not Track, DNS over HTTPS and HTTPS-Only (the egress proxy carries every
+   connection), Safe Browsing (off in FireDog), Monitor's breach alerts and
+   Mozilla VPN. Tabs and browsing: vertical tabs and the sidebar, tab groups,
+   Picture-in-Picture, link previews, the recommendations group and the
+   performance settings, which FireDog sets itself. Search: suggestions in private windows,
+   which FireDog does not have. Appearance: the links to Firefox Home and to
+   the browser layout. Languages: Firefox Translations, whose models FireDog
+   does not ship, and the dictionaries on addons.mozilla.org. Permissions and
+   data: Mozilla's data collection, which FireDog turns off. */
+setting-group[groupid="securityPrivacyStatus"],
+setting-group[groupid="securityPrivacyWarnings"],
+setting-group[groupid="etpStatus"],
+setting-group[groupid="nonTechnicalPrivacy"],
+setting-group[groupid="nonTechnicalPrivacy2"],
+setting-group[groupid="dnsOverHttps"],
+setting-group[groupid="httpsOnly"],
+setting-group[groupid="browsingProtection"],
+setting-group[groupid="privacyPanel"],
+setting-group[groupid="ipprotection"],
+setting-group[groupid="browserLayout"],
+setting-group[groupid="performance"],
+setting-group[groupid="recommendations"],
+setting-group[groupid="translations"],
+setting-group[groupid="dataCollection"],
+#setting-control-tabGroupSuggestions,
+#setting-control-tabGroupDragToCreate,
+#setting-control-showTabsInTaskbar,
+#setting-control-pictureInPictureToggleEnabled,
+#setting-control-pictureInPictureEnableWhenSwitchingTabs,
+#setting-control-cfrRecommendations,
+#setting-control-cfrRecommendations-features,
+#setting-control-linkPreviewEnabled,
+#setting-control-linkPreviewKeyPoints,
+#setting-control-linkPreviewLongPress,
+#setting-control-showSearchSuggestionsPrivateWindowsCheckbox,
+#setting-control-urlBarSuggestionPermanentPBMessage,
+#setting-control-related-settings-home-link,
+#setting-control-related-settings-tabs-browsing-link,
+#setting-control-downloadDictionaries {
+  display: none !important;
+}

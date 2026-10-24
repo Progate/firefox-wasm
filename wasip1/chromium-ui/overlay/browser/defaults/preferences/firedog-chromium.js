@@ -132,3 +132,12 @@ pref("extensions.getAddons.showPane", false);
 pref("browser.settings-redesign.promo.dismissed", true);
 // The bookmark panel's import prompt and the bookmarks toolbar's import button.
 pref("browser.bookmarks.addedImportButton", false);
+// Profile backups and the profile switcher, which work on the profile Firefox
+// keeps on the learner's disk; FireDog's profile lives in BrowserOS. Off, they
+// also skip the shared profiles database Nimbus would otherwise open at startup.
+pref("browser.backup.enabled", false);
+pref("browser.profiles.enabled", false);
+pref("nimbus.profilesdatastoreservice.enabled", false);
+// Firefox Translations: its translation models come from Remote Settings,
+// which FireDog does not use, so the page translation offer could not work.
+pref("browser.translations.enable", false);
