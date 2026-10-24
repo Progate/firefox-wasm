@@ -395,10 +395,12 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
   nsIDocShell* ds = EnsureBrowser(width, height);
   if (!ds) return false;
 
-  // Chrome build: a non-chrome URL is a site to open in the current tab (the
+  // Chrome build: a non-chrome URL is a page to open in the current tab (the
   // chrome window itself stays at browser.xhtml). The chrome must already be up.
-  if (g_isChrome && strncmp(url, "chrome:", 7) != 0 &&
-      strncmp(url, "about:", 6) != 0) {
+  // about: pages are pages too: waited for below like browser.xhtml, a start URL
+  // such as about:preferences never replaced the chrome document, and the wait
+  // held back the first frame for minutes.
+  if (g_isChrome && strncmp(url, "chrome:", 7) != 0) {
     return xul_chrome_load_content(url, width, height, waitForLoad);
   }
 
