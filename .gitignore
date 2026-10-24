@@ -58,3 +58,5 @@ demo/chrome/public/chrome-assets.json
 
 # node deps (also as symlinks, e.g. a demo's node_modules)
 node_modules
+# FireDog's branding images are sources, copied into Gecko by configure.sh
+!wasip1/branding/**/*.png

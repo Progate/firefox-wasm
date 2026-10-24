@@ -1,0 +1,68 @@
+# Gecko software renderer on WASI preview1 + wasi-threads.
+# This port is separate from the Emscripten build; no JS glue is linked.
+mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-wasip1
+ac_add_options --enable-application=browser
+ac_add_options --with-branding=browser/branding/firedog
+ac_add_options --target=wasm32-unknown-wasi
+ac_add_options --enable-default-toolkit=cairo-headless
+ac_add_options --disable-jit
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+ac_add_options --disable-shared-memory
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --enable-optimize=-O2
+# wasip1/link.sh strips debug information from the program, and DWARF in
+# every object roughly doubles the size of the build directory.
+ac_add_options --disable-debug-symbols
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-webrtc
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --disable-ctypes
+# Release engineering options, as a Mozilla release build has them: among
+# others, gkrust (Gecko's Rust code, about 34 MB of the program) is built with
+# link-time optimization.
+ac_add_options --enable-release
+# Features a FireDog build leaves out, each a configure option Gecko has for
+# builds without it: JPEG XL images (Nightly-only) and the Web Speech API
+# (speech synthesis and recognition have no backend on WASI); printing (FireDog
+# runs inside a tab of a learning page, which has no printer, and
+# @progate/browser-gecko's PrintingEnabled policy hides it); parental controls
+# and Negotiate/Kerberos authentication, which have no operating system service
+# on BrowserOS to talk to.
+ac_add_options --disable-jxl
+ac_add_options --disable-webspeech
+ac_add_options --disable-printing
+ac_add_options --disable-parental-controls
+ac_add_options --disable-negotiateauth
+ac_add_options --disable-bootstrap
+# bindgen must parse wasi-sdk's libc++ with the same LLVM.
+ac_add_options --with-libclang-path=${LIBCLANG_PATH:-$WASI_SDK_PATH/lib}
+# The sysroot is part of the compiler command, not only CFLAGS and LDFLAGS:
+# configure's symbol checks link with the bare compiler, and would otherwise
+# test wasi-sdk's own wasi-libc (which has arc4random and no eventfd) instead
+# of BrowserOS's libc.
+export CC="$WASI_SDK_PATH/bin/clang --target=wasm32-wasip1-threads --sysroot=$BROWSEROS_SYSROOT"
+export CXX="$WASI_SDK_PATH/bin/clang++ --target=wasm32-wasip1-threads --sysroot=$BROWSEROS_SYSROOT"
+export AR="$WASI_SDK_PATH/bin/llvm-ar"
+export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
+# setjmp/longjmp use the wasm exception instructions with exnref (try_table),
+# as BrowserOS's libc and clang.wasm do: an engine rejects a module that mixes
+# them with the legacy try/catch/delegate ones. The emulated mman/signal/clock/getpid headers are where
+# wasi-libc keeps those POSIX declarations.
+WASI_EMULATION="-D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
+WASI_SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false"
+export CFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread -msimd128 $WASI_EMULATION $WASI_SJLJ -I$topsrcdir/modules/freetype2/include"
+# wasi-sdk 34 (clang 23) reports -Wunused-template under -Wall, which Gecko's
+# warnings-as-errors directories do not expect.
+export CXXFLAGS="$CFLAGS -Wno-unused-template"
+export BINDGEN_CFLAGS="--sysroot=$BROWSEROS_SYSROOT $WASI_EMULATION"
+# Gecko's libraries are relocatable objects (see MKSHLIB for WASI); libc and the
+# emulation libraries (-lsetjmp -lwasi-emulated-*) go into the final link only.
+export LDFLAGS="--sysroot=$BROWSEROS_SYSROOT -pthread"
+export RUSTFLAGS="-Ctarget-feature=+simd128,+atomics,+bulk-memory"
+HOST_CC=clang
+HOST_CXX=clang++
+export LLVM_OBJDUMP="$WASI_SDK_PATH/bin/llvm-objdump"

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Vendor the Rust standard library's dependency crates into
-firefox/third_party/rust/ for the wasm32-unknown-emscripten `-Z build-std` build.
+firefox/third_party/rust/ (or $GECKO_SOURCE/third_party/rust/ when GECKO_SOURCE
+is set) for the `-Z build-std` builds (wasm32-unknown-emscripten and
+wasm32-wasip1-threads).
 
 These crates (dlmalloc, wasi, unwinding, addr2line, hashbrown, the per-target
 backends, ...) are std's own dependencies, NOT Firefox source, so they're
@@ -22,7 +24,7 @@ DRY = "--dry-run" in sys.argv
 REPO = os.path.dirname(os.path.abspath(__file__))
 SYSROOT = subprocess.check_output(["rustc", "--print", "sysroot"]).decode().strip()
 LOCK = os.path.join(SYSROOT, "lib/rustlib/src/rust/library/Cargo.lock")
-VENDOR = os.path.join(REPO, "firefox/third_party/rust")
+VENDOR = os.path.join(os.environ.get("GECKO_SOURCE") or os.path.join(REPO, "firefox"), "third_party/rust")
 CACHES = glob.glob(os.path.expanduser("~/.cargo/registry/cache/*/"))
 
 if not os.path.isfile(LOCK):

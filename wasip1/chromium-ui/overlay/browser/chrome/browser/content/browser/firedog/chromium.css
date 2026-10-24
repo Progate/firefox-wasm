@@ -1,0 +1,789 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+/* FireDog's window drawn like Chromium's on macOS (light theme).
+ *
+ * Sizes come from Chromium 158's chrome/browser/ui/layout_constants.cc and
+ * chrome/browser/ui/tabs/tab_style.cc; colors and the window's own edges
+ * (the light inner border) are measured from Chromium.app.
+ * Lengths are CSS pixels; at GDK_SCALE=2 every 0.5px is one device pixel. */
+
+:root {
+  --fd-frame: #c4cbd9;
+  --fd-frame-edge-top: linear-gradient(#edf1f7 0 0.5px, #dce1eb 0.5px 1px, transparent 1px);
+  --fd-frame-edge-left: linear-gradient(to right, #d9e0ee 0 0.5px, #d1d8e6 0.5px 1px, transparent 1px);
+  --fd-frame-edge-right: linear-gradient(to left, #d8dfed 0 0.5px, #d0d7e4 0.5px 1px, transparent 1px);
+  --fd-toolbar: #ffffff;
+  --fd-separator: #e1e3e1;
+  --fd-omnibox: #eef2f9;
+  --fd-text: #1f1f1f;
+  --fd-text-secondary: #474747;
+  --fd-icon: #474747;
+  --fd-icon-disabled: #b9b9b9;
+  --fd-tab-search-background: #edf3fd;
+  --fd-tab-search-icon: #0b1d46;
+  --fd-favicon: #606368;
+  /* layout_constants.cc */
+  --fd-tab-strip-height: 40px;
+  --fd-tab-top: 6px;
+  --fd-tab-width: 232px;
+  --fd-tab-top-radius: 10px;
+  --fd-tab-bottom-radius: 12px;
+  --fd-tab-overlap: 18px;
+  --fd-toolbar-height: 46px;
+  --fd-toolbar-button: 34px;
+  --fd-location-bar-height: 34px;
+  --fd-toolbar-corner: 8px;
+
+  font: 13px / normal system-ui, "Noto Sans JP", sans-serif;
+  /* The window keeps its active look: the windowserver does not tell FireDog
+     when another window takes the focus, so Gecko would otherwise dim it. */
+  --inactive-titlebar-opacity: 1 !important;
+  --toolbox-background-color-inactive: var(--fd-frame) !important;
+  --toolbox-text-color-inactive: var(--fd-text) !important;
+}
+
+/* The window */
+
+#navigator-toolbox {
+  /* macOS draws a light inner edge around the window; it shows over the frame,
+     including where the toolbar's top corners are cut away. Each edge is a
+     1px strip: a gradient layer as large as the toolbox makes the software
+     renderer shade every pixel of it on each paint (most of an idle frame). */
+  background:
+    var(--fd-frame-edge-top) top / 100% 1px no-repeat,
+    var(--fd-frame-edge-left) left / 1px 100% no-repeat,
+    var(--fd-frame-edge-right) right / 1px 100% no-repeat,
+    var(--fd-frame) !important;
+  border-bottom: 1px solid var(--fd-separator) !important;
+  /* Chromium paints no shadow under the toolbar */
+  box-shadow: none !important;
+  color: var(--fd-text) !important;
+}
+
+#titlebar,
+#TabsToolbar {
+  appearance: none !important;
+  background: transparent !important;
+  color: var(--fd-text) !important;
+}
+
+#TabsToolbar {
+  height: var(--fd-tab-strip-height) !important;
+  min-height: var(--fd-tab-strip-height) !important;
+  max-height: var(--fd-tab-strip-height) !important;
+  padding: 0 !important;
+  align-items: stretch !important;
+}
+
+#TabsToolbar > .titlebar-spacer,
+#TabsToolbar .titlebar-buttonbox-container,
+#TabsToolbar .private-browsing-indicator-with-label,
+#TabsToolbar #firefox-view-button,
+#TabsToolbar #new-tab-button,
+#TabsToolbar toolbartabstop,
+#ai-window-toggle,
+.content-analysis-indicator {
+  display: none !important;
+}
+
+#TabsToolbar > .toolbar-items {
+  align-items: stretch !important;
+  padding: 0 !important;
+}
+
+#TabsToolbar-customization-target {
+  align-items: stretch !important;
+  min-height: 0 !important;
+}
+
+/* Tab search: a 28px rounded square at the start of the tab strip
+   (TabStripComboButton). FireDog's window has no traffic lights before it, so
+   it keeps only the strip's 8px inset. */
+
+#TabsToolbar #alltabs-button {
+  appearance: none !important;
+  flex: none;
+  margin: var(--fd-tab-top) 0 0 8px !important;
+  padding: 0 !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 10px !important;
+  background: var(--fd-tab-search-background) !important;
+  color: var(--fd-tab-search-icon) !important;
+  align-self: flex-start;
+}
+
+#TabsToolbar #alltabs-button > .toolbarbutton-badge-stack {
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  background: none !important;
+}
+
+#TabsToolbar #alltabs-button .toolbarbutton-icon {
+  list-style-image: url("chrome://browser/content/firedog/icons/tab-search.svg") !important;
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  -moz-context-properties: fill;
+  fill: currentColor !important;
+  background: none !important;
+}
+
+/* Tabs */
+
+#tabbrowser-tabs {
+  --tab-min-height: 34px !important;
+  --tab-min-width: 56px !important;
+  --tab-block-margin: 0 !important;
+  --tab-border-radius: var(--fd-tab-top-radius) !important;
+  --tab-shadow-max-size: 0px !important;
+  min-height: var(--fd-tab-strip-height) !important;
+  padding-inline: 0 !important;
+  margin-inline-start: -6px !important;
+  border: none !important;
+  align-items: stretch !important;
+}
+
+#tabbrowser-arrowscrollbox {
+  margin: 0 !important;
+}
+
+#tabbrowser-arrowscrollbox,
+#tabbrowser-arrowscrollbox::part(scrollbox),
+#tabbrowser-arrowscrollbox::part(items-wrapper) {
+  min-height: var(--fd-tab-strip-height) !important;
+  align-items: stretch !important;
+  padding: 0 !important;
+}
+
+#tabbrowser-arrowscrollbox::part(scrollbutton-up),
+#tabbrowser-arrowscrollbox::part(scrollbutton-down),
+#tabbrowser-arrowscrollbox::part(overflow-start-indicator),
+#tabbrowser-arrowscrollbox::part(overflow-end-indicator) {
+  display: none !important;
+}
+
+.tabbrowser-tab {
+  /* The tab's box includes both bottom flares (12px each); neighbors overlap
+     by tab_style.cc's GetTabOverlap(). */
+  max-width: calc(var(--fd-tab-width) + 2 * var(--fd-tab-bottom-radius)) !important;
+  min-height: var(--fd-tab-strip-height) !important;
+  padding: var(--fd-tab-top) var(--fd-tab-bottom-radius) 0 !important;
+  margin-inline-end: calc(-1 * var(--fd-tab-overlap)) !important;
+  align-items: stretch !important;
+  color: var(--fd-text) !important;
+}
+
+.tabbrowser-tab:not([pinned]) {
+  flex: 100 100 calc(var(--fd-tab-width) + 2 * var(--fd-tab-bottom-radius)) !important;
+}
+
+.tabbrowser-tab > .tab-stack {
+  position: relative;
+}
+
+.tab-background {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: var(--fd-tab-top-radius) var(--fd-tab-top-radius) 0 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background: transparent !important;
+}
+
+.tabbrowser-tab[selected] .tab-background,
+.tabbrowser-tab[multiselected] .tab-background {
+  background: var(--fd-toolbar) !important;
+}
+
+/* The selected tab's bottom corners flare out into the toolbar. */
+.tabbrowser-tab[selected] .tab-background::before,
+.tabbrowser-tab[selected] .tab-background::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: var(--fd-tab-bottom-radius);
+  height: var(--fd-tab-bottom-radius);
+}
+
+.tabbrowser-tab[selected] .tab-background::before {
+  left: calc(-1 * var(--fd-tab-bottom-radius));
+  background: radial-gradient(circle at 0 0, transparent calc(var(--fd-tab-bottom-radius) - 0.25px), var(--fd-toolbar) var(--fd-tab-bottom-radius));
+}
+
+.tabbrowser-tab[selected] .tab-background::after {
+  right: calc(-1 * var(--fd-tab-bottom-radius));
+  background: radial-gradient(circle at 100% 0, transparent calc(var(--fd-tab-bottom-radius) - 0.25px), var(--fd-toolbar) var(--fd-tab-bottom-radius));
+}
+
+/* Chromium centers the favicon and title 20px from the top of the strip:
+   the 6px over the tab plus half of the 28px above the toolbar's 6px. */
+.tab-content {
+  padding: 0 8px 6px !important;
+  height: 34px;
+  align-items: center !important;
+}
+
+.tab-icon-stack {
+  width: 16px;
+  height: 16px;
+}
+
+.tab-icon-image {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.tab-icon-image:not([src]),
+.tab-icon-image[src="chrome://global/skin/icons/defaultFavicon.svg"] {
+  content: url("chrome://browser/content/firedog/icons/globe.svg") !important;
+  -moz-context-properties: fill;
+  fill: var(--fd-favicon) !important;
+  display: block !important;
+}
+
+.tab-label-container {
+  margin-inline-start: 8px !important;
+  height: auto !important;
+}
+
+.tab-label {
+  font: 12px / 16px system-ui, "Noto Sans JP", sans-serif !important;
+  color: var(--fd-text) !important;
+  margin: 0 !important;
+}
+
+.tab-secondary-label {
+  display: none !important;
+}
+
+/* kTabCloseButtonSize is 14px with the rounded icons */
+.tab-close-button {
+  appearance: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  padding: 0 !important;
+  margin: 0 0 0 4px !important;
+  border-radius: 50% !important;
+  list-style-image: url("chrome://browser/content/firedog/icons/tab-close.svg") !important;
+  -moz-context-properties: fill;
+  fill: var(--fd-text) !important;
+  fill-opacity: 1 !important;
+  background: none !important;
+  opacity: 1 !important;
+  display: flex !important;
+}
+
+.tab-close-button > .toolbarbutton-icon {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* New tab: a 28px button after the last tab (HorizontalTabStripRegionView). */
+
+#tabs-newtab-button {
+  appearance: none !important;
+  align-self: flex-start;
+  margin: var(--fd-tab-top) 0 0 calc(var(--fd-tab-overlap) - 6px) !important;
+  padding: 0 !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 50% !important;
+  color: var(--fd-icon) !important;
+  background: none !important;
+}
+
+#tabs-newtab-button > .toolbarbutton-icon {
+  list-style-image: url("chrome://browser/content/firedog/icons/new-tab.svg") !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 6px !important;
+  -moz-context-properties: fill;
+  fill: currentColor !important;
+  background: none !important;
+  border-radius: 50% !important;
+}
+
+/* The toolbar */
+
+#nav-bar {
+  appearance: none !important;
+  background: var(--fd-toolbar) !important;
+  height: var(--fd-toolbar-height) !important;
+  min-height: var(--fd-toolbar-height) !important;
+  padding: 0 6px !important;
+  border: none !important;
+  box-shadow: none !important;
+  /* Chromium rounds the toolbar's top corners where it meets the frame. */
+  border-radius: var(--fd-toolbar-corner) var(--fd-toolbar-corner) 0 0 !important;
+  color: var(--fd-icon) !important;
+}
+
+#nav-bar-customization-target {
+  align-items: center !important;
+  height: var(--fd-toolbar-height);
+}
+
+#nav-bar .toolbarbutton-1 {
+  appearance: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: var(--fd-toolbar-button) !important;
+  height: var(--fd-toolbar-button) !important;
+  min-width: var(--fd-toolbar-button) !important;
+  justify-content: center;
+  align-items: center;
+  color: var(--fd-icon) !important;
+  fill: var(--fd-icon) !important;
+}
+
+#nav-bar .toolbarbutton-1 > .toolbarbutton-icon,
+#nav-bar .toolbarbutton-1 > .toolbarbutton-badge-stack {
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: none !important;
+  -moz-context-properties: fill, fill-opacity;
+  fill: currentColor !important;
+  fill-opacity: 1 !important;
+}
+
+#nav-bar .toolbarbutton-1[disabled] {
+  color: var(--fd-icon-disabled) !important;
+  opacity: 1 !important;
+}
+
+#nav-bar .toolbarbutton-1[disabled] > .toolbarbutton-icon {
+  opacity: 1 !important;
+}
+
+#back-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/back.svg") !important;
+}
+
+#forward-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/forward.svg") !important;
+}
+
+/* kToolbarIconDefaultMargin: 2px between the toolbar's buttons */
+#nav-bar #back-button,
+#nav-bar #forward-button {
+  margin-inline-end: 2px !important;
+}
+
+#reload-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/reload.svg") !important;
+}
+
+#stop-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/stop.svg") !important;
+}
+
+#stop-reload-button {
+  margin-inline-end: 9px !important;
+}
+
+#nav-bar #back-button > .toolbarbutton-icon,
+#nav-bar #forward-button > .toolbarbutton-icon {
+  border-radius: 50% !important;
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+}
+
+#sidebar-button,
+#unified-extensions-button,
+#fxa-toolbar-menu-button,
+#downloads-button,
+#home-button,
+#nav-bar-overflow-button,
+#vertical-spacer,
+#nav-bar toolbarspring,
+#nav-bar toolbartabstop,
+#PersonalToolbar,
+#tracking-protection-icon-container,
+#notification-popup-box,
+#urlbar .searchmode-switcher {
+  display: none !important;
+}
+
+#PanelUI-button {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  align-items: center !important;
+  height: var(--fd-toolbar-height);
+}
+
+#PanelUI-menu-button {
+  align-self: center !important;
+}
+
+#PanelUI-menu-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/menu.svg") !important;
+}
+
+#PanelUI-menu-button .toolbarbutton-badge-stack,
+#PanelUI-menu-button .toolbarbutton-icon {
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* The location bar (omnibox): a 34px pill, 9px from its neighbors. */
+
+#urlbar-container {
+  --urlbar-container-height: var(--fd-location-bar-height) !important;
+  --urlbar-min-height: var(--fd-location-bar-height) !important;
+  --urlbar-height: var(--fd-location-bar-height) !important;
+  --urlbar-toolbar-height: var(--fd-location-bar-height) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: var(--fd-location-bar-height) !important;
+  min-height: var(--fd-location-bar-height) !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+#urlbar {
+  --urlbar-height: var(--fd-location-bar-height) !important;
+  --urlbar-toolbar-height: var(--fd-location-bar-height) !important;
+  --urlbar-margin-inline: 0px !important;
+  min-height: var(--fd-location-bar-height) !important;
+  font: 14px / normal system-ui, "Noto Sans JP", sans-serif !important;
+  color: var(--fd-text) !important;
+}
+
+.urlbar-background {
+  background: var(--fd-omnibox) !important;
+  border: none !important;
+  border-radius: calc(var(--fd-location-bar-height) / 2) !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.urlbar-input-container {
+  height: var(--fd-location-bar-height) !important;
+  padding: 0 !important;
+  border: none !important;
+}
+
+/* The page info chip (LocationIconView): a 24px white circle 5px into the
+   omnibox with a 16px icon. Firefox's trust panel button takes its place and
+   shows the info icon Chromium shows on http pages and localhost, whatever
+   Firefox's own classification of the connection (it calls localhost secure). */
+#trust-icon-container {
+  appearance: none !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  margin: 0 8.5px 0 5px !important;
+  padding: 4px !important;
+  border-radius: 50% !important;
+  background: #ffffff !important;
+  color: var(--fd-text) !important;
+  border: none !important;
+  box-shadow: none !important;
+  align-self: center !important;
+  justify-content: center;
+  list-style-image: url("chrome://browser/content/firedog/icons/info.svg") !important;
+}
+
+#trust-icon {
+  width: 16px !important;
+  height: 16px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  -moz-context-properties: fill;
+  fill: currentColor !important;
+  fill-opacity: 1 !important;
+}
+
+#trust-label {
+  display: none !important;
+}
+
+#identity-box {
+  margin: 0 !important;
+  padding: 0 !important;
+  align-self: center !important;
+}
+
+#identity-icon-label,
+#identity-permission-box,
+#remote-control-box,
+#blocked-permissions-container {
+  display: none !important;
+}
+
+#urlbar-input {
+  font: 14px / normal system-ui, "Noto Sans JP", sans-serif !important;
+  color: var(--fd-text) !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+#urlbar-input::placeholder {
+  color: var(--fd-text-secondary) !important;
+  opacity: 1 !important;
+}
+
+/* The bookmark star: a 20px icon 10px from the omnibox's end. */
+#page-action-buttons {
+  margin-inline-end: 10px !important;
+}
+
+#page-action-buttons > :not(#star-button-box) {
+  display: none !important;
+}
+
+#star-button-box {
+  appearance: none !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  margin: 0 !important;
+  border-radius: 50% !important;
+  background: none !important;
+  display: flex !important;
+}
+
+#star-button {
+  list-style-image: url("chrome://browser/content/firedog/icons/star.svg") !important;
+  width: 20px !important;
+  height: 20px !important;
+  -moz-context-properties: fill;
+  fill: var(--fd-icon) !important;
+  fill-opacity: 1 !important;
+}
+
+#star-button[starred] {
+  list-style-image: url("chrome://browser/content/firedog/icons/star-filled.svg") !important;
+}
+
+/* The content area starts right under the toolbar's 1px separator. */
+#browser,
+#tabbrowser-tabbox,
+#tabbrowser-tabpanels {
+  background: #ffffff !important;
+  border: none !important;
+}
+
+#tabbrowser-tabs::before,
+#tabbrowser-tabs::after {
+  display: none !important;
+}
+
+/* DevTools docked in a tab (devtools/DevToolsWindow.sys.mjs). The front-end
+   covers the tab's content area and places the inspected page within it, as
+   Chrome's docked DevTools do. Both live in the tab's .browserStack, a grid
+   whose children share one cell. */
+.browserStack > browser.firedog-devtools-inspected {
+  justify-self: start;
+  align-self: start;
+}
+
+/* The ways into what FireDog leaves out. FireDog runs inside a tab of a
+   learning page, as the browser a learner checks their site in, so it keeps
+   what Chrome's menus keep for browsing and leaves out the rest: accounts and
+   sync, private windows, passwords, downloads and saving files, printing,
+   Settings, toolbar customization, Firefox's Library window, sidebars and
+   Firefox View, container tabs, tab groups and split view, Reader View,
+   Picture-in-Picture, screenshots, translations, sending tabs to devices,
+   help and feedback, and quitting. Extensions stay. Most of these are also
+   turned off by their prefs (firedog-chromium.js) or by @progate/browser-gecko's
+   enterprise policies; hiding the items keeps an empty or disabled item from
+   showing where a pref leaves one behind. chromium.js removes their keyboard
+   shortcuts. */
+
+/* App menu: Chrome's new tab, new window, bookmarks, history, extensions,
+   find, zoom, Settings and More tools (Developer Tools). */
+#appMenu-fxa-status2,
+#appMenu-fxa-separator,
+#appMenu-profiles-button,
+#appMenu-empty-profiles-button,
+#appMenu-new-private-window-button2,
+#appMenu-new-ai-window-button,
+#appMenu-new-classic-window-button,
+#appMenu-chats-history-button,
+#appMenu-tab-groups-button,
+#appMenu-downloads-button,
+#appMenu-passwords-button,
+#appMenu-print-button2,
+#appMenu-save-file-button2,
+#appMenu-translate-button,
+#appMenu-report-broken-site-button,
+#appMenu-help-button2,
+#appMenu-quit-button2,
+#appMenu-restoreSession,
+#appmenu-moreTools-button,
+#appmenu-abouttranslations-button,
+#appmenu-abouttranslations-button + toolbarseparator,
+#appmenu-developer-tools,
+#appmenu-developer-tools-view > :not(#firedog-appmenu-devtools),
+#appMenu-restoreSession + toolbarseparator,
+#appMenuClearRecentHistory,
+#appMenu_historyMenu + toolbarseparator,
+#PanelUI-historyMore,
+#panelMenu_viewBookmarksToolbar,
+#panelMenu_showAllBookmarks,
+#appMenu-viewCache {
+  display: none !important;
+}
+
+/* The separator before Quit, which would otherwise end the menu. */
+#appMenu-help-button2 + toolbarseparator {
+  display: none !important;
+}
+
+/* Tab search (the start of the tab strip): the tabs of this window, as
+   Chrome lists them, without Firefox's search, duplicate, container, synced
+   and group entries. */
+#allTabsMenu-searchTabs,
+#allTabsMenu-syncedTabs,
+#allTabsMenu-closeDuplicateTabs,
+#allTabsMenu-containerTabsButton,
+#allTabsMenu-containerTabsButton + toolbarseparator,
+#allTabsMenu-groupsView,
+#allTabsMenu-groupsSeparator,
+#allTabsMenu-hiddenTabsButton,
+#allTabsMenu-hiddenTabsSeparator,
+#allTabsMenu-allTabsView [data-l10n-id="all-tabs-menu-current-window-header"] {
+  display: none !important;
+}
+
+/* A tab's context menu: Chrome's new tab to the right, reload, duplicate,
+   pin, mute, bookmark, move and close items. */
+#context_moveTabToNewGroup,
+#context_moveSplitViewToNewGroup,
+#context_moveTabToGroup,
+#open-tab-groups-separator-upper,
+#open-tab-groups-separator-lower,
+#context_moveTabToSavedGroup,
+#context_ungroupTab,
+#context_ungroupSplitView,
+#context_moveTabToSplitView,
+#context_separateSplitView,
+#context_reverseSplitView,
+#context_unloadTab,
+#context_askChat,
+#context_reopenInContainer,
+#context_selectAllTabs,
+#tabContextMenu > [contexttype="fullscreen"],
+#tabContextMenu > .share-tab-url-item,
+#context_shareSelectedTabs,
+#context_shareSelectedTabsSeparator,
+#context_sendTabToDevice,
+#context_sendTabToDeviceSeparator,
+#context_closeDuplicateTabs {
+  display: none !important;
+}
+
+/* The tab strip's and the toolbar's context menu: new tab, reload, bookmark
+   and reopen closed tabs. Firefox lists its toolbars here (menu bar,
+   bookmarks toolbar) and offers vertical tabs, the sidebar and customizing;
+   an extension's button keeps its manage and remove items. */
+#toolbar-context-report-extension[hidden] + menuseparator,
+#toolbar-context-selectAllTabs,
+#tabbarItemsMenuSeparator,
+#toolbar-context-customize-sidebar,
+#toolbar-context-toggle-vertical-tabs,
+#sidebarRevampSeparator,
+#toolbar-context-move-to-panel,
+#toolbar-context-autohide-downloads-button,
+#toolbar-context-always-open-downloads-panel,
+#toolbarDownloadsAnchorMenuSeparator,
+#toolbar-context-always-show-extensions-button,
+#toolbar-context-remove-from-toolbar,
+#toolbar-context-pin-to-toolbar,
+#customizationMenuSeparator,
+#viewToolbarsMenuSeparator,
+#toolbar-context-menu > [toolbarId],
+#toolbar-context-customize,
+#toolbar-context-menu > [contexttype="fullscreen"],
+#toolbar-context-full-screen-autohide,
+#toolbar-context-full-screen-exit {
+  display: none !important;
+}
+
+/* The page's context menu: Chrome's navigation, link, image, media, editing,
+   search, view source and Inspect items. */
+#context-openlinkincontainertab,
+#context-openlinkinsplitview,
+#context-openlinkinusercontext-menu,
+#context-openlinkprivate,
+#context-openlinksmartwindow,
+#context-previewlink,
+#context-savelink,
+#context-stripOnShareLink,
+#context-sendlinktodevice,
+#context-sep-sendlinktodevice,
+#context-video-pictureinpicture,
+#context-saveimage,
+#context-video-saveimage,
+#context-savevideo,
+#context-saveaudio,
+#context-sendimage,
+#context-sendvideo,
+#context-sendaudio,
+#context-imagetext,
+#context-viewimageinfo,
+#context-visual-search,
+#context-sep-setbackground,
+#context-setDesktopBackground,
+#context-sep-sharing,
+#context-savepage,
+#fill-login,
+#fill-login-generated-password,
+#use-relay-mask,
+#manage-saved-logins,
+#passwordmgr-items-separator,
+#context-print-selection,
+#context-take-screenshot,
+#context-sep-screenshots,
+#context-add-engine,
+#context-searchselect-private,
+#context-translate-selection,
+#context-ask-chat,
+#context-saveframe,
+#context-printframe,
+#print-frame-sep,
+#context-viewframeinfo,
+#context-frameOsPid,
+#context-inspect-a11y,
+#context-sep-sendpagetodevice,
+#context-sendpagetodevice,
+#context-media-eme-separator,
+#context-media-eme-learnmore {
+  display: none !important;
+}
+
+/* The site information panel: the connection and the site's data, as in
+   Chrome's, without Firefox's tracking protection (its banner, toggle, blocked
+   trackers and the link to its settings) and Firefox Monitor's breach alerts.
+   The bookmark panel does not offer to turn itself off. */
+#trustpanel-graphic-section,
+#trustpanel-toggle-section,
+#trustpanel-blocker-section,
+#trustpanel-smartblock-section,
+#trustpanel-breach-alert-section,
+#trustpanel-privacy-link,
+#editBookmarkPanel_showForNewBookmarks {
+  display: none !important;
+}
+
+/* The address bar's dropdown: links open in a tab or a window, as in Chrome. */
+#urlbarView-context-menu-open-in-container-tab,
+#urlbarView-context-menu-open-in-private-window {
+  display: none !important;
+}
