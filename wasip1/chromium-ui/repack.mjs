@@ -235,6 +235,11 @@ const patchAboutAddons = (gre) => {
  *   homepage show FireDog's blank page. It is also dropped from
  *   built_in_addons.json, so the add-on manager does not look for it, and
  *   gecko.patch makes about:home and Activity Stream do without it.
+ * - The built-in add-ons of other features FireDog turns off, which the add-on
+ *   manager otherwise starts in every launch: the VPN's activator,
+ *   Picture-in-Picture's (media.videocontrols.picture-in-picture.enabled) and
+ *   the search detection telemetry's. Form autofill and the web compatibility
+ *   fixes stay.
  * - The libraries of on-device machine learning (transformers.js, ONNX
  *   Runtime, wllama, the OpenAI client; about 4 MB), which the inference
  *   process imports when a feature runs a model. `browser.ml.enable` is off.
@@ -255,10 +260,19 @@ const pruneUnusedFeatures = (browser, gre) => {
     rmSync(path, {recursive: true})
   }
 
-  remove(join(browser, 'chrome/browser/builtin-addons/newtab'))
+  const unusedAddons = {
+    'newtab@mozilla.org': 'newtab',
+    'ipp-activator@mozilla.com': 'ipp-activator',
+    'pictureinpicture@mozilla.org': 'pictureinpicture',
+    'addons-search-detection@mozilla.com': 'search-detection',
+  }
   const builtIns = join(browser, 'chrome/browser/content/browser/built_in_addons.json')
   const list = JSON.parse(readFileSync(builtIns, 'utf8'))
-  list.builtins = list.builtins.filter((addon) => addon.addon_id !== 'newtab@mozilla.org')
+  for (const [id, directory] of Object.entries(unusedAddons)) {
+    if (!list.builtins.some((addon) => addon.addon_id === id)) throw new Error(`${id} is not a built-in add-on of this Gecko; update pruneUnusedFeatures`)
+    remove(join(browser, 'chrome/browser/builtin-addons', directory))
+  }
+  list.builtins = list.builtins.filter((addon) => !(addon.addon_id in unusedAddons))
   writeFileSync(builtIns, JSON.stringify(list))
 
   const ml = join(gre, 'chrome/toolkit/content/global/ml')

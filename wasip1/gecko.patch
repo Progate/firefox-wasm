@@ -540,6 +540,31 @@ index 586893df59..7342960b64 100644
  macro_rules! ft_dyn_fn {
      ($($proto:tt)+) => { extern "C" { fn $($proto)+; } }
  }
+diff --git a/intl/strres/nsStringBundle.cpp b/intl/strres/nsStringBundle.cpp
+--- a/intl/strres/nsStringBundle.cpp
++++ b/intl/strres/nsStringBundle.cpp
+@@ -31,6 +31,7 @@
+ #include "mozilla/Try.h"
+ #include "mozilla/dom/ContentParent.h"
+ #include "mozilla/dom/ipc/SharedStringMap.h"
++#include "nsIXULRuntime.h"
+ 
+ // for async loading
+ #ifdef ASYNC_LOADING
+@@ -843,7 +844,12 @@
+     shared = do_QueryObject(cacheEntry->mBundle);
+   } else {
+     nsCOMPtr<nsIStringBundle> bundle;
+-    bool isContent = IsContentBundle(key);
++    // Content processes read these bundles from shared memory the parent
++    // fills. Without content processes (e10s off, as in an embedding that
++    // runs everything in one process) that would only cost a shared memory
++    // object per bundle, so the parent loads them as ordinary bundles.
++    bool isContent = IsContentBundle(key) &&
++                     (!XRE_IsParentProcess() || BrowserTabsRemoteAutostart());
+     if (!isContent || !XRE_IsParentProcess()) {
+       bundle = MakeBundle<nsStringBundle>(aURLSpec);
+     }
 diff --git a/ipc/chromium/moz.build b/ipc/chromium/moz.build
 index b17bba0adb..9931f1aef1 100644
 --- a/ipc/chromium/moz.build
