@@ -135,6 +135,68 @@ static bool CopyWholeFile(const nsACString& aFrom, const nsACString& aTo) {
   return ok;
 }
 
+// Copies the files under aFrom that aTo does not have, keeping the directory
+// tree. Existing files are left alone. Returns false if a copy failed.
+static bool CopyMissingFiles(const nsACString& aFrom, const nsACString& aTo) {
+  DIR* entries = opendir(PromiseFlatCString(aFrom).get());
+  if (!entries) return false;
+  mkdir(PromiseFlatCString(aTo).get(), 0755);
+  bool ok = true;
+  while (struct dirent* entry = readdir(entries)) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+        !strcmp(entry->d_name, "firedog-cache-key")) {
+      continue;
+    }
+    const nsPrintfCString from("%s/%s", PromiseFlatCString(aFrom).get(), entry->d_name);
+    const nsPrintfCString to("%s/%s", PromiseFlatCString(aTo).get(), entry->d_name);
+    struct stat found;
+    if (stat(from.get(), &found) != 0) {
+      ok = false;
+    } else if (S_ISDIR(found.st_mode)) {
+      ok &= CopyMissingFiles(from, to);
+    } else if (access(to.get(), F_OK) != 0) {
+      ok &= CopyWholeFile(from, to);
+    }
+  }
+  closedir(entries);
+  return ok;
+}
+
+// Starts a new profile from $GRE/profile when that was written by this very
+// build (see StartupCacheKey). The packaging runs FireDog once in an empty
+// profile and ships what Firefox created in it: the empty databases (NSS's
+// cert9.db and key4.db, cookies, permissions, IndexedDB), the add-on manager's
+// list of the built-in add-ons and the search engine settings. Creating these
+// takes a new profile's first launch most of a second more than later ones.
+// Nothing in them belongs to a learner: the databases hold no records and NSS
+// no private keys, and the per-profile keys NSS and Firefox make are made when
+// first needed. Only a profile that has nothing yet gets them, so a learner's
+// own profile is never touched; times.json, the creation date, is not shipped.
+static void PrepareProfile(const char* aProfileDir, const char* aGreDir) {
+  if (DIR* entries = opendir(aProfileDir)) {
+    bool empty = true;
+    while (struct dirent* entry = readdir(entries)) {
+      if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") &&
+          strcmp(entry->d_name, "startupCache")) {
+        empty = false;
+      }
+    }
+    closedir(entries);
+    if (!empty) return;
+  }
+  const nsPrintfCString seed("%s/profile", aGreDir);
+  if (!ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get()))
+           .Equals(StartupCacheKey(aGreDir))) {
+    return;
+  }
+  nsAutoCString dir(aProfileDir);
+  for (uint32_t slash = 1; slash < dir.Length(); slash++) {
+    if (dir[slash] == '/') mkdir(nsAutoCString(Substring(dir, 0, slash)).get(), 0755);
+  }
+  printf("xul_init: new profile %s from the GRE\n",
+         CopyMissingFiles(seed, dir) ? "started" : "partly started");
+}
+
 // Readies <profile>/startupCache for this build before NS_InitXPCOM (StartupCache
 // reads its file during XPCOM init). A cache written by another build (see
 // StartupCacheKey) is removed. A new or emptied one is filled from
@@ -382,6 +444,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
 
   const char* profPath = getenv("PROFILE_DIR");
   if (!profPath || !*profPath) profPath = "/profile";
+  PrepareProfile(profPath, greDir);
   PrepareStartupCache(profPath, greDir);
 
   printf("xul_init: calling NS_InitXPCOM (binDir=%s)...\n", binPath.get());
