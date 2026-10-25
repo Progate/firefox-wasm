@@ -28,6 +28,8 @@
 //     component manifest (see UNUSED_STARTUP_TASKS),
 //   - Chromium's DevTools front-end as devtools-frontend.zip (see
 //     writeDevtoolsFrontend),
+//   - application.ini's BuildID set to the time of the repack (see
+//     stampBuildId),
 //   - firedog-cache-key, a hash of both archives. The embedding empties a
 //     profile's startup caches when it differs from the key they were written
 //     with (embed-init.cpp PrepareStartupCache), as XRE does on a new build:
@@ -583,6 +585,73 @@ const UNUSED_STARTUP_TASKS = [
 ]
 
 /**
+ * Sets application.ini's [App] BuildID to the time of this repack (UTC, in
+ * Gecko's YYYYMMDDhhmmss form). The embedding (embed-init.cpp xul_init) uses the
+ * later of it and the build ID `mach build` compiled in, because the add-on
+ * manager rescans the built-in add-ons only when the build ID changes, and a
+ * repack alone adds or removes them (pruneUnusedFeatures). The note Firefox's
+ * packaging puts at the top, that the file is not used, is replaced, since
+ * FireDog reads it.
+ *
+ * @param {string} output the repacked GRE
+ */
+const stampBuildId = (output) => {
+  const path = join(output, 'application.ini')
+  const buildId = new Date().toISOString().replace(/\D/g, '').slice(0, 14)
+  const lines = readFileSync(path, 'utf8').split('\n')
+  const app = lines.indexOf('[App]')
+  const index = lines.findIndex((line, i) => i > app && line.startsWith('BuildID='))
+  if (app < 0 || index < 0 || lines.slice(app + 1, index).some((line) => line.startsWith('['))) {
+    throw new Error(`no [App] BuildID in ${path}`)
+  }
+  lines[index] = `BuildID=${buildId}`
+  const body = lines.slice(lines.findIndex((line) => !line.startsWith(';')))
+  const note = '; FireDog reads this file (embed-init.cpp xul_init): BuildID is the time\n; of the repack (wasip1/chromium-ui/repack.mjs).'
+  writeFileSync(path, `${note}\n${body.join('\n')}`)
+}
+
+/**
+ * Checks the Firefox parts FireDog's own files name by ID, so that a Gecko
+ * update that renames or adds one fails here instead of silently bringing a
+ * feature back:
+ *   - the keyboard shortcuts chromium.js removes (removeUnusedKeys) must be in
+ *     browser.xhtml;
+ *   - every ASRouter message provider Firefox defines must be overridden in
+ *     firedog-chromium.js, by a copy of Firefox's value with only
+ *     `enabled` changed (a pref holds the provider's whole JSON).
+ *
+ * @param {string} browser the extracted browser/omni.ja, with the overlay in it
+ */
+const checkNamedFirefoxParts = (browser) => {
+  const xhtml = readFileSync(join(browser, 'chrome/browser/content/browser/browser.xhtml'), 'utf8')
+  const script = readFileSync(join(browser, 'chrome/browser/content/browser/firedog/chromium.js'), 'utf8')
+  const list = script.match(/removeUnusedKeys\(\) \{\s*for \(const id of \[([^\]]*)\]/)
+  if (!list) throw new Error('removeUnusedKeys not found in chromium.js')
+  const keys = [...list[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
+  const missingKeys = keys.filter((id) => !xhtml.includes(`id="${id}"`))
+  if (missingKeys.length) throw new Error(`${missingKeys.join(', ')} not in browser.xhtml; update removeUnusedKeys in chromium.js`)
+
+  const providers = (file) =>
+    new Map(
+      [...readFileSync(join(browser, 'defaults/preferences', file), 'utf8').matchAll(/^pref\("(browser\.newtabpage\.activity-stream\.asrouter\.providers\.[^"]+)", "((?:[^"\\]|\\.)*)"\);$/gm)].map(
+        ([, name, value]) => [name, JSON.parse(JSON.parse(`"${value}"`))],
+      ),
+    )
+  const firefox = providers('firefox.js')
+  const firedog = providers('firedog-chromium.js')
+  for (const [name, value] of firefox) {
+    const ours = firedog.get(name)
+    if (!ours) throw new Error(`${name} is not overridden in firedog-chromium.js`)
+    if (JSON.stringify({...value, enabled: false}) !== JSON.stringify(ours)) {
+      throw new Error(`${name} in firedog-chromium.js is not Firefox's value with enabled false`)
+    }
+  }
+  for (const name of firedog.keys()) {
+    if (!firefox.has(name)) throw new Error(`${name} is not a Firefox pref; update firedog-chromium.js`)
+  }
+}
+
+/**
  * Takes the startup tasks in UNUSED_STARTUP_TASKS out of browser/omni.ja's
  * component manifest.
  *
@@ -639,15 +708,17 @@ try {
   pruneDevtoolsClient(browser, gre)
   pruneUnusedFeatures(browser, gre)
   pruneStartupTasks(browser)
+  checkNamedFirefoxParts(browser)
   zip(gre, join(output, 'omni.ja'))
   zip(browser, join(output, 'browser/omni.ja'))
 
   const archives = createHash('sha256')
   for (const file of ['omni.ja', 'browser/omni.ja']) archives.update(readFileSync(join(output, file)))
   writeFileSync(join(output, 'firedog-cache-key'), `${archives.digest('hex')}\n`)
+  stampBuildId(output)
 
   await writeDevtoolsFrontend(output)
-  for (const file of ['omni.ja', 'browser/omni.ja', 'firedog-cache-key', 'devtools-frontend.zip']) console.log(`wrote ${join(output, file)}`)
+  for (const file of ['omni.ja', 'browser/omni.ja', 'firedog-cache-key', 'application.ini', 'devtools-frontend.zip']) console.log(`wrote ${join(output, file)}`)
 } finally {
   rmSync(work, {recursive: true, force: true})
 }

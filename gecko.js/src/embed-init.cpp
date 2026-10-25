@@ -14,6 +14,10 @@
 #include <fcntl.h>
 #include "mozilla/UniquePtr.h"
 #include "nsPrintfCString.h"
+// mach's generated app descriptor (see xul_init); it names its object sAppData
+#define sAppData kGeneratedAppData
+#include "application.ini.h"
+#undef sAppData
 // For the chrome build, NS_InitXPCOM is given binDir = the APP dir (/gre/browser)
 // so resource:/// (NS_XPCOM_CURRENT_PROCESS_DIR) resolves to the Firefox front-end
 // (its modules/sessionstore/... live under /gre/browser), while NS_GRE_DIR stays at
@@ -98,24 +102,28 @@ static nsCString ReadKeyFile(const nsACString& aPath) {
 
 // Identifies the build the startup caches in a profile were written by. XRE
 // clears them when compatibility.ini records another build, but this embedding
-// skips that check and its appinfo build ID is a constant, so without this a
-// profile kept across an update would run bytecode compiled from the previous
-// build's scripts. The key is the time this file was compiled (link.sh compiles
-// the embed sources on every link, so it changes whenever libxul does) and the
-// GRE's own key, which repack.mjs writes as a hash of the omni.ja files.
-static nsCString StartupCacheKey(const char* aGreDir) {
-  nsAutoCString key(__DATE__ " " __TIME__ "\n");
+// skips that check, so without this a profile kept across an update would run
+// bytecode compiled from the previous build's scripts. The bytecode depends on
+// the JS engine, which changes only with a `mach build` and so with its build
+// ID (aEngineBuildID, from the generated application.ini.h), and on the
+// front-end's scripts, whose hash repack.mjs writes as the GRE's own key.
+static nsCString StartupCacheKey(const char* aEngineBuildID, const char* aGreDir) {
+  nsAutoCString key(aEngineBuildID);
+  key.Append('\n');
   key.Append(ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", aGreDir)));
   return std::move(key);
 }
 
 // Copies with read(2)/write(2) in large pieces. Every system call is a round trip
 // to the kernel worker, so stdio's small buffered writes made copying the
-// shipped caches (about 17 MB) take a second of the start.
+// shipped caches (about 17 MB) take a second of the start. The copy is written
+// beside the target and renamed over it at the end, so a copy cut short (the
+// tab closed, a failed read) never leaves a truncated file under the real name.
 static bool CopyWholeFile(const nsACString& aFrom, const nsACString& aTo) {
   int from = open(PromiseFlatCString(aFrom).get(), O_RDONLY);
   if (from < 0) return false;
-  int to = open(PromiseFlatCString(aTo).get(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  const nsPrintfCString part("%s.part", PromiseFlatCString(aTo).get());
+  int to = open(part.get(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   bool ok = to >= 0;
   constexpr size_t kChunk = 4 << 20;
   mozilla::UniquePtr<char[]> buffer = mozilla::MakeUnique<char[]>(kChunk);
@@ -132,6 +140,8 @@ static bool CopyWholeFile(const nsACString& aFrom, const nsACString& aTo) {
   }
   close(from);
   if (to >= 0 && close(to) != 0) ok = false;
+  if (ok) ok = rename(part.get(), PromiseFlatCString(aTo).get()) == 0;
+  if (!ok) unlink(part.get());
   return ok;
 }
 
@@ -162,22 +172,37 @@ static bool CopyMissingFiles(const nsACString& aFrom, const nsACString& aTo) {
   return ok;
 }
 
+// Marks a profile whose copy from $GRE/profile has not finished (PrepareProfile)
+static constexpr char kTemplateMarker[] = ".firedog-from-template";
+
 // Starts a new profile from $GRE/profile when that was written by this very
-// build (see StartupCacheKey). The packaging runs FireDog once in an empty
+// build (aKey, see StartupCacheKey). The packaging runs FireDog once in an empty
 // profile and ships what Firefox created in it: the empty databases (NSS's
 // cert9.db and key4.db, cookies, permissions, IndexedDB), the add-on manager's
 // list of the built-in add-ons and the search engine settings. Creating these
 // takes a new profile's first launch most of a second more than later ones.
 // Nothing in them belongs to a learner: the databases hold no records and NSS
 // no private keys, and the per-profile keys NSS and Firefox make are made when
-// first needed. Only a profile that has nothing yet gets them, so a learner's
-// own profile is never touched; times.json, the creation date, is not shipped.
-static void PrepareProfile(const char* aProfileDir, const char* aGreDir) {
-  if (DIR* entries = opendir(aProfileDir)) {
+// first needed. Only a profile that has nothing yet (besides its lock and the
+// startup cache) gets them, so a learner's own profile is never touched;
+// times.json, the creation date, is not shipped.
+//
+// A marker file is written before the copy and removed after it. A launch cut
+// short in between (the learner closed the tab) leaves the marker, and the next
+// launch copies the files still missing before Firefox has used the profile.
+// If a copy fails, Firefox creates what is missing itself, as in any new
+// profile, so the marker is removed then too.
+static void PrepareProfile(const char* aProfileDir, const char* aGreDir,
+                           const nsCString& aKey) {
+  const nsPrintfCString marker("%s/%s", aProfileDir, kTemplateMarker);
+  if (access(marker.get(), F_OK) != 0) {
+    DIR* entries = opendir(aProfileDir);
+    if (!entries) return;
     bool empty = true;
     while (struct dirent* entry = readdir(entries)) {
       if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") &&
-          strcmp(entry->d_name, "startupCache")) {
+          strcmp(entry->d_name, "startupCache") && strcmp(entry->d_name, "lock") &&
+          strcmp(entry->d_name, ".parentlock")) {
         empty = false;
       }
     }
@@ -185,31 +210,29 @@ static void PrepareProfile(const char* aProfileDir, const char* aGreDir) {
     if (!empty) return;
   }
   const nsPrintfCString seed("%s/profile", aGreDir);
-  if (!ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get()))
-           .Equals(StartupCacheKey(aGreDir))) {
+  if (!ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get())).Equals(aKey)) {
+    unlink(marker.get());
     return;
   }
-  nsAutoCString dir(aProfileDir);
-  for (uint32_t slash = 1; slash < dir.Length(); slash++) {
-    if (dir[slash] == '/') mkdir(nsAutoCString(Substring(dir, 0, slash)).get(), 0755);
-  }
-  printf("xul_init: new profile %s from the GRE\n",
-         CopyMissingFiles(seed, dir) ? "started" : "partly started");
+  if (FILE* file = fopen(marker.get(), "w")) fclose(file);
+  bool ok = CopyMissingFiles(seed, nsDependentCString(aProfileDir));
+  unlink(marker.get());
+  printf("xul_init: new profile %s from the GRE\n", ok ? "started" : "partly started");
 }
 
 // Readies <profile>/startupCache for this build before NS_InitXPCOM (StartupCache
-// reads its file during XPCOM init). A cache written by another build (see
+// reads its file during XPCOM init). A cache written by another build (aKey, see
 // StartupCacheKey) is removed. A new or emptied one is filled from
 // $GRE/startupCache when that was written by this very build: the packaging
 // runs FireDog once and ships the caches it wrote, so that the first launch
 // in a new profile loads the front-end's scripts as compiled bytecode instead
 // of compiling them from source, which is most of a cold start's work.
-static void PrepareStartupCache(const char* aProfileDir, const char* aGreDir) {
-  const nsCString key = StartupCacheKey(aGreDir);
+static void PrepareStartupCache(const char* aProfileDir, const char* aGreDir,
+                                const nsCString& aKey) {
   nsAutoCString dir(aProfileDir);
   dir.AppendLiteral("/startupCache");
   const nsPrintfCString keyPath("%s/firedog-cache-key", dir.get());
-  if (ReadKeyFile(keyPath).Equals(key)) return;
+  if (ReadKeyFile(keyPath).Equals(aKey)) return;
   auto empty = [&dir]() {
     DIR* entries = opendir(dir.get());
     if (!entries) return false;
@@ -220,17 +243,11 @@ static void PrepareStartupCache(const char* aProfileDir, const char* aGreDir) {
     closedir(entries);
     return true;
   };
-  if (!empty()) {
-    // mkdir -p: the profile lives under $HOME/.mozilla/firefox, which a new
-    // home does not have yet
-    for (uint32_t slash = 1; slash <= dir.Length(); slash++) {
-      if (slash < dir.Length() && dir[slash] != '/') continue;
-      mkdir(nsAutoCString(Substring(dir, 0, slash)).get(), 0755);
-    }
-  }
+  if (!empty()) mkdir(dir.get(), 0755);
   const nsPrintfCString seed("%s/startupCache", aGreDir);
-  bool seeded = false;
-  if (ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get())).Equals(key)) {
+  const char* outcome = "empty";
+  if (ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get())).Equals(aKey)) {
+    bool seeded = false;
     if (DIR* entries = opendir(seed.get())) {
       seeded = true;
       while (struct dirent* entry = readdir(entries)) {
@@ -240,16 +257,21 @@ static void PrepareStartupCache(const char* aProfileDir, const char* aGreDir) {
       }
       closedir(entries);
     }
-    // A copy that failed part way (the disk is full) leaves no half of a cache
-    if (!seeded) empty();
+    if (!seeded) {
+      // A copy that failed part way (the disk is full) leaves no half of a
+      // cache, and no key either, so that the next launch seeds it again
+      empty();
+      printf("xul_init: startup cache could not be seeded from the GRE\n");
+      return;
+    }
+    outcome = "seeded from the GRE";
   }
-  // The key goes last, so that a copy cut short is redone on the next launch
+  // The key goes last, so that a launch cut short during the copy redoes it
   if (FILE* file = fopen(keyPath.get(), "w")) {
-    fwrite(key.get(), 1, key.Length(), file);
+    fwrite(aKey.get(), 1, aKey.Length(), file);
     fclose(file);
   }
-  printf("xul_init: startup cache reset for this build (%s)\n",
-         seeded ? "seeded from the GRE" : "empty");
+  printf("xul_init: startup cache reset for this build (%s)\n", outcome);
 }
 
 // The headless widget toolkit registers no nsIAppShell (NS_APPSHELL_CID): a pure
@@ -426,26 +448,80 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // "category app-startup nsBrowserGlue", so the Firefox front-end's startup
   // (BrowserGlue: SessionStore, the desktop actors, the first-window tasks)
   // never ran.
-  // Keep in sync with browser/config/version.txt (GRE_MILESTONE / the build's
-  // app version); MOZ_APP_VERSION isn't a C macro in this embedder's compile.
-  static const char* const kAppVersion = "153.0a1";
-  static const mozilla::StaticXREAppData kStaticAppData = {
-      .vendor = "Mozilla",
-      .name = "Firefox",
-      .remotingName = "firefox",
-      .version = kAppVersion,
-      .buildID = "20990101000000",
-      .ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",  // Firefox application id
-  };
-  static mozilla::XREAppData sAppData(kStaticAppData);
+  // The descriptor is the one `mach build` generates from
+  // browser/app/application.ini.in (application.ini.h, as nsBrowserApp.cpp
+  // includes it), so the version and the build ID are this build's own. The
+  // build ID is the time of that `mach build`. repack.mjs, which builds the
+  // front-end FireDog ships, writes the time of the repack into
+  // $GRE/application.ini, and the later of the two is used: the add-on manager
+  // rescans the built-in add-ons only when the build ID changes
+  // (XPIProvider's extensions.lastAppBuildId), and a repack alone can add or
+  // remove them.
+  static mozilla::XREAppData sAppData(kGeneratedAppData);
+  {
+    mozilla::XREAppData repacked(kGeneratedAppData);
+    nsCOMPtr<nsIFile> ini;
+    if (NS_SUCCEEDED(NS_NewNativeLocalFile(
+            nsPrintfCString("%s/application.ini", greDir), getter_AddRefs(ini))) &&
+        NS_SUCCEEDED(XRE_ParseAppData(ini, repacked)) &&
+        strcmp(repacked.buildID, sAppData.buildID) > 0) {
+      sAppData.buildID = repacked.buildID;
+    }
+  }
   gAppData = &sAppData;
-  printf("xul_init: set gAppData (appinfo version=%s)\n", kAppVersion);
+  printf("xul_init: set gAppData (appinfo version=%s, build ID=%s)\n",
+         (const char*)sAppData.version, (const char*)sAppData.buildID);
   fflush(stdout);
 
   const char* profPath = getenv("PROFILE_DIR");
   if (!profPath || !*profPath) profPath = "/profile";
-  PrepareProfile(profPath, greDir);
-  PrepareStartupCache(profPath, greDir);
+  // Mount the persistent /profile provider backend (WasmFS) before anything
+  // touches the profile, so cookies/IndexedDB/places persist via the consumer's
+  // FsProvider. PrepareProfile and PrepareStartupCache below create directories
+  // in it; mounted after them, the mount would find profPath taken (EEXIST) and
+  // the profile would silently live in memory. Gated on the ENV flag index.ts
+  // sets when a profile provider exists (the JS Module.geckoProviders the hooks
+  // read isn't visible on this pthread, but ENV is). Backend + hooks:
+  // emsdk-patches/provider_backend.h + build/provider-fs.js.
+#if defined(__EMSCRIPTEN__)
+  if (getenv("GECKO_PROFILE_PROVIDER")) {
+    backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
+    int mrv = wasmfs_create_directory(profPath, 0777, pb);
+    printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
+    fflush(stdout);
+  }
+#endif
+  // Lock the profile as XRE does when it selects one, before anything here
+  // changes it, and hand the lock to XRE once XPCOM is up. Without the lock
+  // nsIXULRuntime.replacedLockTime throws, which aborts BrowserGlue's
+  // first-window startup (_maybeOfferProfileReset) before the
+  // browser-first-window-ready tasks run. A profile another FireDog holds is
+  // not opened, as Firefox refuses it: two of them writing its databases and
+  // caches would corrupt them.
+  for (uint32_t slash = 1; slash <= strlen(profPath); slash++) {
+    if (profPath[slash] == '/' || profPath[slash] == '\0') {
+      mkdir(nsAutoCString(Substring(nsDependentCString(profPath), 0, slash)).get(), 0755);
+    }
+  }
+  static nsCOMPtr<nsIProfileLock> sProfileLock;
+  {
+    nsCOMPtr<nsIFile> profDir;
+    rv = NS_NewNativeLocalFile(nsDependentCString(profPath), getter_AddRefs(profDir));
+    if (NS_SUCCEEDED(rv)) {
+      rv = NS_LockProfilePath(profDir, profDir, nullptr, getter_AddRefs(sProfileLock));
+    }
+    printf("xul_init: profile lock rv=0x%08x\n", (unsigned)rv);
+    fflush(stdout);
+    if (NS_FAILED(rv)) {
+      printf("xul_init: the profile %s is in use by another FireDog\n", profPath);
+      fflush(stdout);
+      return (int)rv;
+    }
+  }
+
+  const nsCString cacheKey = StartupCacheKey(kGeneratedAppData.buildID, greDir);
+  PrepareProfile(profPath, greDir, cacheKey);
+  PrepareStartupCache(profPath, greDir, cacheKey);
 
   printf("xul_init: calling NS_InitXPCOM (binDir=%s)...\n", binPath.get());
   fflush(stdout);
@@ -777,21 +853,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
 
     // Real sites need storage: cookies, IndexedDB, cache, places history all
     // require a profile directory. Register ProfD/ProfLD at PROFILE_DIR (WasmFS:
-    // a native-OPFS mount at /opfs/<path>, or a provider-backed /profile below).
+    // a native-OPFS mount at /opfs/<path>, or the provider-backed /profile mounted
+    // before NS_InitXPCOM).
     {
-      // Mount the persistent /profile provider backend (WasmFS) BEFORE ProfD setup,
-      // so cookies/IndexedDB/places persist via the consumer's FsProvider. Gated on
-      // the ENV flag index.ts sets when a profile provider exists (the JS
-      // Module.geckoProviders the hooks read isn't visible on this pthread, but ENV
-      // is). Backend + hooks: emsdk-patches/provider_backend.h + build/provider-fs.js.
-#if defined(__EMSCRIPTEN__)
-      if (getenv("GECKO_PROFILE_PROVIDER")) {
-        backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
-        int mrv = wasmfs_create_directory(profPath, 0777, pb);
-        printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
-        fflush(stdout);
-      }
-#endif
       nsCOMPtr<nsIFile> profDir;
       if (NS_SUCCEEDED(NS_NewNativeLocalFile(nsDependentCString(profPath),
                                              getter_AddRefs(profDir)))) {
@@ -803,16 +867,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
           dirSvc->Set(NS_APP_USER_PROFILE_LOCAL_50_DIR, profDir);
           printf("xul_init: profile dir = %s\n", profPath);
         }
-        // Lock the profile as XRE does when it selects one, and hand the lock to
-        // XRE. Without it nsIXULRuntime.replacedLockTime throws, which aborts
-        // BrowserGlue's first-window startup (_maybeOfferProfileReset) before the
-        // browser-first-window-ready tasks run. It also keeps a second FireDog
-        // from opening the same profile.
-        static nsCOMPtr<nsIProfileLock> sProfileLock;
-        nsresult lrv = NS_LockProfilePath(profDir, profDir, nullptr,
-                                          getter_AddRefs(sProfileLock));
-        if (NS_SUCCEEDED(lrv)) XRE_SetProfileLock(sProfileLock);
-        printf("xul_init: profile lock rv=0x%08x\n", (unsigned)lrv);
+        // The lock taken before NS_InitXPCOM
+        XRE_SetProfileLock(sProfileLock);
       }
     }
 

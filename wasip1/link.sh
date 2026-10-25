@@ -24,6 +24,7 @@ CXXFLAGS=(
   -O2 -DMOZILLA_INTERNAL_API -DMOZ_HAS_MOZGLUE -DNDEBUG=1
   -include "$OBJ/mozilla-config.h"
   -isystem "$OBJ/dist/include" -isystem "$OBJ/dist/include/nspr"
+  -isystem "$OBJ/build"  # application.ini.h (embed-init.cpp)
   "${WASI_FLAGS[@]}" -Wno-unused-template
 )
 
