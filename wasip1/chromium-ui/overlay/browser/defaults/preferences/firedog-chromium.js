@@ -167,6 +167,13 @@ pref("browser.newtab.preload", false);
 pref("browser.places.interactions.enabled", false);
 // Telemetry on pages that show a CAPTCHA.
 pref("captchadetection.actor.enabled", false);
+// Gecko Media Plugins (OpenH264, the Widevine CDM): native libraries Gecko
+// runs in a plugin process, which a single-process wasm FireDog can neither
+// load nor start. The provider lists them as add-ons for the add-on manager's
+// update check, and BrowserGlue's idle startup tasks check for them on their
+// own (GMPInstallManager): both ask Mozilla's update server and download them.
+pref("media.gmp-provider.enabled", false);
+pref("media.gmp-manager.updateEnabled", false);
 // Firefox's in-product messages (ASRouter): onboarding, recommendations and
 // Mozilla's campaigns, which FireDog's enterprise policies already keep from
 // being shown (UserMessaging). With a provider enabled, ASRouter still loads

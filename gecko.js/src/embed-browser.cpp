@@ -506,60 +506,6 @@ bool xul_load(const char* url, int width, int height, bool waitForLoad) {
           "catch(e){console.error('round css: '+e);}"_ns);
       printf("xul_load: registered newtab mapping + rounded-popup sheet\n");
       fflush(stdout);
-
-      // Build already-installed WebExtension background pages at startup.
-      // ExtensionParent gates the APP_STARTUP background build on
-      // browserStartupPromise, which resolves from 'sessionstore-windows-restored'
-      // OR 'extensions-late-startup'. SessionStore sends the former once it has
-      // restored the first window; firing 'extensions-late-startup' as well keeps
-      // the build from depending on it, and only ExtensionParent observes it.
-      // Fresh installs (ADDON_INSTALL) build immediately, no signal needed. (Set
-      // GECKO_NO_EXT_BG_STARTUP to skip, for A/B debugging.)
-      //
-      // *** TIMING: fire it DEFERRED, not during chrome startup. ***
-      // Firing it here (right after browser.xhtml loads, while gBrowserInit is still
-      // running its startup) builds the background page TOO EARLY: loading the
-      // background page (fixupAndLoadURIString moz-extension://.../background.html)
-      // tears the just-created frameloader down ("message-manager-close" right after
-      // the load, uri=null) before BackgroundViewLoaded -> the background never
-      // starts -> uBlock's primed webRequestBlocking listener suspends every request
-      // -> about:blank. Proof: disabling + re-enabling the extension (which runs the
-      // SAME build() but LATE, via ADDON_ENABLE, after the chrome has settled) works.
-      // So defer the signal until the chrome window has finished its delayed startup
-      // (gBrowserInit fires 'browser-delayed-startup-finished' itself), with a
-      // timeout fallback. We only OBSERVE that notification for timing; we never fire
-      // it (BrowserGlue starts its first-window tasks on it).
-      if (!getenv("GECKO_NO_EXT_BG_STARTUP")) {
-        // After the chrome has settled, (1) fire 'extensions-late-startup' so the
-        // APP_STARTUP background build is unblocked, and (2) RELOAD each active
-        // extension. (2) is the key: an extension started at APP_STARTUP has its
-        // persistent listeners PRIMED, and for at least uBlock Origin that makes
-        // loading its background page tear the frameloader down before it runs
-        // ("message-manager-close" on the background load, before
-        // Extension:BackgroundViewLoaded) -> the background never starts -> its
-        // webRequestBlocking listener suspends every request -> no tab ever loads.
-        // Manually disabling + re-enabling the extension fixes it (the restart runs
-        // via the ADDON_ENABLE path, without the APP_STARTUP priming). addon.reload()
-        // is exactly that, automated once, deferred to the settled point.
-        RunChromeScript(
-            "(function(){var fired=false;"
-            "var go=function(tag){if(fired)return;fired=true;"
-            "try{Services.obs.notifyObservers(null,'extensions-late-startup');}catch(e){}"
-            "(async function(){try{var m=ChromeUtils.importESModule("
-            "'resource://gre/modules/AddonManager.sys.mjs');"
-            "var addons=await m.AddonManager.getAddonsByTypes(['extension']);"
-            "for(var a of addons){if(a&&a.isActive&&!a.isSystem){"
-            "try{await a.reload();console.error('ext-bg-startup: reloaded '+a.id);}"
-            "catch(e){console.error('ext-bg-startup reload '+a.id+': '+e);}}}}"
-            "catch(e){console.error('ext-bg-startup reload-all: '+e);}})();"
-            "console.error('ext-bg-startup: fired+reload ('+tag+')');};"
-            "try{var o={observe:function(){try{Services.obs.removeObserver(o,"
-            "'browser-delayed-startup-finished');}catch(e){}"
-            "setTimeout(function(){go('delayed-startup');},1500);}};"
-            "Services.obs.addObserver(o,'browser-delayed-startup-finished');}catch(e){}"
-            "setTimeout(function(){go('timeout');},10000);})();"_ns);
-        fflush(stdout);
-      }
     }
   }
 

@@ -963,39 +963,50 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
           printf("xul_init: started enterprise policies\n");
           fflush(stdout);
         }
-        // profile-after-change is the second half of the standard profile-startup
-        // sequence (XRE fires both). We were skipping it, which left several
-        // profile-after-change observers uninitialized -- notably
-        // RemoteWorkerService (registered by nsLayoutStatics::Initialize), whose
-        // observer starts the worker-launcher thread + registers the PARENT-process
-        // RemoteWorker actor. Without it, RemoteWorkerManager::SelectTargetActor has
-        // no parent actor for an e10s-disabled (in-parent) ServiceWorker, so it falls
-        // back to LaunchNewContentProcess -- which fails here ("Failed to launch tab
-        // subprocess", no subprocesses in this single-process wasm build) and the SW
-        // registration rejects ("...threw an exception during script evaluation").
+        // Chrome build: start the Add-on Manager where nsXREDirProvider::DoStartup
+        // does, between the policies and profile-after-change -- the amManager
+        // integration service starts the AddonManager (XPIProvider, extensions
+        // DB) on the "addons-startup" topic. Without this, AddonManager.isReady
+        // stays false and installs throw NS_ERROR_NOT_INITIALIZED, so
+        // WebExtensions can't load.
+        if (chrome) {
+          nsCOMPtr<nsIObserver> em =
+              do_GetService("@mozilla.org/addons/integration;1");
+          if (em) {
+            em->Observe(nullptr, "addons-startup", nullptr);
+            printf("xul_init: started Add-on Manager (addons-startup)\n");
+          } else {
+            printf("xul_init: addon integration service unavailable\n");
+          }
+          fflush(stdout);
+        }
+        // profile-after-change completes the profile startup, as in
+        // nsXREDirProvider::DoStartup: the notification, then the components
+        // registered in the profile-after-change category, which nothing else
+        // creates. Without the notification RemoteWorkerService (registered by
+        // nsLayoutStatics::Initialize) never starts the worker-launcher thread
+        // or registers the parent-process RemoteWorker actor, so an in-parent
+        // ServiceWorker falls back to launching a content process, which fails
+        // here, and its registration rejects. Without the category,
+        // CrashMonitor never starts, and SessionStartup throws on
+        // CrashMonitor.previousCheckpoints whenever a previous session exists:
+        // sessionstore-windows-restored never comes, so every launch after the
+        // first left extensions' background pages unstarted and BrowserGlue's
+        // _onWindowsRestored and idle startup tasks unrun. The category also
+        // starts form history, query stripping, the cookie banner service and
+        // the update timer manager.
         printf("xul_init: firing profile-after-change...\n");
         fflush(stdout);
         obs->NotifyObservers(nullptr, "profile-after-change", u"startup");
+        (void)NS_CreateServicesFromCategory("profile-after-change", nullptr,
+                                            "profile-after-change");
+        obs->NotifyObservers(nullptr, "profile-initial-state", nullptr);
         printf("xul_init: profile-after-change done\n");
         fflush(stdout);
       }
     }
 
-    // Chrome build: start the Add-on Manager exactly as XRE does
-    // (nsXREDirProvider) -- the amManager integration service starts the
-    // AddonManager (XPIProvider, extensions DB) on the "addons-startup" topic.
-    // Without this, AddonManager.isReady stays false and installs throw
-    // NS_ERROR_NOT_INITIALIZED, so WebExtensions can't load.
     if (chrome) {
-      nsCOMPtr<nsIObserver> em =
-          do_GetService("@mozilla.org/addons/integration;1");
-      if (em) {
-        em->Observe(nullptr, "addons-startup", nullptr);
-        printf("xul_init: started Add-on Manager (addons-startup)\n");
-      } else {
-        printf("xul_init: addon integration service unavailable\n");
-      }
-      fflush(stdout);
       // final-ui-startup comes next, before the first window opens, as in
       // XRE_mainRun. BrowserGlue starts session restore on it (SessionStartup,
       // which reads the session file, and SessionStore). Without it the
