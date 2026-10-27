@@ -7,6 +7,13 @@
 // and one WebSocket per target (/devtools/page/<id>, /devtools/browser/<id>).
 // Chrome DevTools, Puppeteer and other CDP clients find FireDog's pages here.
 //
+// With --remote-debugging-pipe (the pref firedog.devtools.remote-debugging-pipe)
+// the browser's connection is instead a pair of pipes, as Puppeteer and
+// Playwright launch Chromium: requests come in on file descriptor 3 and
+// responses and events go out on 4, each message a JSON text ended by a NUL
+// byte. Only the process that started FireDog holds the other ends, so no
+// other process can drive it, and no port is taken.
+//
 // The port comes from the pref firedog.devtools.remote-debugging-port (0, the
 // default, keeps it closed, as Chromium does without the switch). Like
 // Chromium it listens on 127.0.0.1 only, accepts a Host header only for an IP
@@ -27,6 +34,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 const PORT_PREF = "firedog.devtools.remote-debugging-port";
+const PIPE_PREF = "firedog.devtools.remote-debugging-pipe";
 const ALLOW_ORIGINS_PREF = "firedog.devtools.remote-allow-origins";
 
 // What Chromium 158 reports in /json/version. The DevTools front-end reads
@@ -35,6 +43,7 @@ const PROTOCOL_VERSION = "1.3";
 
 let server = null;
 let port = 0;
+let pipe = null;
 
 function json(response, value) {
   response.setStatusLine("1.1", 200, "OK");
@@ -164,6 +173,61 @@ async function upgrade(request, response) {
   });
 }
 
+// The browser's connection over --remote-debugging-pipe, in the shape of the
+// WebSocket a Session reads and writes. FireDog's program reads descriptor 3
+// and writes 4 on threads of its own (wasip1/devtools-pipe.cpp) and passes
+// whole messages through these observer topics on the main thread.
+const PIPE_START = "firedog-devtools-pipe-start";
+const PIPE_MESSAGE = "firedog-devtools-pipe-message";
+const PIPE_SEND = "firedog-devtools-pipe-send";
+const PIPE_CLOSED = "firedog-devtools-pipe-closed";
+
+class PipeTransport {
+  constructor() {
+    this.listeners = { message: new Set(), close: new Set() };
+    this.closed = false;
+    this.observer = {
+      QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
+      observe: (subject, topic, data) => {
+        if (topic === PIPE_MESSAGE) {
+          for (const listener of this.listeners.message) {
+            listener({ data });
+          }
+        } else {
+          this.close();
+        }
+      },
+    };
+    Services.obs.addObserver(this.observer, PIPE_MESSAGE);
+    Services.obs.addObserver(this.observer, PIPE_CLOSED);
+    // Reading starts only now, so the first requests (written before the
+    // window came up) are not notified before anyone listens.
+    Services.obs.notifyObservers(null, PIPE_START);
+  }
+
+  addEventListener(type, listener) {
+    this.listeners[type]?.add(listener);
+  }
+
+  send(text) {
+    if (!this.closed) {
+      Services.obs.notifyObservers(null, PIPE_SEND, text);
+    }
+  }
+
+  close() {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    Services.obs.removeObserver(this.observer, PIPE_MESSAGE);
+    Services.obs.removeObserver(this.observer, PIPE_CLOSED);
+    for (const listener of this.listeners.close) {
+      listener();
+    }
+  }
+}
+
 function webSocketDebuggerUrl(path) {
   return `ws://127.0.0.1:${port}${path}`;
 }
@@ -223,8 +287,14 @@ export const RemoteDebugging = {
     return port;
   },
 
-  // Opens or closes the endpoint to match the pref. Safe to call again.
+  // Opens or closes the endpoint to match the prefs. Safe to call again.
   startFromPrefs() {
+    // The descriptors are FireDog's for its whole life, so the pipe opens
+    // once, with the first window, and is never reopened.
+    if (!pipe && Services.prefs.getBoolPref(PIPE_PREF, false)) {
+      pipe = new PipeTransport();
+      lazy.Session.attach(pipe, lazy.Targets.browser());
+    }
     const wanted = Services.prefs.getIntPref(PORT_PREF, 0);
     if (wanted === port && server) {
       return;

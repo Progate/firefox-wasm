@@ -7,12 +7,18 @@ written against Gecko's own APIs.
 - `RemoteDebugging.sys.mjs`: the endpoint Chromium opens with
   `--remote-debugging-port` (prefs `firedog.devtools.remote-debugging-port`
   and `firedog.devtools.remote-allow-origins`): HTTP discovery and a WebSocket
-  per target.
+  per target. With `--remote-debugging-pipe` (pref
+  `firedog.devtools.remote-debugging-pipe`) the browser's connection is file
+  descriptors 3 and 4 instead, NUL-separated JSON as Chromium speaks it to
+  Puppeteer and Playwright; `wasip1/devtools-pipe.cpp` reads and writes the
+  descriptors on its own threads.
 - `Targets.sys.mjs`: the browser target and one page target per tab.
 - `Session.sys.mjs`: a connection; dispatches `Domain.method` to
   `domains/<Domain>.sys.mjs`, whose methods are the CDP methods of the same
   name. Methods a domain does not define answer Chromium's
-  `'Domain.method' wasn't found`.
+  `'Domain.method' wasn't found`. `Target.attachToTarget` (flatten) attaches
+  further sessions to the same connection, whose messages carry their
+  `sessionId`, as Chromium's flat sessions do.
 - `RemoteObjects.sys.mjs`: `Runtime.RemoteObject` and previews from
   SpiderMonkey's Debugger API, described the way V8's inspector describes
   values.

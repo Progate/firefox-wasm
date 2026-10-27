@@ -15,7 +15,9 @@
 class WindowServer {
  public:
   ~WindowServer();
-  bool open(int width, int height);
+  // appId names the application the window belongs to (Wayland's app_id,
+  // X's WM_CLASS); a window manager matches it to place the window.
+  bool open(int width, int height, const std::string& appId);
   bool next(std::string& line, int timeoutMs);
   // Put rows [top, top + rows) of a width x height BGRA frame (stride
   // width * 4) on the window and commit only those rows. The windowserver then
