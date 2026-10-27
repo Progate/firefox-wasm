@@ -48,21 +48,50 @@ export class InvalidParams extends ProtocolError {
   }
 }
 
+// Chromium's session ids: 32 uppercase hex digits.
+function newSessionId() {
+  return Services.uuid
+    .generateUUID()
+    .toString()
+    .replace(/[{}-]/g, "")
+    .toUpperCase();
+}
+
 export class Session {
   static attach(socket, target) {
     return new Session(socket, target);
   }
 
-  constructor(socket, target) {
+  // A connection's own session has a socket; the sessions attached over it
+  // with Target.attachToTarget (flatten) have none and talk through it, their
+  // messages carrying their sessionId, as Chromium's flat sessions do.
+  constructor(socket, target, parent = null, sessionId = null) {
     this.socket = socket;
     this.target = target;
+    this.parent = parent;
+    this.sessionId = sessionId;
+    this.children = new Map();
     this.domains = new Map();
     // Per-connection state shared by domains (objects handed out by Runtime,
     // nodes handed out by DOM, ...). Each domain keeps its own part.
     this.state = {};
     this.closed = false;
-    socket.addEventListener("message", event => this.receive(event.data));
-    socket.addEventListener("close", () => this.close());
+    if (socket) {
+      socket.addEventListener("message", event => this.receive(event.data));
+      socket.addEventListener("close", () => this.close());
+    }
+  }
+
+  // The session that owns the connection.
+  get root() {
+    return this.parent ?? this;
+  }
+
+  // Attaches a new session to target over this connection.
+  attachChild(target) {
+    const child = new Session(null, target, this.root, newSessionId());
+    this.root.children.set(child.sessionId, child);
+    return child;
   }
 
   domain(name) {
@@ -88,9 +117,28 @@ export class Session {
       this.send({ error: { code: -32700, message: "JSON: invalid syntax" } });
       return;
     }
-    const { id, method, params = {}, sessionId } = message;
-    const reply = body =>
-      this.send({ id, ...body, ...(sessionId ? { sessionId } : {}) });
+    if (message.sessionId === undefined) {
+      await this.dispatch(message);
+      return;
+    }
+    const child = this.children.get(message.sessionId);
+    // A tab that closed takes its sessions with it, as Chromium's do.
+    if (child && child.target.alive === false) {
+      child.detach();
+    }
+    if (!child || child.closed) {
+      this.send({
+        id: message.id,
+        error: { code: -32001, message: "Session with given id not found." },
+        sessionId: message.sessionId,
+      });
+      return;
+    }
+    await child.dispatch(message);
+  }
+
+  async dispatch({ id, method, params = {} }) {
+    const reply = body => this.send({ id, ...body });
     const [domainName, methodName] = method?.split(".") ?? [];
     let domain = null;
     try {
@@ -131,6 +179,10 @@ export class Session {
     if (this.closed) {
       return;
     }
+    if (this.parent) {
+      this.parent.send({ ...message, sessionId: this.sessionId });
+      return;
+    }
     try {
       this.socket.send(JSON.stringify(message));
     } catch (error) {
@@ -138,11 +190,28 @@ export class Session {
     }
   }
 
+  // Ends an attached session and tells the connection, as
+  // Target.detachFromTarget and a closing tab do in Chromium.
+  detach() {
+    if (this.closed || !this.parent) {
+      return;
+    }
+    this.close();
+    this.parent.emit("Target.detachedFromTarget", {
+      sessionId: this.sessionId,
+      targetId: this.target.id,
+    });
+  }
+
   close() {
     if (this.closed) {
       return;
     }
     this.closed = true;
+    this.parent?.children.delete(this.sessionId);
+    for (const child of [...this.children.values()]) {
+      child.close();
+    }
     for (const domain of this.domains.values()) {
       try {
         domain._destroy?.();

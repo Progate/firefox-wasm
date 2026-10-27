@@ -33,7 +33,7 @@ for src in embed-init embed-browser embed-paint embed-input embed-mirror; do
   "${CXX[@]}" "${CXXFLAGS[@]}" -c "$HERE/gecko.js/src/$src.cpp" -o "$BUILD/$src.o"
   OBJS+=("$BUILD/$src.o")
 done
-for src in main windowserver; do
+for src in main windowserver devtools-pipe; do
   "${CXX[@]}" "${CXXFLAGS[@]}" -c "$HERE/wasip1/$src.cpp" -o "$BUILD/$src.o"
   OBJS+=("$BUILD/$src.o")
 done

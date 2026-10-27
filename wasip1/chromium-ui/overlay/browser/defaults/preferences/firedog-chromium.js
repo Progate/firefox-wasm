@@ -78,9 +78,10 @@ pref("devtools.policy.disabled", true);
 pref("devtools.jsonview.enabled", false);
 
 // The Chrome DevTools Protocol endpoint (devtools/RemoteDebugging.sys.mjs),
-// Chromium's --remote-debugging-port and --remote-allow-origins. Closed unless
-// a port is set.
+// Chromium's --remote-debugging-port, --remote-debugging-pipe and
+// --remote-allow-origins. Closed unless a port is set or the pipe is asked for.
 pref("firedog.devtools.remote-debugging-port", 0);
+pref("firedog.devtools.remote-debugging-pipe", false);
 pref("firedog.devtools.remote-allow-origins", "");
 
 // Features FireDog leaves out, with the prefs Firefox itself has for them.

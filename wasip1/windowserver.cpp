@@ -81,7 +81,7 @@ bool WindowServer::resize(int w, int h) {
   return true;
 }
 
-bool WindowServer::open(int w, int h) {
+bool WindowServer::open(int w, int h, const std::string& appId) {
   if (!resize(w, h)) return false;
   // DISPLAY is host:port[.screen], the X form host:display.screen with the
   // listening port in place of the display number. The screen picks the
@@ -134,7 +134,7 @@ bool WindowServer::open(int w, int h) {
     fprintf(stderr, "windowserver: cannot open %s: %s\n", path, strerror(errno));
     return false;
   }
-  return command("app " + std::to_string(id_) + " firedog") &&
+  return command("app " + std::to_string(id_) + " " + appId) &&
       command("title " + std::to_string(id_) + " FireDog");
 }
 

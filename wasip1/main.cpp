@@ -2,10 +2,12 @@
 // Gecko's application thread owns its event loop and windowserver connection.
 #include "../gecko.js/src/embed-xul.h"
 #include "windowserver.h"
+#include "devtools-pipe.h"
 #include "nsPrintfCString.h"
 #include "nsITimer.h"
 #include "nsIWindowMediator.h"
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -545,11 +547,18 @@ static std::string startUrl(const char* argument) {
 
 // Chromium's switches that FireDog takes. They come before the URL, as with
 // chrome: --remote-debugging-port=N serves the Chrome DevTools Protocol on
-// 127.0.0.1:N (an embedder that reloads or inspects the page uses it), and
-// --remote-allow-origins=LIST lets those web origins open its WebSocket.
+// 127.0.0.1:N (an embedder that reloads or inspects the page uses it),
+// --remote-allow-origins=LIST lets those web origins open its WebSocket,
+// --remote-debugging-pipe speaks the protocol on file descriptors 3 (read) and
+// 4 (write) instead, as Puppeteer and Playwright launch Chromium, so only the
+// process that started FireDog can drive it, and --class=NAME names the
+// window's application (Chromium's WM_CLASS switch) so that a tiling window
+// manager can tell two FireDogs apart.
 struct Switches {
   int remoteDebuggingPort = 0;
+  bool remoteDebuggingPipe = false;
   std::string remoteAllowOrigins;
+  std::string windowClass = "firedog";
   const char* url = nullptr;
 };
 
@@ -560,14 +569,27 @@ static bool switchValue(const char* argument, const char* name, const char** val
   return true;
 }
 
+// The windowserver's commands are space-separated words, so a class is one.
+static bool validClass(const char* value) {
+  if (!*value) return false;
+  for (const char* c = value; *c; c++) {
+    if (!isalnum(static_cast<unsigned char>(*c)) && !strchr("._-", *c)) return false;
+  }
+  return true;
+}
+
 static Switches parseSwitches(int argc, char** argv) {
   Switches switches;
   for (int i = 1; i < argc; i++) {
     const char* value;
     if (switchValue(argv[i], "--remote-debugging-port", &value)) {
       switches.remoteDebuggingPort = atoi(value);
+    } else if (strcmp(argv[i], "--remote-debugging-pipe") == 0) {
+      switches.remoteDebuggingPipe = true;
     } else if (switchValue(argv[i], "--remote-allow-origins", &value)) {
       switches.remoteAllowOrigins = value;
+    } else if (switchValue(argv[i], "--class", &value) && validClass(value)) {
+      switches.windowClass = value;
     } else if (!switches.url) {
       switches.url = argv[i];
     }
@@ -577,7 +599,8 @@ static Switches parseSwitches(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--help") == 0) {
-    puts("usage: firedog [--remote-debugging-port=PORT] [--remote-allow-origins=ORIGINS] [URL]\n"
+    puts("usage: firedog [--remote-debugging-port=PORT | --remote-debugging-pipe] [--remote-allow-origins=ORIGINS]\n"
+         "               [--class=NAME] [URL]\n"
          "Uses DISPLAY and PROFILE_DIR inside BrowserOS.");
     return 0;
   }
@@ -595,7 +618,7 @@ int main(int argc, char** argv) {
   if (scale < 1) scale = 1;
   g_scale = scale;
   WindowServer window;
-  if (!window.open(1120 * scale, 720 * scale)) { perror("firedog: windowserver"); return 1; }
+  if (!window.open(1120 * scale, 720 * scale, switches.windowClass)) { perror("firedog: windowserver"); return 1; }
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
@@ -614,6 +637,10 @@ int main(int argc, char** argv) {
   // Before browser.xhtml loads: its script starts the endpoint from these prefs.
   if (switches.remoteDebuggingPort > 0) {
     mozilla::Preferences::SetInt("firedog.devtools.remote-debugging-port", switches.remoteDebuggingPort);
+  }
+  if (switches.remoteDebuggingPipe) {
+    mozilla::Preferences::SetBool("firedog.devtools.remote-debugging-pipe", true);
+    registerDevToolsPipe();
   }
   if (!switches.remoteAllowOrigins.empty()) {
     mozilla::Preferences::SetCString("firedog.devtools.remote-allow-origins", switches.remoteAllowOrigins.c_str());
