@@ -185,6 +185,16 @@
   flex: 100 100 calc(var(--fd-tab-width) + 2 * var(--fd-tab-bottom-radius)) !important;
 }
 
+/* Firefox opens and closes a tab by moving its max-width from and to 0.1px
+   (tabs.css's :not([fadein])), and removes a closing tab when that transition
+   ends, or after 3s if its max-width is 0.1px. The max-width above would keep
+   a closing tab at full width: it would stay in the strip, hidden but taking
+   its place, and the new tab button would not move back. */
+.tabbrowser-tab:not([pinned]):not([fadein]) {
+  max-width: 0.1px !important;
+  min-width: 0.1px !important;
+}
+
 .tabbrowser-tab > .tab-stack {
   position: relative;
 }
