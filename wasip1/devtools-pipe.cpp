@@ -8,7 +8,6 @@
 #include "nsThreadUtils.h"
 #include <cerrno>
 #include <condition_variable>
-#include <csignal>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -62,6 +61,9 @@ void readLoop() {
 std::mutex g_lock;
 std::condition_variable g_ready;
 std::deque<std::string> g_outgoing;
+// Set once descriptor 4 stops taking writes. Requests may still arrive on 3,
+// and their responses would otherwise pile up in g_outgoing for good.
+bool g_writerGone = false;
 
 void writeLoop() {
   for (;;) {
@@ -76,8 +78,15 @@ void writeLoop() {
     while (written < message.size()) {
       const ssize_t done = write(kWriteFd, message.data() + written, message.size() - written);
       if (done < 0 && errno == EINTR) continue;
-      // The client closed its end: nothing more can reach it.
-      if (done <= 0) return;
+      // The client closed its end (EPIPE): nothing more can reach it. The
+      // write does not end FireDog with SIGPIPE: NSPR ignores that signal
+      // for the whole process (_PR_UnixInit), as in Firefox on Linux.
+      if (done <= 0) {
+        std::lock_guard<std::mutex> lock(g_lock);
+        g_writerGone = true;
+        g_outgoing.clear();
+        return;
+      }
       written += static_cast<size_t>(done);
     }
   }
@@ -101,6 +110,7 @@ class PipeObserver final : public nsIObserver {
       message.push_back('\0');
       {
         std::lock_guard<std::mutex> lock(g_lock);
+        if (g_writerGone) return NS_OK;
         g_outgoing.push_back(std::move(message));
       }
       g_ready.notify_one();
@@ -117,9 +127,6 @@ NS_IMPL_ISUPPORTS(PipeObserver, nsIObserver)
 }  // namespace
 
 void registerDevToolsPipe() {
-  // Writing to a pipe whose reader is gone must not end FireDog, as it does
-  // not end Chromium: the write fails with EPIPE and the writer stops.
-  signal(SIGPIPE, SIG_IGN);
   nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
   if (!observers) return;
   nsCOMPtr<nsIObserver> observer = new PipeObserver();
