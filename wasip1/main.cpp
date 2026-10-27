@@ -4,6 +4,7 @@
 #include "windowserver.h"
 #include "nsPrintfCString.h"
 #include "nsITimer.h"
+#include "nsIWindowMediator.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -241,6 +242,40 @@ static void readNotices(WindowServer* window) {
   }
   wakeApplication();  // let the application thread see the connection is gone
 }
+
+// Firefox closes its window when the last tab closes
+// (browser.tabs.closeWindowWithLastTab) and when the user quits. Nothing on the
+// windowserver connection says so: the event loop kept running with no window,
+// the last frame stayed on screen and nothing answered. Firefox on Linux exits
+// once its last browser window is gone, so FireDog leaves the loop then too.
+static bool g_windowsGone = false;
+
+class WindowsGoneObserver final : public nsIObserver {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_IMETHOD Observe(nsISupports*, const char* topic, const char16_t*) override {
+    if (strcmp(topic, "quit-application") == 0) {
+      g_windowsGone = true;
+      return NS_OK;
+    }
+    // "xul-window-destroyed" comes for every top-level window (the Library,
+    // a dialog); only the last browser window ends the program. The closed
+    // window has left the window mediator by the time this is notified.
+    nsCOMPtr<nsIWindowMediator> mediator = do_GetService("@mozilla.org/appshell/window-mediator;1");
+    nsCOMPtr<nsISimpleEnumerator> windows;
+    bool more = false;
+    if (mediator && NS_SUCCEEDED(mediator->GetEnumerator(u"navigator:browser", getter_AddRefs(windows))) &&
+        windows) {
+      windows->HasMoreElements(&more);
+    }
+    if (!more) g_windowsGone = true;
+    return NS_OK;
+  }
+
+ private:
+  ~WindowsGoneObserver() = default;
+};
+NS_IMPL_ISUPPORTS(WindowsGoneObserver, nsIObserver)
 
 static bool isMotion(const std::string& line) {
   int id;
@@ -599,6 +634,14 @@ int main(int argc, char** argv) {
     g_compositorEnabled.store(false);
   }
   std::thread(readNotices, &window).detach();
+  // Registered once the browser window is up, so no window has been destroyed
+  // yet. Without the chrome there is no browser window to wait for.
+  nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+  if (chrome && observers) {
+    nsCOMPtr<nsIObserver> gone = new WindowsGoneObserver();
+    observers->AddObserver(gone, "xul-window-destroyed", false);
+    observers->AddObserver(gone, "quit-application", false);
+  }
   // A backstop for a change that never reaches the refresh driver: one paint a
   // second costs one RenderDocument and, if nothing changed, no present. The
   // timer also wakes the event loop when nothing else would.
@@ -610,7 +653,7 @@ int main(int argc, char** argv) {
   uint64_t paintedGeneration = 0;
   auto lastPaint = std::chrono::steady_clock::now();
   std::vector<std::string> batch;
-  while (window.connected()) {
+  while (window.connected() && !g_windowsGone) {
     {
       std::lock_guard<std::mutex> lock(g_inboxLock);
       batch.swap(g_inbox);
