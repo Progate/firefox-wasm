@@ -103,6 +103,16 @@ Playback-rate changes then shift the pitch. To check a build, list the
 function names and look for none from SoundTouch or FFmpeg (`soundtouch::`,
 `av_`, `ff_`).
 
+Sound goes out through cubeb's `oss` backend. BrowserOS has an OSS 4.x
+`/dev/dsp`, as OSS has on Linux, when the host plugs in an audio output
+(`@progate/browser-os`'s `BrowserOSAudioOutput`; in a page,
+`@progate/browser-driver`'s `attachAudioOutput` plays it with Web Audio).
+The backend needs only `open`, `ioctl`, `write` and `poll`; the ALSA and
+PulseAudio backends need LGPL client libraries, which FireDog does not link,
+and they are loaded with `dlopen`, which WASI lacks. `cubeb_oss.c` includes
+`<sys/soundcard.h>`, so the sysroot must come from a libc that has
+`linux/soundcard.h` (Progate/libc's `browseros` branch).
+
 ## https://
 
 FireDog does TLS itself, with NSS, like any Firefox. Inside BrowserOS a
