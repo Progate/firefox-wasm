@@ -4951,6 +4951,25 @@ index da931832e0..212ea90337 100644
  LOCAL_INCLUDES += [
      "../ext",
  ]
+diff --git a/toolkit/components/enterprisepolicies/EnterprisePoliciesParent.sys.mjs b/toolkit/components/enterprisepolicies/EnterprisePoliciesParent.sys.mjs
+--- a/toolkit/components/enterprisepolicies/EnterprisePoliciesParent.sys.mjs
++++ b/toolkit/components/enterprisepolicies/EnterprisePoliciesParent.sys.mjs
+@@ -630,7 +630,14 @@
+       return null;
+     }
+ 
+-    if (AppConstants.platform == "linux" && AppConstants.MOZ_SYSTEM_POLICIES) {
++    // FireDog runs as a Linux browser in a Linux guest, but on WASI
++    // AppConstants.platform is "other": read /etc/firefox/policies like Linux,
++    // so the guest's administrator can set policies at each launch while the
++    // installation (and its distribution/ directory) stays read-only.
++    if (
++      (AppConstants.platform == "linux" || Services.appinfo.OS == "WASI") &&
++      AppConstants.MOZ_SYSTEM_POLICIES
++    ) {
+       let systemConfigFile = Services.dirsvc.get("SysConfD", Ci.nsIFile);
+       systemConfigFile.append("policies");
+       systemConfigFile.append(POLICIES_FILENAME);
 diff --git a/toolkit/components/kvstore/src/fs.rs b/toolkit/components/kvstore/src/fs.rs
 index 37ac203c85..bcd70253b4 100644
 --- a/toolkit/components/kvstore/src/fs.rs
