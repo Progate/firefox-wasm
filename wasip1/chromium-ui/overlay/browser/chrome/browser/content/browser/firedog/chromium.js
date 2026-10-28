@@ -18,6 +18,7 @@ var FireDogChromium = {
     this.removeUnusedKeys();
     this.replayFirstLocation();
     this.addDevTools();
+    this.enterDomFullscreenInProcess();
     // The Chrome DevTools Protocol endpoint, when its pref sets a port.
     ChromeUtils.importESModule(
       "resource:///modules/firedog/devtools/RemoteDebugging.sys.mjs"
@@ -238,6 +239,44 @@ var FireDogChromium = {
       replay();
     };
     Services.obs.addObserver(observer, "browser-delayed-startup-finished");
+  },
+
+  // DOM fullscreen (element.requestFullscreen()) of a page in FireDog's
+  // single process. Firefox hides its toolbars for DOM fullscreen from
+  // DOMFullscreenParent, which starts listening when DOMFullscreenChild
+  // forwards the content process's "MozDOMFullscreen:Request". A document in
+  // the parent process never sends that request: Gecko applies its fullscreen
+  // directly and only dispatches "MozDOMFullscreen:Entered" to the chrome, which
+  // no actor is listening for yet. The toolbars then stay over the page, and the
+  // fullscreen element is 87px shorter than the screen. Stand in for the
+  // request here: make the requesting frame's actor the request origin, as
+  // "DOMFullscreen:Request" does (without remoteFrameFullscreenChanged, which
+  // is for a remote <browser>), and let it handle this "Entered" and the
+  // "Exited" that follows.
+  enterDomFullscreenInProcess() {
+    window.addEventListener(
+      "MozDOMFullscreen:Entered",
+      event => {
+        const content = event.target.documentGlobal;
+        if (content == window) {
+          // A remote <browser>: its DOMFullscreenChild sent the request.
+          return;
+        }
+        const actor =
+          content.browsingContext.currentWindowGlobal?.getActor("DOMFullscreen");
+        if (!actor || actor.requestOrigin == actor) {
+          // The actor already listens (an earlier fullscreen of this frame).
+          return;
+        }
+        actor.manager.fullscreen = true;
+        actor.waitingForChildExitFullscreen = false;
+        actor.requestOrigin = actor;
+        actor.addListeners(window);
+        // A listener added while the event is dispatched misses that event.
+        actor.handleEvent(event);
+      },
+      true
+    );
   },
 
   dumpLayout() {
