@@ -5,7 +5,7 @@
 // The Target domain. FireDog's pages have no out-of-process frames or
 // workers to attach to (Gecko runs single-process and its workers are not
 // exposed as targets yet), so auto-attach has nothing to report; discovery
-// lists the tabs. A client on the browser's connection (the pipe, or
+// lists the tabs, and then reports the tabs opened and closed after it. A client on the browser's connection (the pipe, or
 // /devtools/browser/<id>) reaches a tab by attaching to it: flat sessions,
 // whose messages carry the sessionId attachToTarget returned.
 
@@ -29,7 +29,62 @@ export class Target {
       for (const page of Targets.pages()) {
         this.session.emit("Target.targetCreated", { targetInfo: page.info() });
       }
+      this._watchTabs();
+    } else if (!discover && wasDiscovering) {
+      this._unwatchTabs();
     }
+  }
+
+  // Chromium keeps reporting targets while discovery is on: a tab a page
+  // opens (window.open, a link with target=_blank) is a targetCreated, a
+  // closed one a targetDestroyed.
+  _watchTabs() {
+    this.watched = new Set();
+    this.onTab = event => {
+      const target = Targets.forBrowser(event.target.linkedBrowser);
+      if (event.type === "TabOpen") {
+        this.session.emit("Target.targetCreated", { targetInfo: target.info() });
+      } else {
+        this.session.emit("Target.targetDestroyed", { targetId: target.id });
+      }
+    };
+    const watch = win => {
+      if (!win.gBrowser || this.watched.has(win)) {
+        return;
+      }
+      this.watched.add(win);
+      win.gBrowser.tabContainer.addEventListener("TabOpen", this.onTab);
+      win.gBrowser.tabContainer.addEventListener("TabClose", this.onTab);
+    };
+    for (const win of Services.wm.getEnumerator("navigator:browser")) {
+      watch(win);
+    }
+    // A new window's first tab opens without a TabOpen.
+    this.onWindow = win => {
+      watch(win);
+      for (const tab of win.gBrowser?.tabs ?? []) {
+        this.session.emit("Target.targetCreated", {
+          targetInfo: Targets.forBrowser(tab.linkedBrowser).info(),
+        });
+      }
+    };
+    Services.obs.addObserver(this.onWindow, "browser-delayed-startup-finished");
+  }
+
+  _unwatchTabs() {
+    if (!this.watched) {
+      return;
+    }
+    for (const win of this.watched) {
+      win.gBrowser?.tabContainer.removeEventListener("TabOpen", this.onTab);
+      win.gBrowser?.tabContainer.removeEventListener("TabClose", this.onTab);
+    }
+    this.watched = null;
+    Services.obs.removeObserver(this.onWindow, "browser-delayed-startup-finished");
+  }
+
+  _destroy() {
+    this._unwatchTabs();
   }
 
   getTargets() {
