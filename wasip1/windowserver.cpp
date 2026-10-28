@@ -74,6 +74,10 @@ bool WindowServer::setCursor(const std::string& rectangle) {
   return command("cursor " + std::to_string(id_) + rectangle);
 }
 
+bool WindowServer::setFullscreen(bool on) {
+  return command((on ? "set-fullscreen " : "unset-fullscreen ") + std::to_string(id_));
+}
+
 bool WindowServer::resize(int w, int h) {
   if (w < 1 || h < 1 || w > 8192 || h > 8192) return false;
   width = w;

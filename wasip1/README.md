@@ -143,6 +143,15 @@ off (branding prefs), since BrowserOS sockets carry TCP only.
 - `main.cpp`, `windowserver.cpp`: the program's entry point and the
   windowserver client. They open the window, present frames at the desktop's
   scale and translate pointer, keyboard, IME and clipboard events into Gecko's.
+  `Element.requestFullscreen()` does not resize the window on its own: the
+  headless widget asks the windowserver (`set-fullscreen`, Wayland's
+  `xdg_toplevel.set_fullscreen`) and enters or leaves fullscreen when the
+  window manager's `configure` says so, including when the window manager
+  leaves fullscreen unasked (Esc on the host page). A refused request fails
+  with `fullscreenerror`. When the window manager's `wm-capabilities` leave out
+  fullscreen (the viewer did not allow it), `full-screen-api.enabled` is off,
+  so the page sees `document.fullscreenEnabled` false and `requestFullscreen()`
+  fails at once, as under a Permissions Policy that denies fullscreen.
 - `link.sh`: links the entry point, the gecko.js embedder and Gecko's libraries
   into `firedog.wasm`, with shared imported memory for wasi-threads.
 - `branding/firedog`: names, icons and default prefs. The icons are Progate's
