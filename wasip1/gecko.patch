@@ -6542,7 +6542,20 @@ diff --git a/storage/ObfuscatingVFS.cpp b/storage/ObfuscatingVFS.cpp
 diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget.cpp
 --- a/widget/headless/HeadlessWidget.cpp
 +++ b/widget/headless/HeadlessWidget.cpp
-@@ -28,6 +28,14 @@
+@@ -21,6 +21,12 @@
+ #include "mozilla/widget/Screen.h"
+ #include "nsIScreen.h"
+ #include "HeadlessKeyBindings.h"
++#if defined(__wasi__)
++#  include "nsIAppWindow.h"
++#  include "nsIDocShell.h"
++#  include "nsPIDOMWindow.h"
++#  include <utility>
++#endif
+ 
+ using namespace mozilla;
+ using namespace mozilla::gfx;
+@@ -28,6 +34,22 @@
  
  using mozilla::LogLevel;
  
@@ -6552,12 +6565,20 @@ diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget
 +// variable of its own that the embedder's definition never replaces.
 +__attribute__((weak)) FireDogRemoteDrawing firedog_remote_drawing = {nullptr,
 +                                                                     nullptr};
++__attribute__((weak)) FireDogWindowManager firedog_window_manager = {nullptr};
++
++void firedog_window_manager_configured(nsIWidget* aWidget, bool aFullScreen) {
++  if (aWidget) {
++    static_cast<mozilla::widget::HeadlessWidget*>(aWidget)
++        ->WindowManagerConfigured(aFullScreen);
++  }
++}
 +#endif
 +
  #ifdef MOZ_LOGGING
  
  #  include "mozilla/Logging.h"
-@@ -232,6 +240,32 @@
+@@ -232,6 +254,32 @@
    return GetTopLevelWidget()->GetBounds().TopLeft();
  }
  
@@ -6590,10 +6611,59 @@ diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget
  WindowRenderer* HeadlessWidget::GetWindowRenderer() {
    return nsIWidget::GetWindowRenderer();
  }
+@@ -359,6 +407,48 @@
+ }
+ 
+ nsresult HeadlessWidget::MakeFullScreen(bool aFullScreen) {
++#if defined(__wasi__)
++  // With a window manager, the size mode changes when its configure says the
++  // window is fullscreen (WindowManagerConfigured), not when it is asked.
++  if (firedog_window_manager.set_fullscreen &&
++      firedog_window_manager.set_fullscreen(this, aFullScreen)) {
++    mWindowManagerRequest = Some(aFullScreen);
++    return NS_OK;
++  }
++#endif
++  return ApplyFullScreen(aFullScreen);
++}
++
++#if defined(__wasi__)
++void HeadlessWidget::WindowManagerConfigured(bool aFullScreen) {
++  const Maybe<bool> request = std::exchange(mWindowManagerRequest, Nothing());
++  if (aFullScreen != (mSizeMode == nsSizeMode_Fullscreen)) {
++    // As asked, or on the window manager's own (the user left fullscreen):
++    // either way the window listener sees a size mode change, and
++    // nsGlobalWindowOuter enters or leaves DOM fullscreen with it.
++    ApplyFullScreen(aFullScreen);
++    return;
++  }
++  if (request.isNothing() || *request == aFullScreen || !mWidgetListener) {
++    return;
++  }
++  // Refused: the configure kept the state the window asked to leave. No size
++  // mode change will come, so end the request the window is waiting on as a
++  // failed one (nsGlobalWindowOuter::FinishFullscreenChange with the state
++  // that differs from its request).
++  nsCOMPtr<nsIAppWindow> appWindow = mWidgetListener->GetAppWindow();
++  nsCOMPtr<nsIDocShell> docShell;
++  if (appWindow) {
++    appWindow->GetDocShell(getter_AddRefs(docShell));
++  }
++  if (nsCOMPtr<nsPIDOMWindowOuter> window =
++          docShell ? docShell->GetWindow() : nullptr) {
++    window->FinishFullscreenChange(aFullScreen);
++  }
++}
++#endif
++
++nsresult HeadlessWidget::ApplyFullScreen(bool aFullScreen) {
+   // Directly update the size mode here so a later call SetSizeMode does
+   // nothing.
+   if (aFullScreen) {
 diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
 --- a/widget/headless/HeadlessWidget.h
 +++ b/widget/headless/HeadlessWidget.h
-@@ -34,6 +34,27 @@
+@@ -34,6 +34,46 @@
  #  define MOZ_HEADLESS_SCROLL_DELTA_MODE -1
  #endif
  
@@ -6615,17 +6685,35 @@ diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
 +  void (*end)(nsIWidget* aWidget, const int32_t* aRects, size_t aCount);
 +};
 +extern FireDogRemoteDrawing firedog_remote_drawing;
++
++// The window manager of a headless window, for an embedder whose windows have
++// one (FireDog on BrowserOS). There a window does not make itself fullscreen:
++// like a Wayland client's xdg_toplevel.set_fullscreen, it asks, and the window
++// manager answers with a configure that says whether the window is fullscreen
++// (firedog_window_manager_configured). libxul carries a weak, empty definition
++// that the embedder's replaces, as with firedog_remote_drawing.
++struct FireDogWindowManager {
++  // Main thread. Ask for aWidget to be made fullscreen or not. Returns false
++  // when no window manager decides for aWidget (the widget then changes its
++  // size mode at once, as headless widgets do).
++  bool (*set_fullscreen)(nsIWidget* aWidget, bool aFullScreen);
++};
++extern FireDogWindowManager firedog_window_manager;
++// Main thread. The window manager's configure for aWidget: whether it is
++// fullscreen now. It answers every set_fullscreen, and also comes unasked
++// when the window manager leaves fullscreen on its own (the user pressed Esc
++// on the host).
++void firedog_window_manager_configured(nsIWidget* aWidget, bool aFullScreen);
 +}
 +#endif
 +
  namespace mozilla {
  enum class NativeKeyBindingsType : uint8_t;
  namespace widget {
-@@ -90,6 +111,14 @@
- #endif
+@@ -91,6 +131,14 @@
  
    void SetCompositorWidgetDelegate(CompositorWidgetDelegate* delegate) override;
-+
+ 
 +#if defined(__wasi__)
 +  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
 +      const LayoutDeviceIntRegion& aInvalidRegion) override;
@@ -6633,9 +6721,26 @@ diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
 +      gfx::DrawTarget* aDrawTarget,
 +      const LayoutDeviceIntRegion& aInvalidRegion) override;
 +#endif
- 
++
    [[nodiscard]] nsresult AttachNativeKeyEvent(
        WidgetKeyboardEvent& aEvent) override;
+   MOZ_CAN_RUN_SCRIPT bool GetEditCommands(
+@@ -151,6 +199,15 @@
+   LayoutDeviceIntRect mRestoreBounds;
+   LayoutDeviceIntRect mBounds;
+   void ApplySizeModeSideEffects();
++  // Change the size mode to or from fullscreen (MakeFullScreen without a
++  // window manager to ask).
++  nsresult ApplyFullScreen(bool aFullScreen);
++#if defined(__wasi__)
++  friend void ::firedog_window_manager_configured(nsIWidget*, bool);
++  void WindowManagerConfigured(bool aFullScreen);
++  // What the last set_fullscreen asked for, until the configure answers it.
++  mozilla::Maybe<bool> mWindowManagerRequest;
++#endif
+   // Move while maintaining size mode.
+   void MoveInternal(int32_t aX, int32_t aY);
+   // Resize while maintaining size mode.
 diff --git a/widget/headless/HeadlessCompositorWidget.h b/widget/headless/HeadlessCompositorWidget.h
 --- a/widget/headless/HeadlessCompositorWidget.h
 +++ b/widget/headless/HeadlessCompositorWidget.h
@@ -6937,3 +7042,76 @@ index b951d45..88c4f7d 100644
          );
          assert!(
              !records.iter().any(|r| r.id == "custom-synced-record"),
+diff --git a/dom/base/Document.h b/dom/base/Document.h
+--- a/dom/base/Document.h
++++ b/dom/base/Document.h
+@@ -2164,6 +2164,16 @@
+    */
+   static void ClearPendingFullscreenRequests(Document* aDocument);
+ 
++#if defined(__wasi__)
++  /**
++   * Fail the pending fullscreen requests in aDocument and its descendants
++   * (fullscreenerror and a rejected promise), with aReason's message in the
++   * console: the window manager refused to make the window fullscreen.
++   */
++  static void RejectPendingFullscreenRequests(Document* aDocument,
++                                              const char* aReason);
++#endif
++
+   void SetFullscreenKeyboardLockStatus(FullscreenKeyboardLock aStatus);
+   FullscreenKeyboardLock GetFullscreenKeyboardLockStatus() const;
+   bool HasFullscreenKeyboardLockEnabled();
+diff --git a/dom/base/Document.cpp b/dom/base/Document.cpp
+--- a/dom/base/Document.cpp
++++ b/dom/base/Document.cpp
+@@ -17013,6 +17013,19 @@
+   }
+ }
+ 
++#if defined(__wasi__)
++/* static */
++void Document::RejectPendingFullscreenRequests(Document* aDoc,
++                                               const char* aReason) {
++  PendingFullscreenChangeList::Iterator<FullscreenRequest> iter(
++      aDoc, PendingFullscreenChangeList::eInclusiveDescendants);
++  while (!iter.AtEnd()) {
++    UniquePtr<FullscreenRequest> request = iter.TakeAndNext();
++    request->Reject(aReason);
++  }
++}
++#endif
++
+ void Document::AddPendingFullscreenEvent(
+     UniquePtr<PendingFullscreenEvent> aPendingEvent) {
+   const bool wasEmpty = mPendingFullscreenEvents.IsEmpty();
+diff --git a/dom/base/nsGlobalWindowOuter.cpp b/dom/base/nsGlobalWindowOuter.cpp
+--- a/dom/base/nsGlobalWindowOuter.cpp
++++ b/dom/base/nsGlobalWindowOuter.cpp
+@@ -4406,6 +4406,26 @@
+   if (!mFullscreenHasChangedDuringProcessing &&
+       aIsFullscreen != mFullscreen.isSome()) {
+     NS_WARNING("Failed to toggle fullscreen state of the widget");
++#if defined(__wasi__)
++    // BrowserOS's window manager can refuse (the host page could not go
++    // fullscreen). SetWidgetFullscreen froze the chrome's refresh driver for
++    // the transition; without a thaw the window would never paint again. The
++    // DOM requests waiting on this change fail as a denied request does
++    // (fullscreenerror and a rejected promise) instead of waiting forever.
++    if (!NS_WARN_IF(!IsChromeWindow())) {
++      if (RefPtr<PresShell> presShell =
++              do_QueryReferent(mChromeFields.mFullscreenPresShell)) {
++        if (nsRefreshDriver* rd = presShell->GetRefreshDriver()) {
++          rd->Thaw();
++        }
++        mChromeFields.mFullscreenPresShell = nullptr;
++      }
++    }
++    if (!aIsFullscreen && mDoc) {
++      Document::RejectPendingFullscreenRequests(
++          mDoc, "FullscreenDeniedNotInputDriven");
++    }
++#endif
+     // We failed to make the widget enter fullscreen.
+     // Stop further changes and restore the state.
+     if (!aIsFullscreen) {
