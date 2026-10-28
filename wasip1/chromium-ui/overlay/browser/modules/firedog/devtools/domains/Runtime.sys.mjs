@@ -225,7 +225,9 @@ export class Runtime {
         this.session.emit("Runtime.executionContextsCleared");
       }
     }
-    this._announce(this._contextForWindow(win));
+    const context = this._contextForWindow(win);
+    this._announce(context);
+    this._installBindings(context);
   }
 
   _startObserving() {
@@ -502,7 +504,11 @@ export class Runtime {
 
   disable() {
     this.enabled = false;
-    this._stopObserving();
+    // Bindings outlive Runtime.disable, as in Chromium: keep finding the
+    // documents they go into.
+    if (!this.bindings?.size) {
+      this._stopObserving();
+    }
   }
 
   async evaluate({
@@ -794,34 +800,53 @@ export class Runtime {
   addBinding({ name, executionContextId, executionContextName }) {
     // A function on the page's global that reports calls back as
     // Runtime.bindingCalled (the front-end uses one for its own helpers).
-    this.bindings ??= new Set();
-    this.bindings.add(name);
-    const install = context => {
-      const win = context.window;
-      const fn = Cu.exportFunction(
-        payload =>
-          this.session.emit("Runtime.bindingCalled", {
-            name,
-            payload: String(payload),
-            executionContextId: context.id,
-          }),
-        win,
-        { allowCrossOriginArguments: true }
-      );
-      Cu.waiveXrays(win)[name] = fn;
-    };
+    // Without an executionContextId, Chromium also adds it to every context
+    // created later (a navigation, a new frame), before the document's own
+    // scripts run, until removeBinding.
+    if (!executionContextId) {
+      this.bindings ??= new Map();
+      this.bindings.set(name, executionContextName ?? null);
+      this._startObserving();
+    }
     for (const context of this.contexts.values()) {
       if (
         (!executionContextId || context.id === executionContextId) &&
         (!executionContextName || context.name === executionContextName)
       ) {
-        install(context);
+        this._installBinding(name, context);
+      }
+    }
+  }
+
+  _installBinding(name, context) {
+    const win = context.window;
+    const fn = Cu.exportFunction(
+      payload =>
+        this.session.emit("Runtime.bindingCalled", {
+          name,
+          payload: String(payload),
+          executionContextId: context.id,
+        }),
+      win,
+      { allowCrossOriginArguments: true }
+    );
+    Cu.waiveXrays(win)[name] = fn;
+  }
+
+  // The bindings added for every context, into a context just created.
+  _installBindings(context) {
+    for (const [name, contextName] of this.bindings ?? []) {
+      if (!contextName || context.name === contextName) {
+        this._installBinding(name, context);
       }
     }
   }
 
   removeBinding({ name }) {
     this.bindings?.delete(name);
+    if (!this.enabled && !this.bindings?.size) {
+      this._stopObserving();
+    }
   }
 
   compileScript({ expression, sourceURL = "", persistScript, executionContextId }) {
