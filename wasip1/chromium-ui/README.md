@@ -22,6 +22,9 @@ from `./mach package`'s output.
     `chrome/browser/ui/layout_constants.cc` and `chrome/browser/ui/tabs/tab_style.cc`;
     colors and the light inner border are measured from Chromium.app. It also
     hides the menu items and panel parts of the features FireDog leaves out.
+    It drops Firefox's minimum window size (500x120): the windowserver sizes
+    the window, and a narrower surface (a preview pane) would otherwise never
+    show a frame from the compositor.
   - `chromium.js` adds what Firefox's markup does not have (Chrome DevTools on
     Chromium's keys), removes the keyboard shortcuts of the features FireDog
     leaves out, and replays the first page's location change, which
