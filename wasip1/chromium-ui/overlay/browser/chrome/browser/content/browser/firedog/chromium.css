@@ -46,6 +46,17 @@
 
 /* The window */
 
+/* The windowserver (the window manager) decides the window's size, and the
+   window must fill it. Firefox gives its window a minimum width of 500px
+   (--window-min-width) and height of 120px; the widget then stays at the
+   minimum while the surface is narrower (a 484px preview pane), the
+   compositor's frames never match the surface and are not presented, and the
+   window keeps showing its first frame (an empty "New Tab") until a resize. */
+:root {
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
 #navigator-toolbox {
   /* macOS draws a light inner edge around the window; it shows over the frame,
      including where the toolbar's top corners are cut away. Each edge is a
