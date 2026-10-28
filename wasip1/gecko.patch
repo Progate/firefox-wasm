@@ -6956,6 +6956,21 @@ index b951d45..88c4f7d 100644
          );
          assert!(
              !records.iter().any(|r| r.id == "custom-synced-record"),
+diff --git a/browser/components/DesktopActorRegistry.sys.mjs b/browser/components/DesktopActorRegistry.sys.mjs
+index 4f60509b7e..086d02e2d3 100644
+--- a/browser/components/DesktopActorRegistry.sys.mjs
++++ b/browser/components/DesktopActorRegistry.sys.mjs
+@@ -31,6 +31,10 @@ let JSPROCESSACTORS = {
+         "recording-window-ended",
+       ],
+     },
++    // When tabs are not remote (FireDog on WASI has no child processes), web
++    // pages live in the parent process, and their getUserMedia and
++    // RTCPeerConnection requests are observed there.
++    includeParent: !Services.appinfo.browserTabsRemoteAutostart,
+   },
+ 
+   MozCachedOHTTP: {
 diff --git a/dom/media/systemservices/moz.build b/dom/media/systemservices/moz.build
 index f0d6241a8e..8f2f8c6f02 100644
 --- a/dom/media/systemservices/moz.build
