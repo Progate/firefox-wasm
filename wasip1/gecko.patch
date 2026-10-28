@@ -957,6 +957,20 @@ index f958ef7438..3e82edcf9c 100644
      MarkFrameForDisplay(currentCaret, aReferenceFrame);
      caret->SetLastPaintedFrame(currentCaret);
      if (!mPaintedCarets.Contains(caret)) {
+diff --git a/media/libcubeb/src/moz.build b/media/libcubeb/src/moz.build
+index 43941eb..940117a 100644
+--- a/media/libcubeb/src/moz.build
++++ b/media/libcubeb/src/moz.build
+@@ -19,6 +19,9 @@ if CONFIG['MOZ_ALSA']:
+         'cubeb_alsa.c',
+     ]
+     DEFINES['USE_ALSA'] = True
++    if CONFIG['OS_TARGET'] == 'WASI':
++        # WASI has no dlopen; link the sysroot's libasound (-lasound) instead.
++        DEFINES['DISABLE_LIBASOUND_DLOPEN'] = True
+ 
+ if CONFIG['MOZ_SUNAUDIO']:
+     SOURCES += [
 diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
 index d4cf9a295e..0049cd8aaf 100644
 --- a/mfbt/ThreadLocal.h
@@ -5063,7 +5077,7 @@ index 0a2a5ac202..2ec631847f 100644
  
      return elemString;
 diff --git a/toolkit/moz.configure b/toolkit/moz.configure
-index b8c8a03c3d..0bc2cf1294 100644
+index b8c8a03..359288e 100644
 --- a/toolkit/moz.configure
 +++ b/toolkit/moz.configure
 @@ -166,7 +166,7 @@ def fold_libs(target):
@@ -5080,13 +5094,22 @@ index b8c8a03c3d..0bc2cf1294 100644
      elif target.os == "WINNT":
          return ("wasapi",)
 +    elif target.os == "WASI":
-+        # BrowserOS's /dev/dsp speaks OSS 4.x, as OSS does on Linux. The oss
-+        # backend needs only open/ioctl/write; ALSA and PulseAudio need LGPL
-+        # client libraries, which FireDog does not link (and cannot dlopen).
-+        return ("oss",)
++        # BrowserOS's kernel has Linux's ALSA devices (/dev/snd). The alsa
++        # backend links the sysroot's libasound directly (no dlopen in WASI);
++        # it is a libasound written for BrowserOS, not the LGPL alsa-lib.
++        return ("alsa",)
      else:
          return ("pulseaudio",)
  
+@@ -316,7 +321,7 @@ def imply_alsa(values, target):
+     if (
+         any("alsa" in value for value in values)
+         and target.kernel != "Linux"
+-        and target.os != "FreeBSD"
++        and target.os not in ("FreeBSD", "WASI")
+     ):
+         die("Cannot enable ALSA on %s", target.os)
+     return any("alsa" in value for value in values) or None
 @@ -534,7 +539,7 @@ def toolkit_choices(target):
          return ("cairo-uikit",)
      elif target.os == "Android":
