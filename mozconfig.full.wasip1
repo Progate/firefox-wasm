@@ -66,3 +66,7 @@ export RUSTFLAGS="-Ctarget-feature=+simd128,+atomics,+bulk-memory"
 HOST_CC=clang
 HOST_CXX=clang++
 export LLVM_OBJDUMP="$WASI_SDK_PATH/bin/llvm-objdump"
+# pkg-config looks only in the sysroot: the alsa audio backend (--enable-alsa)
+# finds BrowserOS's libasound there through its alsa.pc.
+export PKG_CONFIG_SYSROOT_DIR="$BROWSEROS_SYSROOT"
+export PKG_CONFIG_LIBDIR="$BROWSEROS_SYSROOT/lib/wasm32-wasip1-threads/pkgconfig"

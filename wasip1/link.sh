@@ -82,7 +82,7 @@ done
   -Wl,--import-memory,--export-memory,--shared-memory \
   -Wl,--max-memory=4294967296 -Wl,--initial-memory=268435456 \
   -Wl,-z,stack-size=16777216 \
-  -lsetjmp -lwasi-emulated-mman -lwasi-emulated-signal \
+  -lasound -lsetjmp -lwasi-emulated-mman -lwasi-emulated-signal \
   -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,--strip-debug -Wl,--error-limit=0 \
   -o "$OUT"

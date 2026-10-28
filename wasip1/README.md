@@ -103,15 +103,20 @@ Playback-rate changes then shift the pitch. To check a build, list the
 function names and look for none from SoundTouch or FFmpeg (`soundtouch::`,
 `av_`, `ff_`).
 
-Sound goes out through cubeb's `oss` backend. BrowserOS has an OSS 4.x
-`/dev/dsp`, as OSS has on Linux, when the host plugs in an audio output
-(`@progate/browser-os`'s `BrowserOSAudioOutput`; in a page,
-`@progate/browser-driver`'s `attachAudioOutput` plays it with Web Audio).
-The backend needs only `open`, `ioctl`, `write` and `poll`; the ALSA and
-PulseAudio backends need LGPL client libraries, which FireDog does not link,
-and they are loaded with `dlopen`, which WASI lacks. `cubeb_oss.c` includes
-`<sys/soundcard.h>`, so the sysroot must come from a libc that has
-`linux/soundcard.h` (Progate/libc's `browseros` branch).
+Sound goes out through cubeb's `alsa` backend, as Firefox's does on Linux.
+BrowserOS's kernel has Linux's ALSA devices (`/dev/snd/controlC0` and
+`/dev/snd/pcmC0D0p`, with the ioctls of the Linux UAPI `<sound/asound.h>`)
+when the host plugs in an audio output (`@progate/browser-os`'s
+`BrowserOSAudioOutput`; in a page, `@progate/browser-driver`'s
+`attachAudioOutput` plays it with Web Audio). The backend is linked to the
+sysroot's libasound with cubeb's own `DISABLE_LIBASOUND_DLOPEN`, since WASI has
+no `dlopen`; `link.sh` adds `-lasound`. That libasound is not alsa-lib, which
+is LGPL and which FireDog does not link: it is a library written for BrowserOS
+(`@progate/browser-system-libs`) with alsa-lib's PCM API, talking to the same
+kernel interface. `configure` finds it through the sysroot's `alsa.pc`
+(`mozconfig.full.wasip1` points pkg-config at the sysroot), so the sysroot must
+come from a `browser-system-libs` that builds libasound and from a libc that
+has `sound/asound.h` (Progate/libc's `browseros` branch).
 
 ## https://
 
