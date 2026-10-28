@@ -29,6 +29,10 @@ class WindowServer {
   bool setClipboard(const std::string& text);
   // Where text is typed (" x y width height" in the window, or empty for none).
   bool setCursor(const std::string& rectangle);
+  // Ask the window manager to make the window fullscreen or not (Wayland's
+  // xdg_toplevel.set_fullscreen / unset_fullscreen). The answer is a
+  // configure notice whose states say whether it is fullscreen now.
+  bool setFullscreen(bool on);
   bool connected() const { return socket_ >= 0 && !closed_.load(std::memory_order_acquire); }
   int width = 1000;
   int height = 720;

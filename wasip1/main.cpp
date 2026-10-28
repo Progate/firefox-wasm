@@ -157,13 +157,36 @@ static void key(int down, int code, const std::string& text) {
   do_key(down ? 0 : 1, character.c_str(), keyCode, charCode, g_modifiers, domCode(code));
 }
 
+// The window manager's answer for the main window (defined with the window
+// manager hooks below, after the main widget is known).
+static void configuredByWindowManager(bool aFullScreen);
+
+// Whether a comma-separated list of window states or capabilities, as the
+// windowserver writes them ("-" for none), holds name.
+static bool listHas(const char* list, const char* name) {
+  std::string entries = std::string(",") + list + ",";
+  return entries.find(std::string(",") + name + ",") != std::string::npos;
+}
+
 static bool dispatch(WindowServer& window, const std::string& line) {
   int id, x, y, dx, dy, code, button = 0;
   char state[16], text[4096];
   if (sscanf(line.c_str(), "close %d", &id) == 1) return false;
-  if (sscanf(line.c_str(), "configure %d %d %d", &id, &x, &y) == 3) {
+  char states[64] = "";
+  if (sscanf(line.c_str(), "configure %d %d %d %63s", &id, &x, &y, states) >= 3) {
     if (!window.resize(x, y)) return false;
     EnsureSize(x, y);
+    // Every configure says whether the window is fullscreen; the widget acts
+    // only on a change or on the answer to its own request.
+    configuredByWindowManager(listHas(states, "fullscreen"));
+    return true;
+  }
+  // What the window manager lets this window do (xdg_toplevel.wm_capabilities).
+  // Without fullscreen the page's Fullscreen API is off, so requestFullscreen()
+  // fails at once with fullscreenerror, the same as under a Permissions Policy
+  // that denies fullscreen, instead of asking a window manager that will refuse.
+  if (sscanf(line.c_str(), "wm-capabilities %d %63s", &id, states) == 2) {
+    mozilla::Preferences::SetBool("full-screen-api.enabled", listHas(states, "fullscreen"));
     return true;
   }
   int fields = sscanf(line.c_str(), "pointer %d %15s %d %d %d", &id, state, &x, &y, &button);
@@ -469,6 +492,35 @@ static void endDrawing(nsIWidget*, const int32_t* aRects, size_t aCount) {
 
 extern "C" FireDogRemoteDrawing firedog_remote_drawing = {startDrawing, endDrawing};
 
+// The window manager of the main window (see FireDogWindowManager in
+// HeadlessWidget.h). Element.requestFullscreen() reaches the widget's
+// MakeFullScreen, which asks here; the windowserver passes the request to the
+// window manager, and its configure comes back through dispatch.
+extern "C" {
+struct FireDogWindowManager {
+  bool (*set_fullscreen)(nsIWidget* aWidget, bool aFullScreen);
+};
+void firedog_window_manager_configured(nsIWidget* aWidget, bool aFullScreen);
+}
+
+namespace {
+std::atomic<WindowServer*> g_window{nullptr};
+}  // namespace
+
+static bool askFullscreen(nsIWidget* aWidget, bool aFullScreen) {
+  // Popups and other windows than the one on the windowserver keep the
+  // headless widget's own size modes.
+  WindowServer* window = g_window.load();
+  if (!window || !aWidget || aWidget != g_mainWidget.load()) return false;
+  return window->setFullscreen(aFullScreen);
+}
+
+extern "C" FireDogWindowManager firedog_window_manager = {askFullscreen};
+
+static void configuredByWindowManager(bool aFullScreen) {
+  if (nsIWidget* widget = g_mainWidget.load()) firedog_window_manager_configured(widget, aFullScreen);
+}
+
 // Whether popups were drawn over the last presented compositor frame.
 static bool g_popupsShown = false;
 
@@ -619,6 +671,7 @@ int main(int argc, char** argv) {
   g_scale = scale;
   WindowServer window;
   if (!window.open(1120 * scale, 720 * scale, switches.windowClass)) { perror("firedog: windowserver"); return 1; }
+  g_window.store(&window);
   int result = xul_init(gre);
   if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
   mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
