@@ -792,8 +792,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // Force IPv4: emscripten SOCKFS builds its WebSocket URL as ws://addr:port and
     // parses it with a regex that can't handle the colons in an IPv6 literal, so an
     // AAAA/IPv6 connect attempt is unusable. WISP carries IPv4 fine.
+    // BrowserOS's sockets carry IPv6, so the WASI build keeps it: `localhost` is
+    // then tried as 127.0.0.1 and ::1, and a server listening on ::1 only (Vite's
+    // default) opens as in Firefox on Linux.
+#if defined(__EMSCRIPTEN__)
     mozilla::Preferences::SetBool("network.dns.disableIPv6", true);
     printf("xul_init: disabled IPv6 (SOCKFS ws:// url can't encode IPv6 literals)\n");
+#endif
 
     // Disable browser services not needed for rendering that stall/crash in this
     // minimal embedding. The big one: Safe Browsing / tracking protection run the
