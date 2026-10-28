@@ -971,6 +971,22 @@ index 43941eb..940117a 100644
  
  if CONFIG['MOZ_SUNAUDIO']:
      SOURCES += [
+diff --git a/media/libcubeb/src/cubeb_alsa.c b/media/libcubeb/src/cubeb_alsa.c
+--- a/media/libcubeb/src/cubeb_alsa.c
++++ b/media/libcubeb/src/cubeb_alsa.c
+@@ -1196,7 +1196,11 @@
+   int r;
+   cubeb_stream * stm;
+   snd_pcm_hw_params_t * hw_params;
+-  cubeb_stream_params params;
++  // Zero the whole struct: alsa_stream_init_single() reads params.prefs, and
++  // whatever an earlier call left on the stack there could carry
++  // CUBEB_STREAM_PREF_LOOPBACK, which fails the stream before it opens the
++  // device. The enumeration then reports no device at all.
++  cubeb_stream_params params = {0};
+   params.rate = 44100;
+   params.format = CUBEB_SAMPLE_FLOAT32NE;
+   params.channels = 2;
 diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
 index d4cf9a295e..0049cd8aaf 100644
 --- a/mfbt/ThreadLocal.h
