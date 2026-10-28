@@ -5075,17 +5075,19 @@ index b8c8a03c3d..0bc2cf1294 100644
  
  
  set_config("MOZ_FOLD_LIBS", fold_libs)
-@@ -280,6 +280,9 @@ def audio_backends_default(target):
+@@ -280,6 +280,11 @@ def audio_backends_default(target):
          return ("sunaudio",)
      elif target.os == "WINNT":
          return ("wasapi",)
 +    elif target.os == "WASI":
-+        # BrowserOS has no audio device for cubeb yet.
-+        return False
++        # BrowserOS's /dev/dsp speaks OSS 4.x, as OSS does on Linux. The oss
++        # backend needs only open/ioctl/write; ALSA and PulseAudio need LGPL
++        # client libraries, which FireDog does not link (and cannot dlopen).
++        return ("oss",)
      else:
          return ("pulseaudio",)
  
-@@ -534,7 +537,7 @@ def toolkit_choices(target):
+@@ -534,7 +539,7 @@ def toolkit_choices(target):
          return ("cairo-uikit",)
      elif target.os == "Android":
          return ("cairo-android",)
@@ -5094,7 +5096,7 @@ index b8c8a03c3d..0bc2cf1294 100644
          # No native widget toolkit in wasm; use the offscreen headless backend
          # (widget/headless) as the sole widget toolkit.
          return ("cairo-headless",)
-@@ -796,7 +799,7 @@ def freetype2_combined_info(fontconfig_info, freetype2_info):
+@@ -796,7 +801,7 @@ def freetype2_combined_info(fontconfig_info, freetype2_info):
  @depends(freetype2_info, target)
  def have_freetype2(freetype2_info, target):
      # emscripten provides FreeType via its port (-sUSE_FREETYPE).
@@ -5103,7 +5105,7 @@ index b8c8a03c3d..0bc2cf1294 100644
          return True
  
  
-@@ -1328,7 +1331,7 @@ def tree_freetype(target):
+@@ -1328,7 +1333,7 @@ def tree_freetype(target):
      # emscripten's bundled FreeType port is ancient (2.6.0) and missing many
      # APIs Gecko's font code needs (FT_Done_MM_Var, variable fonts, COLRv1...).
      # Build the modern in-tree FreeType instead.
@@ -5112,7 +5114,7 @@ index b8c8a03c3d..0bc2cf1294 100644
          return True
  
  
-@@ -1360,7 +1363,7 @@ def enable_cairo_ft(target, tree_freetype, freetype2_info):
+@@ -1360,7 +1365,7 @@ def enable_cairo_ft(target, tree_freetype, freetype2_info):
      return (
          freetype2_info
          or (tree_freetype and target.os != "WINNT")
