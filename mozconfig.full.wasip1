@@ -18,7 +18,10 @@ ac_add_options --disable-debug-symbols
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
 ac_add_options --disable-backgroundtasks
-ac_add_options --disable-webrtc
+# WebRTC is off by default for CPUs configure does not list; BrowserOS has the
+# Linux camera (V4L2 /dev/video0), sound (ALSA, read by cubeb) and socket
+# interfaces that getUserMedia and RTCPeerConnection use.
+ac_add_options --enable-webrtc
 ac_add_options --without-wasm-sandboxed-libraries
 ac_add_options --disable-ctypes
 # Release engineering options, as a Mozilla release build has them: among

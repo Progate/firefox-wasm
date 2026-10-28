@@ -4087,10 +4087,10 @@ index e885c596b2..a06e3a863d 100644
  
 diff --git a/third_party/rust/libc/src/wasi/browseros.rs b/third_party/rust/libc/src/wasi/browseros.rs
 new file mode 100644
-index 0000000..107a3f3
+index 0000000..59ed80b
 --- /dev/null
 +++ b/third_party/rust/libc/src/wasi/browseros.rs
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +//! POSIX functions that BrowserOS's libc (a wasi-libc fork) provides on
 +//! wasm32-wasip1 beyond plain wasi-libc. BrowserOS's libc uses the riscv32
 +//! Linux values for its constants and structs (errno, O_*, AF_*, struct stat,
@@ -4103,6 +4103,7 @@ index 0000000..107a3f3
 +pub const AF_UNIX: c_int = 1;
 +pub const SOCK_CLOEXEC: c_int = 0o2000000;
 +pub const MSG_DONTWAIT: c_int = 0x0040;
++pub const SO_REUSEPORT: c_int = 15;
 +
 +pub const SIGINT: c_int = 2;
 +pub const SIGABRT: c_int = 6;
@@ -4868,7 +4869,7 @@ index b07a031f70..b938b62d6c 100644
  where
      S: AsFd,
 diff --git a/third_party/rust/socket2/src/sys/unix.rs b/third_party/rust/socket2/src/sys/unix.rs
-index 5162e8310e..cc696a1eb0 100644
+index 5162e8310e..ead3afd76a 100644
 --- a/third_party/rust/socket2/src/sys/unix.rs
 +++ b/third_party/rust/socket2/src/sys/unix.rs
 @@ -267,7 +267,7 @@ pub(crate) use libc::{IPV6_ADD_MEMBERSHIP, IPV6_DROP_MEMBERSHIP};
@@ -4916,6 +4917,24 @@ index 5162e8310e..cc696a1eb0 100644
      ))]
      {
          if let Some(interval) = keepalive.interval {
+@@ -2176,7 +2176,7 @@ impl crate::Socket {
+             target_os = "solaris",
+             target_os = "illumos",
+             target_os = "cygwin",
+-            target_os = "wasi"
++            all(target_os = "wasi", not(target_env = "p1"))
+         ))
+     ))]
+     pub fn reuse_port(&self) -> io::Result<bool> {
+@@ -2197,7 +2197,7 @@ impl crate::Socket {
+             target_os = "solaris",
+             target_os = "illumos",
+             target_os = "cygwin",
+-            target_os = "wasi"
++            all(target_os = "wasi", not(target_env = "p1"))
+         ))
+     ))]
+     pub fn set_reuse_port(&self, reuse: bool) -> io::Result<()> {
 diff --git a/third_party/sqlite3/src/moz.build b/third_party/sqlite3/src/moz.build
 index da931832e0..212ea90337 100644
 --- a/third_party/sqlite3/src/moz.build
@@ -7042,6 +7061,429 @@ index b951d45..88c4f7d 100644
          );
          assert!(
              !records.iter().any(|r| r.id == "custom-synced-record"),
+diff --git a/browser/components/DesktopActorRegistry.sys.mjs b/browser/components/DesktopActorRegistry.sys.mjs
+index 4f60509b7e..086d02e2d3 100644
+--- a/browser/components/DesktopActorRegistry.sys.mjs
++++ b/browser/components/DesktopActorRegistry.sys.mjs
+@@ -31,6 +31,10 @@ let JSPROCESSACTORS = {
+         "recording-window-ended",
+       ],
+     },
++    // When tabs are not remote (FireDog on WASI has no child processes), web
++    // pages live in the parent process, and their getUserMedia and
++    // RTCPeerConnection requests are observed there.
++    includeParent: !Services.appinfo.browserTabsRemoteAutostart,
+   },
+ 
+   MozCachedOHTTP: {
+diff --git a/dom/media/systemservices/moz.build b/dom/media/systemservices/moz.build
+index f0d6241a8e..8f2f8c6f02 100644
+--- a/dom/media/systemservices/moz.build
++++ b/dom/media/systemservices/moz.build
+@@ -51,7 +51,9 @@ if CONFIG["MOZ_WEBRTC"]:
+             "-fobjc-arc",
+         ]
+ 
+-    if CONFIG["OS_TARGET"] == "Android":
++    # libwebrtc's desktop capture on Linux needs X11 or PipeWire, and WASI
++    # (BrowserOS) has neither: there is no screen or window to share.
++    if CONFIG["OS_TARGET"] in ("Android", "WASI"):
+         UNIFIED_SOURCES += [
+             "EmptyDesktopCapturer.cpp",
+         ]
+diff --git a/dom/media/systemservices/video_engine/video_capture_factory.cc b/dom/media/systemservices/video_engine/video_capture_factory.cc
+index f6a0ee6707..27eeefe242 100644
+--- a/dom/media/systemservices/video_engine/video_capture_factory.cc
++++ b/dom/media/systemservices/video_engine/video_capture_factory.cc
+@@ -83,6 +83,9 @@ VideoCaptureFactory::CreateDeviceInfo(
+ #if defined(WEBRTC_ANDROID) || defined(WEBRTC_IOS)
+   MOZ_ASSERT("CreateDeviceInfo NO DESKTOP CAPTURE IMPL ON ANDROID" == nullptr);
+   return nullptr;
++#elif defined(__wasi__)
++  // No desktop capture on WASI (see moz.build): no screens or windows.
++  return nullptr;
+ #else
+   return webrtc::DesktopCaptureImpl::CreateDeviceInfo(aType);
+ #endif
+@@ -114,6 +117,8 @@ VideoCaptureFactory::CreateVideoCapture(
+ #if defined(WEBRTC_ANDROID) || defined(WEBRTC_IOS)
+   MOZ_ASSERT("CreateVideoCapture NO DESKTOP CAPTURE IMPL ON ANDROID" ==
+              nullptr);
++#elif defined(__wasi__)
++  // No desktop capture on WASI: CreateDeviceInfo lists no screen or window.
+ #else
+   RefPtr desktopImpl =
+       webrtc::DesktopCaptureImpl::Create(aCaptureId, aUniqueId, aType);
+diff --git a/dom/media/webrtc/third_party_build/webrtc.mozbuild b/dom/media/webrtc/third_party_build/webrtc.mozbuild
+index 915cb54689..dd3879aecc 100644
+--- a/dom/media/webrtc/third_party_build/webrtc.mozbuild
++++ b/dom/media/webrtc/third_party_build/webrtc.mozbuild
+@@ -17,7 +17,10 @@ if CONFIG["MOZ_WEBRTC"]:
+         DEFINES["WEBRTC_POSIX"] = True
+         DEFINES["WEBRTC_BUILD_LIBEVENT"] = True
+ 
+-    if CONFIG["OS_TARGET"] == "Linux":
++    # WASI (BrowserOS) has the Linux system call interface, and libwebrtc is
++    # built for it as for Linux (see GN_GENERATED_OS_TARGET in
++    # python/mozbuild/mozbuild/frontend/context.py).
++    if CONFIG["OS_TARGET"] in ("Linux", "WASI"):
+         DEFINES["WEBRTC_LINUX"] = True
+         if (
+             CONFIG["TARGET_CPU"] == "x86"
+diff --git a/dom/media/webrtc/transport/common.build b/dom/media/webrtc/transport/common.build
+index 104d5a573e..5a1984167f 100644
+--- a/dom/media/webrtc/transport/common.build
++++ b/dom/media/webrtc/transport/common.build
+@@ -60,7 +60,8 @@ if CONFIG["OS_TARGET"] in ["Darwin", "DragonFly", "FreeBSD", "NetBSD", "OpenBSD"
+     LOCAL_INCLUDES += [
+         "/dom/media/webrtc/transport/third_party/nrappkit/src/port/darwin/include",
+     ]
+-elif CONFIG["OS_TARGET"] == "Linux":
++# WASI (BrowserOS) has the Linux socket and rtnetlink interfaces.
++elif CONFIG["OS_TARGET"] in ("Linux", "WASI"):
+     DEFINES["LINUX"] = True
+     LOCAL_INCLUDES += [
+         "/dom/media/webrtc/transport/third_party/nrappkit/src/port/linux/include",
+diff --git a/dom/media/webrtc/transport/third_party/moz.build b/dom/media/webrtc/transport/third_party/moz.build
+index f29e7e589d..59db6e8d1f 100644
+--- a/dom/media/webrtc/transport/third_party/moz.build
++++ b/dom/media/webrtc/transport/third_party/moz.build
+@@ -19,6 +19,11 @@ elif CONFIG['MOZ_ASAN']:
+ elif CONFIG['MOZ_TSAN']:
+     gyp_vars_copy.update(build_for_tool="tsan")
+ 
++# gyp has no WASI flavor. BrowserOS gives WASI programs the Linux socket and
++# network interface calls, so nICEr and nrappkit use their Linux ports.
++if CONFIG['OS_TARGET'] == 'WASI':
++    gyp_vars_copy.update(OS="linux")
++
+ # These files cannot be built in unified mode because of name clashes on RCSSTRING
+ 
+ GYP_DIRS['nICEr'].input = 'nICEr/nicer.gyp'
+diff --git a/netwerk/sctp/src/moz.build b/netwerk/sctp/src/moz.build
+index deb396d3da..a1d3610eb4 100644
+--- a/netwerk/sctp/src/moz.build
++++ b/netwerk/sctp/src/moz.build
+@@ -59,7 +59,9 @@ for var in ('__Userspace__',
+             'SCTP_DEBUG'):
+     DEFINES[var] = 1
+ 
+-if CONFIG['OS_TARGET'] in ('Linux', 'Android'):
++# WASI (BrowserOS) has the Linux system call interface: the sources test
++# __wasi__ wherever they test __linux__.
++if CONFIG['OS_TARGET'] in ('Linux', 'Android', 'WASI'):
+     DEFINES['_GNU_SOURCE'] = 1
+ elif CONFIG['OS_TARGET'] == 'Darwin':
+     DEFINES['__APPLE_USE_RFC_2292'] = 1
+diff --git a/netwerk/sctp/src/netinet/sctp.h b/netwerk/sctp/src/netinet/sctp.h
+index 6129e77f96..262149c03a 100644
+--- a/netwerk/sctp/src/netinet/sctp.h
++++ b/netwerk/sctp/src/netinet/sctp.h
+@@ -35,7 +35,7 @@
+ #ifndef _NETINET_SCTP_H_
+ #define _NETINET_SCTP_H_
+ 
+-#if defined(__APPLE__) || defined(__linux__)
++#if defined(__APPLE__) || (defined(__linux__) || defined(__wasi__))
+ #include <stdint.h>
+ #endif
+ #if defined(__FreeBSD__) && !defined(__Userspace__)
+diff --git a/netwerk/sctp/src/netinet/sctp_input.c b/netwerk/sctp/src/netinet/sctp_input.c
+index a3c1476f5b..66ad4cb2f3 100644
+--- a/netwerk/sctp/src/netinet/sctp_input.c
++++ b/netwerk/sctp/src/netinet/sctp_input.c
+@@ -6310,11 +6310,11 @@ sctp_input_with_port(struct mbuf *i_pak, int off, uint16_t port)
+ #if defined(_WIN32) && !defined(__Userspace__)
+ 	NTOHS(ip->ip_len);
+ #endif
+-#if defined(__linux__) || (defined(_WIN32) && defined(__Userspace__))
++#if (defined(__linux__) || defined(__wasi__)) || (defined(_WIN32) && defined(__Userspace__))
+ 	ip->ip_len = ntohs(ip->ip_len);
+ #endif
+ #if defined(__Userspace__)
+-#if defined(__linux__) || defined(_WIN32)
++#if (defined(__linux__) || defined(__wasi__)) || defined(_WIN32)
+ 	length = ip->ip_len;
+ #else
+ 	length = ip->ip_len + iphlen;
+diff --git a/netwerk/sctp/src/netinet/sctp_os_userspace.h b/netwerk/sctp/src/netinet/sctp_os_userspace.h
+index 493ae0267f..9aa1fb7aa9 100644
+--- a/netwerk/sctp/src/netinet/sctp_os_userspace.h
++++ b/netwerk/sctp/src/netinet/sctp_os_userspace.h
+@@ -516,7 +516,7 @@ struct sx {int dummy;};
+ #if !defined(_WIN32)
+ #include <netinet/ip6.h>
+ #endif
+-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__linux__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(_WIN32) || defined(__EMSCRIPTEN__)
++#if defined(__APPLE__) || defined(__FreeBSD__) || (defined(__linux__) || defined(__wasi__)) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(_WIN32) || defined(__EMSCRIPTEN__)
+ #include "user_ip6_var.h"
+ #else
+ #include <netinet6/ip6_var.h>
+@@ -1117,7 +1117,7 @@ sctp_get_mbuf_for_msg(unsigned int space_needed, int want_header, int how, int a
+ 	} while (0)
+ #endif
+ 
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #if !defined(TAILQ_FOREACH_SAFE)
+ #define TAILQ_FOREACH_SAFE(var, head, field, tvar)             \
+          for ((var) = ((head)->tqh_first);                     \
+@@ -1145,7 +1145,7 @@ sctp_get_mbuf_for_msg(unsigned int space_needed, int want_header, int how, int a
+ 
+ #define SCTP_IS_LISTENING(inp) ((inp->sctp_flags & SCTP_PCB_FLAGS_ACCEPTING) != 0)
+ 
+-#if defined(__APPLE__) || defined(__DragonFly__) || defined(__linux__) || defined(__native_client__) || defined(__NetBSD__) || defined(_WIN32) || defined(__Fuchsia__) || defined(__EMSCRIPTEN__)
++#if defined(__APPLE__) || defined(__DragonFly__) || (defined(__linux__) || defined(__wasi__)) || defined(__native_client__) || defined(__NetBSD__) || defined(_WIN32) || defined(__Fuchsia__) || defined(__EMSCRIPTEN__)
+ int
+ timingsafe_bcmp(const void *, const void *, size_t);
+ #endif
+diff --git a/netwerk/sctp/src/netinet/sctp_output.c b/netwerk/sctp/src/netinet/sctp_output.c
+index 33a6e169d8..ceb48d60f3 100644
+--- a/netwerk/sctp/src/netinet/sctp_output.c
++++ b/netwerk/sctp/src/netinet/sctp_output.c
+@@ -54,7 +54,7 @@
+ #if defined(__FreeBSD__) && !defined(__Userspace__)
+ #include <netinet/sctp_kdtrace.h>
+ #endif
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #define __FAVOR_BSD    /* (on Ubuntu at least) enables UDP header field names like BSD in RFC 768 */
+ #endif
+ #if defined(INET) || defined(INET6)
+diff --git a/netwerk/sctp/src/netinet/sctp_uio.h b/netwerk/sctp/src/netinet/sctp_uio.h
+index 053d1cb16b..0a923c8d37 100644
+--- a/netwerk/sctp/src/netinet/sctp_uio.h
++++ b/netwerk/sctp/src/netinet/sctp_uio.h
+@@ -1138,7 +1138,7 @@ struct sctpstat {
+ #if !(defined(__APPLE__) && !defined(__Userspace__))
+ #if !defined(__Userspace__)
+ #ifndef ntohll
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #ifndef _BSD_SOURCE
+ #define _BSD_SOURCE
+ #endif
+@@ -1150,7 +1150,7 @@ struct sctpstat {
+ #endif
+ 
+ #ifndef htonll
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #ifndef _BSD_SOURCE
+ #define _BSD_SOURCE
+ #endif
+diff --git a/netwerk/sctp/src/netinet/sctp_userspace.c b/netwerk/sctp/src/netinet/sctp_userspace.c
+index 71888901fe..3aeadb78ce 100644
+--- a/netwerk/sctp/src/netinet/sctp_userspace.c
++++ b/netwerk/sctp/src/netinet/sctp_userspace.c
+@@ -40,7 +40,7 @@
+ #include <pthread_np.h>
+ #endif
+ 
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #include <sys/prctl.h>
+ #endif
+ 
+@@ -86,7 +86,7 @@ sctp_userspace_set_threadname(const char *name)
+ #if defined(__APPLE__)
+ 	pthread_setname_np(name);
+ #endif
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ 	prctl(PR_SET_NAME, name);
+ #endif
+ #if defined(__FreeBSD__)
+@@ -137,7 +137,7 @@ sctp_userspace_get_mtu_from_ifn(uint32_t if_index)
+ }
+ #endif
+ 
+-#if defined(__APPLE__) || defined(__DragonFly__) || defined(__linux__) || defined(__native_client__) || defined(__NetBSD__) || defined(__QNX__) || defined(_WIN32) || defined(__Fuchsia__) || defined(__EMSCRIPTEN__)
++#if defined(__APPLE__) || defined(__DragonFly__) || (defined(__linux__) || defined(__wasi__)) || defined(__native_client__) || defined(__NetBSD__) || defined(__QNX__) || defined(_WIN32) || defined(__Fuchsia__) || defined(__EMSCRIPTEN__)
+ int
+ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
+ {
+diff --git a/netwerk/sctp/src/netinet/sctp_usrreq.c b/netwerk/sctp/src/netinet/sctp_usrreq.c
+index 53aeaa1d45..25a023dccb 100644
+--- a/netwerk/sctp/src/netinet/sctp_usrreq.c
++++ b/netwerk/sctp/src/netinet/sctp_usrreq.c
+@@ -7953,7 +7953,7 @@ sctp_connect(struct socket *so, struct mbuf *nam, struct proc *p)
+ #if defined(__Userspace__)
+ 	/* TODO __Userspace__ falls into this code for IPv6 stuff at the moment... */
+ #endif
+-#if !defined(_WIN32) && !defined(__linux__) && !defined(__EMSCRIPTEN__)
++#if !defined(_WIN32) && !(defined(__linux__) || defined(__wasi__)) && !defined(__EMSCRIPTEN__)
+ 	switch (addr->sa_family) {
+ #ifdef INET6
+ 	case AF_INET6:
+diff --git a/netwerk/sctp/src/user_environment.c b/netwerk/sctp/src/user_environment.c
+index ea52f0ada7..25584b9786 100644
+--- a/netwerk/sctp/src/user_environment.c
++++ b/netwerk/sctp/src/user_environment.c
+@@ -236,7 +236,7 @@ finish_random(void)
+ {
+ 	return;
+ }
+-#elif defined(__linux__)
++#elif (defined(__linux__) || defined(__wasi__))
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <sys/syscall.h>
+diff --git a/netwerk/sctp/src/user_environment.h b/netwerk/sctp/src/user_environment.h
+index a545accba0..bfcf0c8195 100644
+--- a/netwerk/sctp/src/user_environment.h
++++ b/netwerk/sctp/src/user_environment.h
+@@ -84,7 +84,7 @@ void finish_random(void);
+ /* Source ip_output.c. extern'd in ip_var.h */
+ extern u_short ip_id;
+ 
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #define IPV6_VERSION            0x60
+ #endif
+ 
+diff --git a/netwerk/sctp/src/user_ip6_var.h b/netwerk/sctp/src/user_ip6_var.h
+index b970fb8fa5..67ae121802 100644
+--- a/netwerk/sctp/src/user_ip6_var.h
++++ b/netwerk/sctp/src/user_ip6_var.h
+@@ -87,7 +87,7 @@ struct ip6_hdr {
+ #if defined(_WIN32)
+ #define s6_addr16 u.Word
+ #endif
+-#if !defined(_WIN32) && !defined(__linux__) && !defined(__EMSCRIPTEN__)
++#if !defined(_WIN32) && !(defined(__linux__) || defined(__wasi__)) && !defined(__EMSCRIPTEN__)
+ #define s6_addr8  __u6_addr.__u6_addr8
+ #define s6_addr16 __u6_addr.__u6_addr16
+ #define s6_addr32 __u6_addr.__u6_addr32
+diff --git a/netwerk/sctp/src/user_recv_thread.c b/netwerk/sctp/src/user_recv_thread.c
+index 66be13d749..708a129e1b 100644
+--- a/netwerk/sctp/src/user_recv_thread.c
++++ b/netwerk/sctp/src/user_recv_thread.c
+@@ -46,7 +46,7 @@
+ #include <netinet/sctp_pcb.h>
+ #include <netinet/sctp_input.h>
+ #if 0
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #include <linux/netlink.h>
+ #ifdef HAVE_LINUX_IF_ADDR_H
+ #include <linux/if_addr.h>
+diff --git a/netwerk/sctp/src/user_socket.c b/netwerk/sctp/src/user_socket.c
+index cde6ecc417..eed2b072fd 100644
+--- a/netwerk/sctp/src/user_socket.c
++++ b/netwerk/sctp/src/user_socket.c
+@@ -47,7 +47,7 @@
+ #if defined(__FreeBSD__)
+ #include <sys/param.h>
+ #endif
+-#if defined(__linux__)
++#if (defined(__linux__) || defined(__wasi__))
+ #define __FAVOR_BSD    /* (on Ubuntu at least) enables UDP header field names like BSD in RFC 768 */
+ #endif
+ #if !defined(_WIN32)
+@@ -2893,7 +2893,7 @@ sctp_userspace_ip_output(int *result, struct mbuf *o_pak,
+ 			SCTP_PRINTF("Why did the SCTP implementation did not choose a source address?\n");
+ 		}
+ 		/* TODO need to worry about ro->ro_dst as in ip_output? */
+-#if defined(__linux__) || defined(_WIN32) || (defined(__FreeBSD__) && (__FreeBSD_version >= 1100030))
++#if (defined(__linux__) || defined(__wasi__)) || defined(_WIN32) || (defined(__FreeBSD__) && (__FreeBSD_version >= 1100030))
+ 		/* need to put certain fields into network order for Linux */
+ 		ip->ip_len = htons(ip->ip_len);
+ #endif
+diff --git a/python/mozbuild/mozbuild/frontend/context.py b/python/mozbuild/mozbuild/frontend/context.py
+index c7ca0e4e7b..6313250923 100644
+--- a/python/mozbuild/mozbuild/frontend/context.py
++++ b/python/mozbuild/mozbuild/frontend/context.py
+@@ -2945,6 +2945,28 @@ TestDirsPlaceHolder = List()
+ #
+ #  (function returning the corresponding value from a given context, type, docs)
+ #
++# Directories whose moz.build files are generated from libwebrtc's and
++# abseil-cpp's GN build (dom/media/webrtc/third_party_build). GN has no WASI
++# target, and BrowserOS gives WASI programs the Linux system call interface, so
++# these files are read as for Linux. GN has no wasm32 either; they read it as
++# riscv64, whose blocks hold only CPU-neutral code (the C versions of the
++# signal processing routines that other CPUs have in assembly or SIMD, and
++# PFFFT_SIMD_DISABLE), and whose desktop capture directories (X11) are only
++# built with MOZ_X11.
++GN_GENERATED_DIRS = ("third_party/libwebrtc", "third_party/abseil-cpp")
++GN_WASI_VIEW = {"OS_TARGET": "Linux", "TARGET_CPU": "riscv64"}
++
++
++def _config_get(context):
++    substs = context.config.substs
++    if substs.get("OS_TARGET") != "WASI" or not any(
++        context.relsrcdir == d or context.relsrcdir.startswith(d + "/")
++        for d in GN_GENERATED_DIRS
++    ):
++        return substs.get
++    return lambda key: GN_WASI_VIEW.get(key, substs.get(key))
++
++
+ SPECIAL_VARIABLES = {
+     "TOPSRCDIR": (
+         lambda context: context.config.topsrcdir,
+@@ -2994,7 +3016,7 @@ SPECIAL_VARIABLES = {
+         """,
+     ),
+     "CONFIG": (
+-        lambda context: ReadOnlyKeyedDefaultDict(context.config.substs.get),
++        lambda context: ReadOnlyKeyedDefaultDict(_config_get(context)),
+         dict,
+         """Dictionary containing the current configuration variables.
+ 
+diff --git a/third_party/libwebrtc/rtc_base/physical_socket_server.cc b/third_party/libwebrtc/rtc_base/physical_socket_server.cc
+index 55570dac38..6dd4d78e6e 100644
+--- a/third_party/libwebrtc/rtc_base/physical_socket_server.cc
++++ b/third_party/libwebrtc/rtc_base/physical_socket_server.cc
+@@ -64,7 +64,11 @@
+ #endif
+ 
+ #if defined(WEBRTC_LINUX)
++// WASI (BrowserOS): musl's <sys/socket.h> has the SO_* values of the Linux
++// time64 ABI, and the kernel's asm-generic headers are not installed.
++#if !defined(__wasi__)
+ #include <asm-generic/socket.h>
++#endif
+ #include <sys/epoll.h>
+ #endif
+ 
+diff --git a/third_party/libwebrtc/rtc_base/platform_thread_types.cc b/third_party/libwebrtc/rtc_base/platform_thread_types.cc
+index 697bedadb9..0b2a0c5cbf 100644
+--- a/third_party/libwebrtc/rtc_base/platform_thread_types.cc
++++ b/third_party/libwebrtc/rtc_base/platform_thread_types.cc
+@@ -12,11 +12,17 @@
+ 
+ // IWYU pragma: begin_keep
+ #if defined(WEBRTC_LINUX)
++// WASI (BrowserOS) has musl's <sys/prctl.h>, which defines the same PR_*
++// values and struct prctl_mm_map as <linux/prctl.h> (the two cannot be
++// included together), and <sys/syscall.h> has the Linux system call numbers.
++#if !defined(__wasi__)
+ #include <linux/prctl.h>
++#endif
+ #include <sys/prctl.h>
+ #include <sys/syscall.h>
+ 
+-#if !defined(WEBRTC_ARCH_ARM) && !defined(WEBRTC_ARCH_ARM64)
++#if !defined(WEBRTC_ARCH_ARM) && !defined(WEBRTC_ARCH_ARM64) && \
++    !defined(__wasi__)
+ #include <asm/unistd_64.h>
+ #endif
+ #endif
+diff --git a/third_party/libwebrtc/rtc_base/system/arch.h b/third_party/libwebrtc/rtc_base/system/arch.h
+index 9d945ef7fc..033f25bd7c 100644
+--- a/third_party/libwebrtc/rtc_base/system/arch.h
++++ b/third_party/libwebrtc/rtc_base/system/arch.h
+@@ -86,7 +86,7 @@
+ #elif defined(__pnacl__)
+ #define WEBRTC_ARCH_32_BITS
+ #define WEBRTC_ARCH_LITTLE_ENDIAN
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) || defined(__wasm32__)
+ #define WEBRTC_ARCH_32_BITS
+ #define WEBRTC_ARCH_LITTLE_ENDIAN
+ #else
 diff --git a/dom/base/Document.h b/dom/base/Document.h
 --- a/dom/base/Document.h
 +++ b/dom/base/Document.h
