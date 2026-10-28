@@ -132,6 +132,19 @@ The gecko.js embedder starts the enterprise policies and resolves the
 distribution directory as XRE does. QUIC, Alt-Svc and HTTPS DNS records are
 off (branding prefs), since BrowserOS sockets carry TCP only.
 
+Policies that the host decides at each launch (site permissions such as
+`Permissions.Camera` and `Permissions.Location` for the page FireDog opens)
+go to `/etc/firefox/policies/policies.json`, the system policies file that
+Firefox reads on Linux. BrowserOS keeps the installation read-only, so
+`distribution/policies.json` cannot be rewritten after the OS starts, and
+`/etc/firefox` is owned by root, so the pages' own code (running as the
+learner) cannot widen them. Firefox looks there only when
+`AppConstants.platform` is `"linux"`, which is `"other"` on WASI, so
+gecko.patch also takes that path when `Services.appinfo.OS` is `"WASI"`
+(`toolkit/components/enterprisepolicies/EnterprisePoliciesParent.sys.mjs`).
+As on Linux, when that file exists Firefox reads it instead of
+`distribution/policies.json`.
+
 ## What is here
 
 - `gecko.patch`: the changes to Gecko. Rust targets `wasm32-wasip1-threads`;
