@@ -33,6 +33,10 @@ from `./mach package`'s output.
     `<browser>` (while the page loads, hit testing stops there) to the page,
     as a remote tab's process would; otherwise the context menu opens without
     the ContextMenu actor's data and shows every item.
+    For the same reason it stands in for the content process's DOM
+    fullscreen request (`MozDOMFullscreen:Request`), so that
+    `DOMFullscreenParent` hides the toolbars when a page's element goes
+    fullscreen, as it does for a remote tab.
   - `newtab.html` is the blank page that new tabs, new windows and Home show,
     in Progate's design with its Ninja Wanko (`@progate/illustrations`'
     `wanko-laptop.svg`, inline). `repack.mjs` puts it in place of Firefox's
