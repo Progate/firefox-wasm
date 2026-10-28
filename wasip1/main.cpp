@@ -160,6 +160,9 @@ static void key(int down, int code, const std::string& text) {
 // The window manager's answer for the main window (defined with the window
 // manager hooks below, after the main widget is known).
 static void configuredByWindowManager(bool aFullScreen);
+// The fullscreen state the main window asked the window manager for and has
+// no answer to yet: 1 or 0, -1 when nothing is asked.
+static std::atomic<int> g_fullscreenAsked{-1};
 
 // Whether a comma-separated list of window states or capabilities, as the
 // windowserver writes them ("-" for none), holds name.
@@ -174,11 +177,23 @@ static bool dispatch(WindowServer& window, const std::string& line) {
   if (sscanf(line.c_str(), "close %d", &id) == 1) return false;
   char states[64] = "";
   if (sscanf(line.c_str(), "configure %d %d %d %63s", &id, &x, &y, states) >= 3) {
+    const bool resized = x != window.width || y != window.height;
+    const bool fullScreen = listHas(states, "fullscreen");
     if (!window.resize(x, y)) return false;
     EnsureSize(x, y);
     // Every configure says whether the window is fullscreen; the widget acts
-    // only on a change or on the answer to its own request.
-    configuredByWindowManager(listHas(states, "fullscreen"));
+    // only on a change or on the answer to its own request. A tiling window
+    // manager (desktop-tile, desktop-wm) places the window at the screen's
+    // size and then writes the fullscreen state: the placement's configure
+    // still has the old state, and taken as the answer it would refuse the
+    // request (the page's requestFullscreen() fails while the window goes
+    // fullscreen right after). A configure that resizes the window without
+    // the asked state is a placement; the answer is the configure that writes
+    // the state, or one that keeps the size (a refusal).
+    const int asked = g_fullscreenAsked.load();
+    if (asked != -1 && fullScreen != (asked == 1) && resized) return true;
+    g_fullscreenAsked = -1;
+    configuredByWindowManager(fullScreen);
     return true;
   }
   // What the window manager lets this window do (xdg_toplevel.wm_capabilities).
@@ -512,7 +527,9 @@ static bool askFullscreen(nsIWidget* aWidget, bool aFullScreen) {
   // headless widget's own size modes.
   WindowServer* window = g_window.load();
   if (!window || !aWidget || aWidget != g_mainWidget.load()) return false;
-  return window->setFullscreen(aFullScreen);
+  if (!window->setFullscreen(aFullScreen)) return false;
+  g_fullscreenAsked = aFullScreen ? 1 : 0;
+  return true;
 }
 
 extern "C" FireDogWindowManager firedog_window_manager = {askFullscreen};
