@@ -6956,6 +6956,44 @@ index b951d45..88c4f7d 100644
          );
          assert!(
              !records.iter().any(|r| r.id == "custom-synced-record"),
+diff --git a/dom/media/systemservices/moz.build b/dom/media/systemservices/moz.build
+index f0d6241a8e..8f2f8c6f02 100644
+--- a/dom/media/systemservices/moz.build
++++ b/dom/media/systemservices/moz.build
+@@ -51,7 +51,9 @@ if CONFIG["MOZ_WEBRTC"]:
+             "-fobjc-arc",
+         ]
+ 
+-    if CONFIG["OS_TARGET"] == "Android":
++    # libwebrtc's desktop capture on Linux needs X11 or PipeWire, and WASI
++    # (BrowserOS) has neither: there is no screen or window to share.
++    if CONFIG["OS_TARGET"] in ("Android", "WASI"):
+         UNIFIED_SOURCES += [
+             "EmptyDesktopCapturer.cpp",
+         ]
+diff --git a/dom/media/systemservices/video_engine/video_capture_factory.cc b/dom/media/systemservices/video_engine/video_capture_factory.cc
+index f6a0ee6707..27eeefe242 100644
+--- a/dom/media/systemservices/video_engine/video_capture_factory.cc
++++ b/dom/media/systemservices/video_engine/video_capture_factory.cc
+@@ -83,6 +83,9 @@ VideoCaptureFactory::CreateDeviceInfo(
+ #if defined(WEBRTC_ANDROID) || defined(WEBRTC_IOS)
+   MOZ_ASSERT("CreateDeviceInfo NO DESKTOP CAPTURE IMPL ON ANDROID" == nullptr);
+   return nullptr;
++#elif defined(__wasi__)
++  // No desktop capture on WASI (see moz.build): no screens or windows.
++  return nullptr;
+ #else
+   return webrtc::DesktopCaptureImpl::CreateDeviceInfo(aType);
+ #endif
+@@ -114,6 +117,8 @@ VideoCaptureFactory::CreateVideoCapture(
+ #if defined(WEBRTC_ANDROID) || defined(WEBRTC_IOS)
+   MOZ_ASSERT("CreateVideoCapture NO DESKTOP CAPTURE IMPL ON ANDROID" ==
+              nullptr);
++#elif defined(__wasi__)
++  // No desktop capture on WASI: CreateDeviceInfo lists no screen or window.
+ #else
+   RefPtr desktopImpl =
+       webrtc::DesktopCaptureImpl::Create(aCaptureId, aUniqueId, aType);
 diff --git a/dom/media/webrtc/third_party_build/webrtc.mozbuild b/dom/media/webrtc/third_party_build/webrtc.mozbuild
 index 915cb54689..dd3879aecc 100644
 --- a/dom/media/webrtc/third_party_build/webrtc.mozbuild
@@ -7233,20 +7271,23 @@ index cde6ecc417..eed2b072fd 100644
  		ip->ip_len = htons(ip->ip_len);
  #endif
 diff --git a/python/mozbuild/mozbuild/frontend/context.py b/python/mozbuild/mozbuild/frontend/context.py
-index c7ca0e4e7b..ef2e22e73e 100644
+index c7ca0e4e7b..6313250923 100644
 --- a/python/mozbuild/mozbuild/frontend/context.py
 +++ b/python/mozbuild/mozbuild/frontend/context.py
-@@ -2945,6 +2945,25 @@ TestDirsPlaceHolder = List()
+@@ -2945,6 +2945,28 @@ TestDirsPlaceHolder = List()
  #
  #  (function returning the corresponding value from a given context, type, docs)
  #
-+# Directories whose moz.build files are generated from libwebrtc's GN build
-+# (dom/media/webrtc/third_party_build). GN has no WASI target, and BrowserOS
-+# gives WASI programs the Linux system call interface, so these files are read
-+# as for Linux. TARGET_CPU stays wasm32, which none of the generated per-CPU
-+# blocks names: no SIMD or assembly sources and no desktop capture (X11 and
-+# PipeWire) are built, as for a Linux CPU without those.
++# Directories whose moz.build files are generated from libwebrtc's and
++# abseil-cpp's GN build (dom/media/webrtc/third_party_build). GN has no WASI
++# target, and BrowserOS gives WASI programs the Linux system call interface, so
++# these files are read as for Linux. GN has no wasm32 either; they read it as
++# riscv64, whose blocks hold only CPU-neutral code (the C versions of the
++# signal processing routines that other CPUs have in assembly or SIMD, and
++# PFFFT_SIMD_DISABLE), and whose desktop capture directories (X11) are only
++# built with MOZ_X11.
 +GN_GENERATED_DIRS = ("third_party/libwebrtc", "third_party/abseil-cpp")
++GN_WASI_VIEW = {"OS_TARGET": "Linux", "TARGET_CPU": "riscv64"}
 +
 +
 +def _config_get(context):
@@ -7256,13 +7297,13 @@ index c7ca0e4e7b..ef2e22e73e 100644
 +        for d in GN_GENERATED_DIRS
 +    ):
 +        return substs.get
-+    return lambda key: "Linux" if key == "OS_TARGET" else substs.get(key)
++    return lambda key: GN_WASI_VIEW.get(key, substs.get(key))
 +
 +
  SPECIAL_VARIABLES = {
      "TOPSRCDIR": (
          lambda context: context.config.topsrcdir,
-@@ -2994,7 +3013,7 @@ SPECIAL_VARIABLES = {
+@@ -2994,7 +3016,7 @@ SPECIAL_VARIABLES = {
          """,
      ),
      "CONFIG": (
