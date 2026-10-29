@@ -972,9 +972,98 @@ index 43941eb..940117a 100644
  if CONFIG['MOZ_SUNAUDIO']:
      SOURCES += [
 diff --git a/media/libcubeb/src/cubeb_alsa.c b/media/libcubeb/src/cubeb_alsa.c
+index be9faa490c..4c7cfcf15c 100644
 --- a/media/libcubeb/src/cubeb_alsa.c
 +++ b/media/libcubeb/src/cubeb_alsa.c
-@@ -1196,7 +1196,11 @@
+@@ -164,6 +164,10 @@ struct cubeb_stream {
+   snd_pcm_stream_t stream_type;
+ 
+   struct cubeb_stream * other_stream;
++  /* A data callback returned fewer frames than it was given: the stream ends
++     there, and cubeb does not call the data callback again (for a duplex pair,
++     on neither side). */
++  int ended;
+ };
+ 
+ static int
+@@ -373,6 +377,7 @@ alsa_process_stream(cubeb_stream * stm)
+ 
+   /* Capture: Pass read frames to callback function */
+   if (stm->stream_type == SND_PCM_STREAM_CAPTURE && stm->bufframes > 0 &&
++      !stm->ended &&
+       (!stm->other_stream ||
+        stm->other_stream->bufframes < stm->other_stream->buffer_size)) {
+     snd_pcm_sframes_t wrote = stm->bufframes;
+@@ -388,6 +393,7 @@ alsa_process_stream(cubeb_stream * stm)
+       wrote = stm->other_stream->buffer_size - stm->other_stream->bufframes;
+     }
+ 
++    snd_pcm_sframes_t offered = wrote;
+     pthread_mutex_unlock(&stm->mutex);
+     wrote = stm->data_callback(mainstm, stm->user_ptr, stm->buffer,
+                                other_buffer, wrote);
+@@ -401,12 +407,22 @@ alsa_process_stream(cubeb_stream * stm)
+       if (stm->other_stream) {
+         stm->other_stream->bufframes += wrote;
+       }
++      /* A duplex stream calls back from its capture side, and a short count
++         there ends the stream as it does on the playback side. Calling back
++         again would run the caller past its end (Gecko's audio driver would
++         iterate a graph that has already stopped). */
++      if (wrote < offered) {
++        stm->ended = 1;
++        if (stm->other_stream) {
++          stm->other_stream->ended = 1;
++        }
++      }
+     }
+   }
+ 
+   /* Playback: Don't have enough data? Let's ask for more. */
+   if (stm->stream_type == SND_PCM_STREAM_PLAYBACK &&
+-      avail > (snd_pcm_sframes_t)stm->bufframes &&
++      avail > (snd_pcm_sframes_t)stm->bufframes && !stm->ended &&
+       (!stm->other_stream || stm->other_stream->bufframes > 0)) {
+     long got = avail - stm->bufframes;
+     void * other_buffer = stm->other_stream ? stm->other_stream->buffer : NULL;
+@@ -423,6 +439,11 @@ alsa_process_stream(cubeb_stream * stm)
+     got = stm->data_callback(stm, stm->user_ptr, other_buffer, buftail, got);
+     pthread_mutex_lock(&stm->mutex);
+ 
++    long asked = avail - stm->bufframes;
++    if (stm->other_stream &&
++        asked > (snd_pcm_sframes_t)stm->other_stream->bufframes) {
++      asked = stm->other_stream->bufframes;
++    }
+     if (got < 0) {
+       avail = got; // the error handler below will recover us
+     } else {
+@@ -431,6 +452,12 @@ alsa_process_stream(cubeb_stream * stm)
+       if (stm->other_stream) {
+         stream_buffer_decrement(stm->other_stream, got);
+       }
++      if (got < asked) {
++        stm->ended = 1;
++        if (stm->other_stream) {
++          stm->other_stream->ended = 1;
++        }
++      }
+     }
+   }
+ 
+@@ -445,8 +472,9 @@ alsa_process_stream(cubeb_stream * stm)
+     memset(buftail, 0, WRAP(snd_pcm_frames_to_bytes)(stm->pcm, drain_frames));
+     stm->bufframes = avail;
+ 
+-    /* Mark as draining, unless we're waiting for capture */
+-    if (!stm->other_stream || stm->other_stream->bufframes > 0) {
++    /* Mark as draining, unless we're waiting for capture (an ended stream
++       waits for nothing) */
++    if (!stm->other_stream || stm->other_stream->bufframes > 0 || stm->ended) {
+       set_timeout(&stm->drain_timeout, drain_time * 1000);
+ 
+       draining = 1;
+@@ -1196,7 +1224,11 @@ alsa_get_max_channel_count(cubeb * ctx, uint32_t * max_channels)
    int r;
    cubeb_stream * stm;
    snd_pcm_hw_params_t * hw_params;
@@ -987,6 +1076,15 @@ diff --git a/media/libcubeb/src/cubeb_alsa.c b/media/libcubeb/src/cubeb_alsa.c
    params.rate = 44100;
    params.format = CUBEB_SAMPLE_FLOAT32NE;
    params.channels = 2;
+@@ -1307,6 +1339,8 @@ alsa_stream_start(cubeb_stream * stm)
+   }
+   WRAP(snd_pcm_pause)(stm->pcm, 0);
+   gettimeofday(&stm->last_activity, NULL);
++  /* Started again: the data callback runs until it ends the stream anew. */
++  stm->ended = 0;
+   pthread_mutex_unlock(&stm->mutex);
+ 
+   pthread_mutex_lock(&ctx->mutex);
 diff --git a/mfbt/ThreadLocal.h b/mfbt/ThreadLocal.h
 index d4cf9a295e..0049cd8aaf 100644
 --- a/mfbt/ThreadLocal.h
