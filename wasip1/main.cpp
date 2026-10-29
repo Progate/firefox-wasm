@@ -5,6 +5,8 @@
 #include "devtools-pipe.h"
 #include "nsPrintfCString.h"
 #include "nsITimer.h"
+#include "nsIThreadInternal.h"
+#include "nsThreadUtils.h"
 #include "nsIWindowMediator.h"
 #include <algorithm>
 #include <cctype>
@@ -614,6 +616,157 @@ static std::string startUrl(const char* argument) {
   return "about:blank";
 }
 
+// Whether the outer loop itself is running Gecko's events (waiting for one, or
+// letting what input started settle). Those events run one level deep; a loop
+// nested in one of them is what NestedLoopPump pumps.
+static bool g_outerLoopRunsEvents = false;
+
+// What the outer loop and the nested event loops share while they pump the
+// windowserver connection.
+struct PumpState {
+  Frames frames;
+  bool firstFrame = true;
+  uint64_t paintedGeneration = 0;
+  std::chrono::steady_clock::time_point lastPaint = std::chrono::steady_clock::now();
+  // The code main() returns once pumping found the program should end (the
+  // windowserver closed the window: 0, presenting failed: 1). Negative while
+  // it should go on.
+  int exitCode = -1;
+};
+
+// Hand what the windowserver sent to Gecko and present what Gecko painted.
+// `settle` lets what the input started run before painting; only the outer
+// loop does, since a nested loop is itself in the middle of running events.
+static void pump(WindowServer& window, PumpState& state, bool settle) {
+  std::vector<std::string> batch;
+  {
+    std::lock_guard<std::mutex> lock(g_inboxLock);
+    batch.swap(g_inbox);
+  }
+  const bool active = !batch.empty();
+  // The compositor only draws a widget that is shown, sized to the window and
+  // allowed to paint; RenderDocument never needed any of that, so nothing
+  // else keeps it so (idempotent and cheap once it holds).
+  if (g_compositorEnabled.load()) gpu_ensure_active(window.width, window.height);
+  g_mainWidget.store(main_widget());
+  // Pointer motion alone repaints only if it changed something (a hover
+  // style, a cursor-dependent highlight): at 60 Hz of motion over plain
+  // content a RenderDocument per move cost ~13 ms of CPU for nothing.
+  bool onlyMotion = active;
+  if (active) {
+    for (const auto& line : batch) {
+      if (!isMotion(line)) { onlyMotion = false; break; }
+    }
+    coalesce(batch);
+    for (const auto& line : batch) {
+      if (!dispatch(window, line)) {
+        state.exitCode = 0;
+        return;
+      }
+    }
+    // Let what the input started (handlers, focus changes) settle before
+    // painting, without waiting for anything.
+    if (settle) {
+      g_outerLoopRunsEvents = true;
+      NS_ProcessPendingEvents(nullptr, 0);
+      g_outerLoopRunsEvents = false;
+    }
+    // Tell the windowserver where text is typed, so the input method's
+    // candidates open under the caret.
+    int cx = 0, cy = 0, cw = 0, ch = 0;
+    const std::string cursor = caret_rect(&cx, &cy, &cw, &ch)
+        ? nsPrintfCString(" %d %d %d %d", cx, cy, cw, ch).get()
+        : "";
+    if (cursor != g_cursor) {
+      g_cursor = cursor;
+      window.setCursor(cursor);
+    }
+    // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
+    const auto copied = get_clipboard_text();
+    if (!copied.empty() && copied != g_clipboard) {
+      g_clipboard = copied;
+      window.setClipboard(copied);
+    }
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const uint64_t generation = paint_generation();
+  const auto since = now - state.lastPaint;
+  if (g_compositorFrames.load()) {
+    // The compositor draws the window. After input, paint at once instead of
+    // at the next refresh tick; the render thread's frame then wakes this
+    // loop (endDrawing) and only its rows are sent. Popups are painted here,
+    // so their changes (hover, a menu opening) follow the refresh driver.
+    if (active) paint_now_if_pending();
+    const bool popups = popups_visible();
+    if (g_damaged.load() || popups != g_popupsShown ||
+        (popups && (active || generation != state.paintedGeneration))) {
+      state.paintedGeneration = generation;
+      state.lastPaint = now;
+      if (!presentComposited(window, state.frames, state.firstFrame)) state.exitCode = 1;
+    }
+  } else if (
+      // RenderDocument: paint right after input (the change shows without
+      // waiting for a refresh tick), when Gecko painted on its own since the
+      // last frame (animations, smooth scrolling, the caret's blink, loads),
+      // when a paint has been pending a while, and once a second as a
+      // backstop.
+      (active && (!onlyMotion || paint_pending())) || state.firstFrame ||
+      generation != state.paintedGeneration ||
+      (paint_pending() && since >= std::chrono::milliseconds(100)) ||
+      since >= std::chrono::seconds(1)) {
+    state.paintedGeneration = generation;
+    state.lastPaint = now;
+    if (!paintFrame(window, state.frames, state.firstFrame)) state.exitCode = 1;
+  }
+}
+
+static PumpState* g_pumpState = nullptr;
+
+// Pumps the windowserver connection from event loops nested in Gecko. A page's
+// alert(), confirm() and prompt() run one (SpinEventLoopUntil) until the
+// dialog is answered, and so does a sync XHR; the outer loop does not run
+// meanwhile. Without this the dialog was never
+// presented and the keys and clicks that would answer it never reached Gecko,
+// so the page stayed frozen. Toolkits do the same in nsBaseAppShell, which
+// processes native events before every event, nested or not.
+class NestedLoopPump final : public nsIThreadObserver {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+
+  NS_IMETHOD OnDispatchedEvent() override { return NS_OK; }
+
+  NS_IMETHOD OnProcessNextEvent(nsIThreadInternal*, bool) override {
+    mDepth++;
+    // The outer loop pumps before it runs events; here only loops nested in
+    // what it runs, or in the input it dispatches. A loop pumping at this
+    // depth is already running (it is presenting or dispatching): only a loop
+    // it nests may pump again.
+    WindowServer* window = g_window.load();
+    if ((mDepth == 1 && g_outerLoopRunsEvents) || !g_pumpState || !window ||
+        g_pumpState->exitCode >= 0 || mPumpingDepth >= mDepth) {
+      return NS_OK;
+    }
+    const uint32_t outer = mPumpingDepth;
+    mPumpingDepth = mDepth;
+    pump(*window, *g_pumpState, /* settle */ false);
+    mPumpingDepth = outer;
+    return NS_OK;
+  }
+
+  NS_IMETHOD AfterProcessNextEvent(nsIThreadInternal*, bool) override {
+    mDepth--;
+    return NS_OK;
+  }
+
+ private:
+  ~NestedLoopPump() = default;
+  // How many ProcessNextEvent calls the main thread is inside, and the depth
+  // of the innermost one pumping. Only the main thread touches these.
+  uint32_t mDepth = 0;
+  uint32_t mPumpingDepth = 0;
+};
+NS_IMPL_ISUPPORTS(NestedLoopPump, nsIThreadObserver)
+
 // Chromium's switches that FireDog takes. They come before the URL, as with
 // chrome: --remote-debugging-port=N serves the Chrome DevTools Protocol on
 // 127.0.0.1:N (an embedder that reloads or inspects the page uses it),
@@ -745,88 +898,23 @@ int main(int argc, char** argv) {
   nsCOMPtr<nsITimer> backstop;
   NS_NewTimerWithCallback(getter_AddRefs(backstop), [](nsITimer*) {}, 1000,
                           nsITimer::TYPE_REPEATING_SLACK, "firedog::backstop"_ns);
-  Frames frames;
-  bool firstFrame = true;
-  uint64_t paintedGeneration = 0;
-  auto lastPaint = std::chrono::steady_clock::now();
-  std::vector<std::string> batch;
-  while (window.connected() && !g_windowsGone) {
-    {
-      std::lock_guard<std::mutex> lock(g_inboxLock);
-      batch.swap(g_inbox);
-    }
-    const bool active = !batch.empty();
-    // The compositor only draws a widget that is shown, sized to the window and
-    // allowed to paint; RenderDocument never needed any of that, so nothing
-    // else keeps it so (idempotent and cheap once it holds).
-    if (g_compositorEnabled.load()) gpu_ensure_active(window.width, window.height);
-    g_mainWidget.store(main_widget());
-    // Pointer motion alone repaints only if it changed something (a hover
-    // style, a cursor-dependent highlight): at 60 Hz of motion over plain
-    // content a RenderDocument per move cost ~13 ms of CPU for nothing.
-    bool onlyMotion = active;
-    if (active) {
-      for (const auto& line : batch) {
-        if (!isMotion(line)) { onlyMotion = false; break; }
-      }
-      coalesce(batch);
-      for (const auto& line : batch) {
-        if (!dispatch(window, line)) return 0;
-      }
-      batch.clear();
-      // Let what the input started (handlers, focus changes) settle before
-      // painting, without waiting for anything.
-      NS_ProcessPendingEvents(nullptr, 0);
-      // Tell the windowserver where text is typed, so the input method's
-      // candidates open under the caret.
-      int cx = 0, cy = 0, cw = 0, ch = 0;
-      const std::string cursor = caret_rect(&cx, &cy, &cw, &ch)
-          ? nsPrintfCString(" %d %d %d %d", cx, cy, cw, ch).get()
-          : "";
-      if (cursor != g_cursor) {
-        g_cursor = cursor;
-        window.setCursor(cursor);
-      }
-      // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
-      const auto copied = get_clipboard_text();
-      if (!copied.empty() && copied != g_clipboard) {
-        g_clipboard = copied;
-        window.setClipboard(copied);
-      }
-    }
-    const auto now = std::chrono::steady_clock::now();
-    const uint64_t generation = paint_generation();
-    const auto since = now - lastPaint;
-    if (g_compositorFrames.load()) {
-      // The compositor draws the window. After input, paint at once instead of
-      // at the next refresh tick; the render thread's frame then wakes this
-      // loop (endDrawing) and only its rows are sent. Popups are painted here,
-      // so their changes (hover, a menu opening) follow the refresh driver.
-      if (active) paint_now_if_pending();
-      const bool popups = popups_visible();
-      if (g_damaged.load() || popups != g_popupsShown ||
-          (popups && (active || generation != paintedGeneration))) {
-        paintedGeneration = generation;
-        lastPaint = now;
-        if (!presentComposited(window, frames, firstFrame)) return 1;
-      }
-    } else if (
-        // RenderDocument: paint right after input (the change shows without
-        // waiting for a refresh tick), when Gecko painted on its own since the
-        // last frame (animations, smooth scrolling, the caret's blink, loads),
-        // when a paint has been pending a while, and once a second as a
-        // backstop.
-        (active && (!onlyMotion || paint_pending())) || firstFrame ||
-        generation != paintedGeneration ||
-        (paint_pending() && since >= std::chrono::milliseconds(100)) ||
-        since >= std::chrono::seconds(1)) {
-      paintedGeneration = generation;
-      lastPaint = now;
-      if (!paintFrame(window, frames, firstFrame)) return 1;
-    }
+  // The outer loop and every nested event loop (see NestedLoopPump) pump the
+  // windowserver connection through the same state.
+  PumpState state;
+  g_pumpState = &state;
+  nsCOMPtr<nsIThreadInternal> mainThread = do_QueryInterface(NS_GetCurrentThread());
+  RefPtr<NestedLoopPump> nestedPump = new NestedLoopPump();
+  if (mainThread) mainThread->AddObserver(nestedPump);
+  while (window.connected() && !g_windowsGone && state.exitCode < 0) {
+    pump(window, state, /* settle */ true);
+    if (state.exitCode >= 0) break;
     // Sleep until Gecko has something to run: a notice (the reader's runnable),
     // a timer, a refresh tick, a network reply.
+    g_outerLoopRunsEvents = true;
     NS_ProcessNextEvent(nullptr, true);
+    g_outerLoopRunsEvents = false;
   }
-  return 0;
+  if (mainThread) mainThread->RemoveObserver(nestedPump);
+  g_pumpState = nullptr;
+  return state.exitCode < 0 ? 0 : state.exitCode;
 }
