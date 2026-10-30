@@ -173,9 +173,26 @@ static bool listHas(const char* list, const char* name) {
   return entries.find(std::string(",") + name + ",") != std::string::npos;
 }
 
+// FireDog's window (FIREDOG_EMBED) draws the tabs and the toolbar itself and
+// sends what the person did with them (open this address, select that tab) as
+// `firedog` lines. Firefox's front-end acts on them in firedog/shell.js, which
+// listens for this topic; what it reports back comes the other way, on
+// "firedog-shell-event" (see ShellEventObserver).
+static void dispatchShellCommand(const std::string& line) {
+  nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+  if (observers) {
+    observers->NotifyObservers(nullptr, "firedog-shell-command",
+                               NS_ConvertUTF8toUTF16(line.substr(strlen("firedog "))).get());
+  }
+}
+
 static bool dispatch(WindowServer& window, const std::string& line) {
   int id, x, y, dx, dy, code, button = 0;
   char state[16], text[4096];
+  if (line.rfind("firedog ", 0) == 0) {
+    dispatchShellCommand(line);
+    return true;
+  }
   if (sscanf(line.c_str(), "close %d", &id) == 1) return false;
   char states[64] = "";
   if (sscanf(line.c_str(), "configure %d %d %d %63s", &id, &x, &y, states) >= 3) {
@@ -524,6 +541,26 @@ namespace {
 std::atomic<WindowServer*> g_window{nullptr};
 }  // namespace
 
+// What firedog/shell.js reports to FireDog's window (the tabs, their titles
+// and addresses), as `firedog` lines. Only registered under FIREDOG_EMBED.
+class ShellEventObserver final : public nsIObserver {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_IMETHOD Observe(nsISupports*, const char*, const char16_t* aData) override {
+    WindowServer* window = g_window.load();
+    if (!window || !aData) return NS_OK;
+    NS_ConvertUTF16toUTF8 data(aData);
+    // One line each: the window reads lines.
+    if (data.FindChar('\n') >= 0) return NS_OK;
+    window->send(std::string("firedog ") + data.get());
+    return NS_OK;
+  }
+
+ private:
+  ~ShellEventObserver() = default;
+};
+NS_IMPL_ISUPPORTS(ShellEventObserver, nsIObserver)
+
 static bool askFullscreen(nsIWidget* aWidget, bool aFullScreen) {
   // Popups and other windows than the one on the windowserver keep the
   // headless widget's own size modes.
@@ -869,6 +906,13 @@ int main(int argc, char** argv) {
     mozilla::Preferences::SetCString("firedog.devtools.remote-allow-origins", switches.remoteAllowOrigins.c_str());
   }
   const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
+  // Inside FireDog's window, which draws the tabs and the toolbar: Firefox's
+  // front-end hides its own and takes commands from the window (shell.js).
+  if (window.embedded()) {
+    mozilla::Preferences::SetBool("firedog.shell.embedded", true);
+    nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+    if (observers) observers->AddObserver(new ShellEventObserver(), "firedog-shell-event", false);
+  }
   // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
   if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
   const std::string url = startUrl(switches.url);

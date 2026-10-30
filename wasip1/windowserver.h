@@ -8,6 +8,12 @@
 
 // BrowserOS windowserver: TCP commands + an RGBA surface file.
 //
+// Under FireDog's window (the firedog command, /usr/bin/firedog) the same
+// lines go over two pipes instead of the windowserver's socket: FIREDOG_EMBED
+// names the descriptors ("READ,WRITE"). The window then hands this program a
+// surface inside its own window (a subsurface) and passes it the input that
+// lands there, as a nested Wayland compositor does for its clients.
+//
 // One thread reads notices (next) while the application thread sends commands
 // and presents. The reader never closes the socket: closing it under a writer
 // on the other thread could hand the descriptor number to a new file in
@@ -33,13 +39,22 @@ class WindowServer {
   // xdg_toplevel.set_fullscreen / unset_fullscreen). The answer is a
   // configure notice whose states say whether it is fullscreen now.
   bool setFullscreen(bool on);
+  // Send a line as it is (FireDog's window reads the `firedog` lines).
+  bool send(const std::string& line) { return command(line); }
+  // Whether this program draws inside FireDog's window (FIREDOG_EMBED).
+  bool embedded() const { return output_ != socket_; }
   bool connected() const { return socket_ >= 0 && !closed_.load(std::memory_order_acquire); }
   int width = 1000;
   int height = 720;
  private:
   bool command(const std::string& text);
+  // Ask for the surface and wait for it (the rest of open).
+  bool request(const std::string& surface, const std::string& appId);
   void lost() { closed_.store(true, std::memory_order_release); }
+  // Notices come in on socket_ and commands go out on output_: the same
+  // socket, or the two pipes of FIREDOG_EMBED.
   int socket_ = -1;
+  int output_ = -1;
   int surface_ = -1;
   int id_ = 0;
   std::atomic<bool> closed_{false};

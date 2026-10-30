@@ -46,6 +46,12 @@
 
 /* The window */
 
+/* Inside FireDog's window (shell.js), which draws the tabs and the toolbar
+   itself: only the tabs' pages are Gecko's. */
+:root[firedog-shell] #navigator-toolbox {
+  visibility: collapse !important;
+}
+
 /* The windowserver (the window manager) decides the window's size, and the
    window must fill it. Firefox gives its window a minimum width of 500px
    (--window-min-width) and height of 120px; the widget then stays at the
