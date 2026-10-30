@@ -331,6 +331,14 @@ var FireDogChromium = {
   },
 };
 
+// Inside FireDog's window, which draws the tabs and the toolbar itself
+// (wasip1/main.cpp sets the pref under FIREDOG_EMBED). Marked before the first
+// paint, so Firefox's own never show (chromium.css).
+if (Services.prefs.getBoolPref("firedog.shell.embedded", false)) {
+  document.documentElement.setAttribute("firedog-shell", "");
+  Services.scriptloader.loadSubScript("chrome://browser/content/firedog/shell.js", window);
+}
+
 // A right-click can come before the window's load event (the first tab is
 // there from the start), so this listens from the start too.
 FireDogChromium.forwardContextMenuToPage();

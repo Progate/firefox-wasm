@@ -165,6 +165,18 @@ As on Linux, when that file exists Firefox reads it instead of
   fullscreen (the viewer did not allow it), `full-screen-api.enabled` is off,
   so the page sees `document.fullscreenEnabled` false and `requestFullscreen()`
   fails at once, as under a Permissions Policy that denies fullscreen.
+- Inside FireDog's window: the firedog command of `@progate/browser-gecko`
+  (its `shell/`, in Rust) opens the window and draws the tabs and the toolbar
+  at once, then starts this program as `/usr/lib/firedog/firedog-bin` with
+  `FIREDOG_EMBED=READ,WRITE`, two pipe descriptors. The program then speaks
+  the windowserver's lines over those pipes instead of `DISPLAY`'s socket: the
+  window hands it a surface inside its own (a subsurface) and passes it the
+  input that lands there, as a nested Wayland compositor does for its
+  clients. Firefox's front-end hides its own tabs and toolbar
+  (`firedog.shell.embedded`, set before `browser.xhtml` loads) and takes the
+  window's commands as `firedog` lines; `chromium-ui/overlay/.../shell.js` acts
+  on them and reports the tabs back. Without `FIREDOG_EMBED` the program opens
+  its own window and draws Firefox's front-end whole, as before.
 - `link.sh`: links the entry point, the gecko.js embedder and Gecko's libraries
   into `firedog.wasm`, with shared imported memory for wasi-threads.
 - `branding/firedog`: names, icons and default prefs. The icons are Progate's

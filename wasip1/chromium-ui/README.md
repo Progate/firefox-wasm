@@ -37,6 +37,14 @@ from `./mach package`'s output.
     fullscreen request (`MozDOMFullscreen:Request`), so that
     `DOMFullscreenParent` hides the toolbars when a page's element goes
     fullscreen, as it does for a remote tab.
+  - `shell.js` is loaded by `chromium.js` when FireDog runs inside its window
+    (`firedog.shell.embedded`, see `wasip1/README.md`), which draws the tabs
+    and the toolbar itself. `chromium.css` then hides Firefox's own
+    (`:root[firedog-shell]`). `shell.js` acts on the window's commands (open
+    an address, select or close a tab, back, reload, the app menu), which
+    `wasip1/main.cpp` hands it on the observer topic `firedog-shell-command`,
+    and reports the tabs (titles, addresses, loading, the connection's
+    security) and a request for the address bar on `firedog-shell-event`.
   - `newtab.html` is the blank page that new tabs, new windows and Home show,
     in Progate's design with its Ninja Wanko (`@progate/illustrations`'
     `wanko-laptop.svg`, inline). `repack.mjs` puts it in place of Firefox's

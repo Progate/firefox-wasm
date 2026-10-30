@@ -43,6 +43,7 @@ WindowServer::~WindowServer() {
     if (id_) command("destroy " + std::to_string(id_));
     close(socket_);
   }
+  if (output_ >= 0 && output_ != socket_) close(output_);
   if (surface_ >= 0) close(surface_);
 }
 
@@ -50,7 +51,7 @@ bool WindowServer::command(const std::string& text) {
   if (!connected()) return false;
   const auto line = text + "\n";
   std::lock_guard<std::mutex> lock(send_);
-  if (writeAll(socket_, line.data(), line.size())) return true;
+  if (writeAll(output_, line.data(), line.size())) return true;
   lost();
   return false;
 }
@@ -85,8 +86,23 @@ bool WindowServer::resize(int w, int h) {
   return true;
 }
 
+// The pipes of FIREDOG_EMBED ("READ,WRITE"), or false when it is not set.
+static bool embedDescriptors(int* input, int* output) {
+  const char* embed = getenv("FIREDOG_EMBED");
+  return embed && sscanf(embed, "%d,%d", input, output) == 2 && *input >= 0 && *output >= 0;
+}
+
 bool WindowServer::open(int w, int h, const std::string& appId) {
   if (!resize(w, h)) return false;
+  int input, output;
+  if (embedDescriptors(&input, &output)) {
+    socket_ = input;
+    output_ = output;
+    // The children this program starts must not hold the window's pipes.
+    fcntl(input, F_SETFD, FD_CLOEXEC);
+    fcntl(output, F_SETFD, FD_CLOEXEC);
+    return request("surface " + std::to_string(width) + " " + std::to_string(height), appId);
+  }
   // DISPLAY is host:port[.screen], the X form host:display.screen with the
   // listening port in place of the display number. The screen picks the
   // screen the window goes on (X's DefaultScreen); without it, screen 0.
@@ -110,12 +126,17 @@ bool WindowServer::open(int w, int h, const std::string& appId) {
   target.sin_port = htons(port);
   if (inet_pton(AF_INET, address.substr(0, colon).c_str(), &target.sin_addr) != 1) return false;
   socket_ = socket(AF_INET, SOCK_STREAM, 0);
+  output_ = socket_;
   if (socket_ < 0 || connect(socket_, reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) return false;
   // Name the screen like X's CreateWindow names the root of that screen as the
   // parent. Screen 0 is left unsaid so the line stays the same as before.
-  std::string request = "surface " + std::to_string(width) + " " + std::to_string(height);
-  if (screen != 0) request += " screen=" + std::to_string(screen);
-  if (!command(request)) return false;
+  std::string line = "surface " + std::to_string(width) + " " + std::to_string(height);
+  if (screen != 0) line += " screen=" + std::to_string(screen);
+  return request(line, appId);
+}
+
+bool WindowServer::request(const std::string& surface, const std::string& appId) {
+  if (!command(surface)) return false;
   // Other notices (focus, properties) may arrive before the surface reply;
   // keep reading until it comes.
   std::string line;
