@@ -252,6 +252,27 @@ const patchAboutAddons = (gre) => {
  *   patterns it finds in the archive, so text in other languages is not
  *   hyphenated, as in a build that does not ship their dictionaries; Japanese
  *   has none.
+ * - pdf.js's viewer and library (about 7.6 MB; `pdfjs.disabled`, so a PDF is
+ *   downloaded instead of shown). Its modules (PdfJs.sys.mjs and the actors)
+ *   stay: the browser's startup and context menu import them.
+ * - The Remote Settings dumps of what FireDog never uses:
+ *   - the intermediate certificates and OneCRL (about 2.4 MB). FireDog's TLS
+ *     goes through BrowserOS's TLS relay, which issues every site's
+ *     certificate from the OS's own CA, so Gecko never sees a real chain to
+ *     complete or a revoked certificate to check;
+ *   - the add-on blocklist (about 1.1 MB). Remote Settings is off, so it was
+ *     never updated either; add-ons are installed by the learner;
+ *   - cookie banner rules, password rules and recipes, and the sites that
+ *     share credentials (cookie banner handling and passwords are off).
+ * - Marionette and WebDriver BiDi (about 1.1 MB). FireDog speaks the Chrome
+ *   DevTools Protocol with its own back end (modules/firedog/devtools), which
+ *   uses only the remote agent's HTTP server and EventUtils; the other parts
+ *   of chrome://remote stay for them and for the modules that import them.
+ * - The language detector of Translations (cld-worker, about 1.25 MB;
+ *   `browser.translations.enable` is off). LanguageDetector.sys.mjs stays, so
+ *   the actors that import it still load.
+ * - The English spelling dictionary (about 0.6 MB). Spell checking is off
+ *   (`layout.spellcheckDefault`); learners type code, which it only marks.
  *
  * @param {string} browser the extracted browser/omni.ja
  * @param {string} gre the extracted omni.ja
@@ -298,6 +319,31 @@ const pruneUnusedFeatures = (browser, gre) => {
   const lastModified = JSON.parse(readFileSync(join(settings, 'last_modified.json'), 'utf8'))
   for (const dump of dumps) delete lastModified[dump]
   writeFileSync(join(settings, 'last_modified.json'), JSON.stringify(lastModified))
+
+  remove(join(gre, 'chrome/pdfjs/content/build'))
+  remove(join(gre, 'chrome/pdfjs/content/web'))
+
+  const unusedDumps = [
+    'security-state/intermediates',
+    'security-state/onecrl',
+    'blocklists/addons-bloomfilters',
+    'main/cookie-banner-rules-list',
+    'main/password-recipes',
+    'main/password-rules',
+    'main/websites-with-shared-credential-backends',
+  ]
+  for (const dump of unusedDumps) {
+    remove(join(settings, `${dump}.json`))
+    if (existsSync(join(settings, dump))) remove(join(settings, dump))
+    delete lastModified[dump]
+  }
+  writeFileSync(join(settings, 'last_modified.json'), JSON.stringify(lastModified))
+
+  remove(join(gre, 'chrome/remote/content/marionette'))
+  remove(join(gre, 'chrome/remote/content/webdriver-bidi'))
+  remove(join(gre, 'modules/translations/cld-worker.js'))
+  remove(join(gre, 'modules/translations/cld-worker.js.mem'))
+  for (const file of ['en-US.dic', 'en-US.aff']) remove(join(gre, 'dictionaries', file))
 
   const hyphenation = join(gre, 'hyphenation')
   if (!existsSync(join(hyphenation, 'hyph_en_US.hyf'))) throw new Error('hyph_en_US.hyf is not in this Gecko; update pruneUnusedFeatures')
