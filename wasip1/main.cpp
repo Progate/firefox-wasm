@@ -1,0 +1,964 @@
+// SPDX-License-Identifier: MPL-2.0
+// Gecko's application thread owns its event loop and windowserver connection.
+#include "../gecko.js/src/embed-xul.h"
+#include "windowserver.h"
+#include "devtools-pipe.h"
+#include "nsPrintfCString.h"
+#include "nsITimer.h"
+#include "nsIThreadInternal.h"
+#include "nsThreadUtils.h"
+#include "nsIWindowMediator.h"
+#include <algorithm>
+#include <cctype>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+XulCmd* g_cmd = nullptr;
+bool g_gpu = false;
+bool g_mirror = false;
+
+static std::string decode(const std::string& value) {
+  std::string out;
+  for (size_t i = 0; i < value.size(); ++i) {
+    if (value[i] == '%' && i + 2 < value.size()) {
+      char code[] = {value[i + 1], value[i + 2], 0};
+      char* end;
+      auto byte = strtol(code, &end, 16);
+      if (*end == 0) { out += static_cast<char>(byte); i += 2; continue; }
+    }
+    out += value[i];
+  }
+  return out;
+}
+
+// Device pixels per CSS pixel (GDK_SCALE); windowserver speaks device pixels.
+static int g_scale = 1;
+// DOM button state (bit 1 left, 2 right, 4 middle) and modifier state
+// (nsIDOMWindowUtils MODIFIER_ALT 1, CONTROL 2, SHIFT 4, META 8).
+static int g_buttons = 0;
+static int g_modifiers = 0;
+// What the system clipboard holds, as far as this window knows. Gecko's
+// clipboard differing from it means the page copied something.
+static std::string g_clipboard;
+// The typing place last told to the windowserver (" x y width height", or
+// empty when nothing editable has the focus).
+static std::string g_cursor;
+
+// Linux input-event key codes (the windowserver protocol) for keys without
+// text, as DOM key names and key codes.
+struct NamedKey { int code; const char* key; int keyCode; };
+static const NamedKey kNamedKeys[] = {
+    {1, "Escape", 27},     {14, "Backspace", 8},  {15, "Tab", 9},
+    {28, "Enter", 13},     {57, " ", 32},         {102, "Home", 36},
+    {103, "ArrowUp", 38},  {104, "PageUp", 33},   {105, "ArrowLeft", 37},
+    {106, "ArrowRight", 39}, {107, "End", 35},    {108, "ArrowDown", 40},
+    {109, "PageDown", 34}, {110, "Insert", 45},   {111, "Delete", 46},
+    {59, "F1", 112},       {60, "F2", 113},       {61, "F3", 114},
+    {62, "F4", 115},       {63, "F5", 116},       {64, "F6", 117},
+    {65, "F7", 118},       {66, "F8", 119},       {67, "F9", 120},
+    {68, "F10", 121},      {87, "F11", 122},      {88, "F12", 123},
+};
+// KeyboardEvent.code for Linux input-event key codes (the US layout's
+// physical keys, as the UI Events code spec names them).
+static const char* domCode(int code) {
+  static const char* const kCodes[] = {
+      nullptr, "Escape", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5",
+      "Digit6", "Digit7", "Digit8", "Digit9", "Digit0", "Minus", "Equal",
+      "Backspace", "Tab", "KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyY",
+      "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight", "Enter",
+      "ControlLeft", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ",
+      "KeyK", "KeyL", "Semicolon", "Quote", "Backquote", "ShiftLeft",
+      "Backslash", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM",
+      "Comma", "Period", "Slash", "ShiftRight", "NumpadMultiply", "AltLeft",
+      "Space", "CapsLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
+      "F9", "F10", "NumLock", "ScrollLock", "Numpad7", "Numpad8", "Numpad9",
+      "NumpadSubtract", "Numpad4", "Numpad5", "Numpad6", "NumpadAdd",
+      "Numpad1", "Numpad2", "Numpad3", "Numpad0", "NumpadDecimal"};
+  if (code > 0 && code < (int)(sizeof(kCodes) / sizeof(kCodes[0]))) {
+    return kCodes[code];
+  }
+  switch (code) {
+    case 87: return "F11";
+    case 88: return "F12";
+    case 89: return "IntlRo";
+    case 92: return "Convert";
+    case 93: return "KanaMode";
+    case 94: return "NonConvert";
+    case 96: return "NumpadEnter";
+    case 97: return "ControlRight";
+    case 98: return "NumpadDivide";
+    case 100: return "AltRight";
+    case 102: return "Home";
+    case 103: return "ArrowUp";
+    case 104: return "PageUp";
+    case 105: return "ArrowLeft";
+    case 106: return "ArrowRight";
+    case 107: return "End";
+    case 108: return "ArrowDown";
+    case 109: return "PageDown";
+    case 110: return "Insert";
+    case 111: return "Delete";
+    case 117: return "NumpadEqual";
+    case 124: return "IntlYen";
+    case 125: return "MetaLeft";
+    case 126: return "MetaRight";
+  }
+  return nullptr;
+}
+// US layout characters for codes, so shortcuts (Ctrl+L, Ctrl+T) work when the
+// windowserver sends no text for a modified key.
+static char usCharacter(int code, bool shift) {
+  static const char* rows[] = {"1234567890-=", "qwertyuiop[]", "asdfghjkl;'`", "\\zxcvbnm,./"};
+  static const char* shifted[] = {"!@#$%^&*()_+", "QWERTYUIOP{}", "ASDFGHJKL:\"~", "|ZXCVBNM<>?"};
+  static const int starts[] = {2, 16, 30, 43};
+  for (int r = 0; r < 4; r++) {
+    int n = (int)strlen(rows[r]);
+    if (code >= starts[r] && code < starts[r] + n) {
+      return (shift ? shifted : rows)[r][code - starts[r]];
+    }
+  }
+  return 0;
+}
+static int modifierBit(int code) {
+  switch (code) {
+    case 42: case 54: return 4;    // Shift
+    case 29: case 97: return 2;    // Control
+    case 56: case 100: return 1;   // Alt
+    case 125: case 126: return 8;  // Meta
+  }
+  return 0;
+}
+
+static void key(int down, int code, const std::string& text) {
+  if (int bit = modifierBit(code)) {
+    g_modifiers = down ? (g_modifiers | bit) : (g_modifiers & ~bit);
+    return;
+  }
+  for (const auto& named : kNamedKeys) {
+    if (named.code == code) {
+      do_key(down ? 0 : 1, named.key, named.keyCode, code == 57 ? ' ' : 0, g_modifiers,
+             domCode(code));
+      return;
+    }
+  }
+  std::string character = text;
+  if (character.empty()) {
+    char c = usCharacter(code, g_modifiers & 4);
+    if (!c) return;
+    character.assign(1, c);
+  }
+  unsigned char first = character[0];
+  int keyCode = 0;
+  if (first >= 'a' && first <= 'z') keyCode = first - 'a' + 'A';
+  else if ((first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) keyCode = first;
+  // charCode only for a single ASCII character; other text keeps keyCode 0.
+  int charCode = (character.size() == 1 && first >= 0x20 && first < 0x7f) ? first : 0;
+  do_key(down ? 0 : 1, character.c_str(), keyCode, charCode, g_modifiers, domCode(code));
+}
+
+// The window manager's answer for the main window (defined with the window
+// manager hooks below, after the main widget is known).
+static void configuredByWindowManager(bool aFullScreen);
+// The fullscreen state the main window asked the window manager for and has
+// no answer to yet: 1 or 0, -1 when nothing is asked.
+static std::atomic<int> g_fullscreenAsked{-1};
+
+// Whether a comma-separated list of window states or capabilities, as the
+// windowserver writes them ("-" for none), holds name.
+static bool listHas(const char* list, const char* name) {
+  std::string entries = std::string(",") + list + ",";
+  return entries.find(std::string(",") + name + ",") != std::string::npos;
+}
+
+// FireDog's window (FIREDOG_EMBED) draws the tabs and the toolbar itself and
+// sends what the person did with them (open this address, select that tab) as
+// `firedog` lines. Firefox's front-end acts on them in firedog/shell.js, which
+// listens for this topic; what it reports back comes the other way, on
+// "firedog-shell-event" (see ShellEventObserver).
+static void dispatchShellCommand(const std::string& line) {
+  nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+  if (observers) {
+    observers->NotifyObservers(nullptr, "firedog-shell-command",
+                               NS_ConvertUTF8toUTF16(line.substr(strlen("firedog "))).get());
+  }
+}
+
+static bool dispatch(WindowServer& window, const std::string& line) {
+  int id, x, y, dx, dy, code, button = 0;
+  char state[16], text[4096];
+  if (line.rfind("firedog ", 0) == 0) {
+    dispatchShellCommand(line);
+    return true;
+  }
+  if (sscanf(line.c_str(), "close %d", &id) == 1) return false;
+  char states[64] = "";
+  if (sscanf(line.c_str(), "configure %d %d %d %63s", &id, &x, &y, states) >= 3) {
+    const bool resized = x != window.width || y != window.height;
+    const bool fullScreen = listHas(states, "fullscreen");
+    if (!window.resize(x, y)) return false;
+    EnsureSize(x, y);
+    // Every configure says whether the window is fullscreen; the widget acts
+    // only on a change or on the answer to its own request. A tiling window
+    // manager (desktop-tile, desktop-wm) places the window at the screen's
+    // size and then writes the fullscreen state: the placement's configure
+    // still has the old state, and taken as the answer it would refuse the
+    // request (the page's requestFullscreen() fails while the window goes
+    // fullscreen right after). A configure that resizes the window without
+    // the asked state is a placement; the answer is the configure that writes
+    // the state, or one that keeps the size (a refusal).
+    const int asked = g_fullscreenAsked.load();
+    if (asked != -1 && fullScreen != (asked == 1) && resized) return true;
+    g_fullscreenAsked = -1;
+    configuredByWindowManager(fullScreen);
+    return true;
+  }
+  // What the window manager lets this window do (xdg_toplevel.wm_capabilities).
+  // Without fullscreen the page's Fullscreen API is off, so requestFullscreen()
+  // fails at once with fullscreenerror, the same as under a Permissions Policy
+  // that denies fullscreen, instead of asking a window manager that will refuse.
+  if (sscanf(line.c_str(), "wm-capabilities %d %63s", &id, states) == 2) {
+    mozilla::Preferences::SetBool("full-screen-api.enabled", listHas(states, "fullscreen"));
+    return true;
+  }
+  int fields = sscanf(line.c_str(), "pointer %d %15s %d %d %d", &id, state, &x, &y, &button);
+  if (fields >= 4) {
+    // X numbers buttons 1 left, 2 middle, 3 right; DOM uses 0, 1, 2.
+    int domButton = button == 3 ? 2 : (button == 2 ? 1 : 0);
+    int bit = domButton == 2 ? 2 : (domButton == 1 ? 4 : 1);
+    int phase = 0;
+    if (strcmp(state, "down") == 0) { phase = 1; g_buttons |= bit; }
+    else if (strcmp(state, "up") == 0) { phase = 2; g_buttons &= ~bit; }
+    do_mouse(phase, x / g_scale, y / g_scale, domButton, phase ? 1 : 0, g_buttons, g_modifiers);
+    // The headless widget raises no contextmenu event of its own; on Linux it
+    // follows the right button's press.
+    if (phase == 1 && domButton == 2) {
+      do_mouse(3, x / g_scale, y / g_scale, domButton, 1, g_buttons, g_modifiers);
+    }
+    return true;
+  }
+  if (sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5) {
+    do_wheel(x / g_scale, y / g_scale, double(dx) / g_scale, double(dy) / g_scale, g_modifiers);
+    return true;
+  }
+  text[0] = 0;
+  fields = sscanf(line.c_str(), "key %d %15s %d %4095s", &id, state, &code, text);
+  if (fields >= 3) {
+    key(strcmp(state, "up") != 0, code, decode(text));  // down and repeat press
+    return true;
+  }
+  // The input method's text: composed (preedit, shown underlined until it is
+  // converted) and committed. Neither has a key of its own.
+  if (sscanf(line.c_str(), "preedit %d", &id) == 1) {
+    const auto space = line.find(' ', strlen("preedit "));
+    set_composition(space == std::string::npos ? "" : decode(line.substr(space + 1)).c_str());
+    return true;
+  }
+  if (sscanf(line.c_str(), "text %d %4095s", &id, text) == 2) {
+    commit_text(decode(text).c_str());
+    return true;
+  }
+  // The system clipboard changed or the focus came here: Gecko's clipboard
+  // follows it, so ⌘V pastes what other windows copied.
+  if (sscanf(line.c_str(), "selection %d", &id) == 1) {
+    const auto space = line.find(' ', strlen("selection "));
+    g_clipboard = space == std::string::npos ? "" : decode(line.substr(space + 1));
+    set_clipboard_text(g_clipboard.c_str());
+  }
+  return true;
+}
+
+// Notices the reader thread took off the windowserver socket, waiting for the
+// application thread. The reader wakes the application thread with a Gecko
+// runnable, so the application thread can sleep in Gecko's own event loop:
+// timers, network replies and refresh ticks that other threads post then run
+// at once instead of after a socket poll timed out (it waited up to 16 ms).
+static std::mutex g_inboxLock;
+static std::vector<std::string> g_inbox;
+static std::atomic<bool> g_wakePosted{false};
+
+static void wakeApplication() {
+  if (g_wakePosted.exchange(true)) return;  // one runnable per batch is enough
+  NS_DispatchToMainThread(NS_NewRunnableFunction("firedog::notices", [] {
+    g_wakePosted.store(false);
+  }));
+}
+
+static void readNotices(WindowServer* window) {
+  std::string line;
+  while (window->connected()) {
+    // The timeout only bounds how long a dead connection goes unnoticed.
+    if (!window->next(line, 1000)) continue;
+    std::vector<std::string> batch{line};
+    while (window->next(line, 0)) batch.push_back(line);  // everything already sent
+    {
+      std::lock_guard<std::mutex> lock(g_inboxLock);
+      for (auto& entry : batch) g_inbox.push_back(std::move(entry));
+    }
+    wakeApplication();
+  }
+  wakeApplication();  // let the application thread see the connection is gone
+}
+
+// Firefox closes its window when the last tab closes
+// (browser.tabs.closeWindowWithLastTab) and when the user quits. Nothing on the
+// windowserver connection says so: the event loop kept running with no window,
+// the last frame stayed on screen and nothing answered. Firefox on Linux exits
+// once its last browser window is gone, so FireDog leaves the loop then too.
+static bool g_windowsGone = false;
+
+class WindowsGoneObserver final : public nsIObserver {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_IMETHOD Observe(nsISupports*, const char* topic, const char16_t*) override {
+    if (strcmp(topic, "quit-application") == 0) {
+      g_windowsGone = true;
+      return NS_OK;
+    }
+    // "xul-window-destroyed" comes for every top-level window (the Library,
+    // a dialog); only the last browser window ends the program. The closed
+    // window has left the window mediator by the time this is notified.
+    nsCOMPtr<nsIWindowMediator> mediator = do_GetService("@mozilla.org/appshell/window-mediator;1");
+    nsCOMPtr<nsISimpleEnumerator> windows;
+    bool more = false;
+    if (mediator && NS_SUCCEEDED(mediator->GetEnumerator(u"navigator:browser", getter_AddRefs(windows))) &&
+        windows) {
+      windows->HasMoreElements(&more);
+    }
+    if (!more) g_windowsGone = true;
+    return NS_OK;
+  }
+
+ private:
+  ~WindowsGoneObserver() = default;
+};
+NS_IMPL_ISUPPORTS(WindowsGoneObserver, nsIObserver)
+
+static bool isMotion(const std::string& line) {
+  int id;
+  char state[16];
+  return sscanf(line.c_str(), "pointer %d %15s", &id, state) == 2 &&
+      strcmp(state, "down") != 0 && strcmp(state, "up") != 0;
+}
+
+// Merge notices that only matter as a total, so a burst queued while Gecko was
+// busy costs one event instead of many: of consecutive pointer motions only
+// the last position counts (each motion otherwise hit-tests, updates hover
+// state and fires mousemove), and consecutive wheel steps at one place add up
+// to one scroll. Order relative to every other notice is kept.
+static void coalesce(std::vector<std::string>& batch) {
+  std::vector<std::string> out;
+  out.reserve(batch.size());
+  for (auto& line : batch) {
+    if (!out.empty() && isMotion(line) && isMotion(out.back())) {
+      out.back() = std::move(line);
+      continue;
+    }
+    int id, x, y, dx, dy, id2, x2, y2, dx2, dy2;
+    if (!out.empty() &&
+        sscanf(line.c_str(), "scroll %d %d %d %d %d", &id, &x, &y, &dx, &dy) == 5 &&
+        sscanf(out.back().c_str(), "scroll %d %d %d %d %d", &id2, &x2, &y2, &dx2, &dy2) == 5 &&
+        id == id2 && x == x2 && y == y2) {
+      out.back() = nsPrintfCString("scroll %d %d %d %d %d", id, x, y, dx + dx2, dy + dy2).get();
+      continue;
+    }
+    out.push_back(std::move(line));
+  }
+  batch.swap(out);
+}
+
+// The window's frames: Gecko paints into `back`, which is compared with
+// `front` (what the windowserver shows) so only the band of rows that
+// changed is converted, written and composited. A frame that changed nothing
+// (a repaint after a mouse move over plain text) is not sent at all.
+struct Frames {
+  std::vector<uint8_t> front, back;
+  int width = 0, height = 0;
+  bool valid = false;  // front holds what is on screen
+
+  void ensure(int w, int h) {
+    if (w == width && h == height) return;
+    width = w;
+    height = h;
+    const size_t size = static_cast<size_t>(w) * h * 4;
+    front.assign(size, 0);
+    back.assign(size, 0);
+    valid = false;
+  }
+};
+
+static bool rowEqual(const uint8_t* a, const uint8_t* b, size_t bytes) {
+  // 8 bytes at a time: wasi-libc's memcmp goes byte by byte, which is ~8x
+  // slower over a 2240-pixel row.
+  const size_t words = bytes / 8;
+  for (size_t i = 0; i < words; i++) {
+    uint64_t x, y;
+    memcpy(&x, a + i * 8, 8);
+    memcpy(&y, b + i * 8, 8);
+    if (x != y) return false;
+  }
+  return memcmp(a + words * 8, b + words * 8, bytes - words * 8) == 0;
+}
+
+// Paint and present what changed. Returns false when the windowserver is gone.
+static bool paintFrame(WindowServer& window, Frames& frames, bool& firstFrame) {
+  frames.ensure(window.width, window.height);
+  if (!xul_paint_into(frames.back.data(), frames.width, frames.height)) return true;
+  const size_t stride = static_cast<size_t>(frames.width) * 4;
+  int top = 0, bottom = frames.height;  // the changed band is [top, bottom)
+  if (frames.valid) {
+    const uint8_t* now = frames.back.data();
+    const uint8_t* shown = frames.front.data();
+    while (top < bottom && rowEqual(now + stride * top, shown + stride * top, stride)) top++;
+    while (bottom > top && rowEqual(now + stride * (bottom - 1), shown + stride * (bottom - 1), stride)) bottom--;
+    if (top == bottom) return true;
+  }
+  if (!window.presentRows(frames.back.data(), top, bottom - top)) {
+    perror("firedog: windowserver present");
+    return false;
+  }
+  frames.front.swap(frames.back);
+  // back now holds the previous frame; it differs from front only inside the
+  // band, which the next paint overwrites anyway (it paints every pixel).
+  frames.valid = true;
+  if (firstFrame) {
+    fprintf(stderr, "firedog: first frame presented (%dx%d)\n", window.width, window.height);
+    firstFrame = false;
+  }
+  return true;
+}
+
+// Frames from Gecko's own compositor (WebRender's software renderer, SWGL).
+//
+// The headless widget has no surface of its own, so the compositor rendered
+// every frame into nothing ("RenderCompositorSWGL failed mapping default
+// framebuffer") while this program painted the window a second time with
+// RenderDocument. With gecko-fast-paint.patch the widget asks
+// firedog_remote_drawing for a draw target instead: the render thread then
+// rasterizes into `pixels` (off the application thread, reusing its cached
+// tiles) and reports the rectangles it changed, and the application thread
+// only converts and sends those rows.
+//
+// libxul without the patch never calls these hooks; the window then keeps
+// RenderDocument (see compositorFrames). FIREDOG_PAINT=document forces that
+// path for comparison.
+extern "C" {
+struct FireDogRemoteDrawing {
+  // Render thread. A new reference (the caller adopts it) to a draw target
+  // covering the whole widget from its origin, or null to skip the frame.
+  mozilla::gfx::DrawTarget* (*start)(nsIWidget* aWidget);
+  // Render thread, after a non-null start. aRects holds aCount rectangles
+  // (x, y, width, height in device pixels) that the frame changed.
+  void (*end)(nsIWidget* aWidget, const int32_t* aRects, size_t aCount);
+};
+}
+
+namespace {
+struct Composited {
+  // Held by the render thread from start to end: SWGL draws straight into
+  // `pixels`, and WebRender's partial present assumes the rows it did not
+  // redraw still hold the previous frame, so the application thread must not
+  // read a half-drawn frame or replace the buffer meanwhile.
+  std::mutex lock;
+  std::vector<uint8_t> pixels;
+  int width = 0, height = 0;
+  int top = 0, bottom = 0;  // rows changed since the last present
+};
+Composited g_composited;
+std::atomic<nsIWidget*> g_mainWidget{nullptr};
+std::atomic<bool> g_compositorEnabled{true};
+// Set by the first compositor frame; from then on the window shows them.
+std::atomic<bool> g_compositorFrames{false};
+// Rows are waiting in g_composited. Read without the lock, so the application
+// thread does not wait out a frame the render thread is still drawing.
+std::atomic<bool> g_damaged{false};
+thread_local bool g_drawing = false;
+}  // namespace
+
+static mozilla::gfx::DrawTarget* startDrawing(nsIWidget* aWidget) {
+  using namespace mozilla::gfx;
+  // Popups are separate widgets with compositors of their own; they are
+  // painted over the window by paint_popups_into instead.
+  if (!g_compositorEnabled.load() || !aWidget || aWidget != g_mainWidget.load()) return nullptr;
+  const auto size = aWidget->GetClientSize();
+  if (size.width <= 0 || size.height <= 0) return nullptr;
+  g_composited.lock.lock();
+  auto& c = g_composited;
+  if (c.width != size.width || c.height != size.height) {
+    // WebRender redraws everything after the widget size changed.
+    c.width = size.width;
+    c.height = size.height;
+    c.pixels.assign(static_cast<size_t>(c.width) * c.height * 4, 0xff);
+    c.top = 0;
+    c.bottom = c.height;
+  }
+  RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
+      BackendType::SKIA, c.pixels.data(), IntSize(c.width, c.height), c.width * 4,
+      SurfaceFormat::B8G8R8A8);
+  if (!dt) {
+    g_composited.lock.unlock();
+    return nullptr;
+  }
+  g_drawing = true;
+  g_compositorFrames.store(true);
+  return dt.forget().take();
+}
+
+static void endDrawing(nsIWidget*, const int32_t* aRects, size_t aCount) {
+  if (!g_drawing) return;
+  g_drawing = false;
+  auto& c = g_composited;
+  for (size_t i = 0; i < aCount; i++) {
+    const int y = aRects[i * 4 + 1], h = aRects[i * 4 + 3];
+    if (h <= 0) continue;
+    const int top = std::max(0, y), bottom = std::min(c.height, y + h);
+    if (bottom <= top) continue;
+    if (c.top >= c.bottom) { c.top = top; c.bottom = bottom; }
+    else { c.top = std::min(c.top, top); c.bottom = std::max(c.bottom, bottom); }
+  }
+  const bool changed = c.top < c.bottom;
+  if (changed) g_damaged.store(true);
+  g_composited.lock.unlock();
+  if (changed) wakeApplication();
+}
+
+extern "C" FireDogRemoteDrawing firedog_remote_drawing = {startDrawing, endDrawing};
+
+// The window manager of the main window (see FireDogWindowManager in
+// HeadlessWidget.h). Element.requestFullscreen() reaches the widget's
+// MakeFullScreen, which asks here; the windowserver passes the request to the
+// window manager, and its configure comes back through dispatch.
+extern "C" {
+struct FireDogWindowManager {
+  bool (*set_fullscreen)(nsIWidget* aWidget, bool aFullScreen);
+};
+void firedog_window_manager_configured(nsIWidget* aWidget, bool aFullScreen);
+}
+
+namespace {
+std::atomic<WindowServer*> g_window{nullptr};
+}  // namespace
+
+// What firedog/shell.js reports to FireDog's window (the tabs, their titles
+// and addresses), as `firedog` lines. Only registered under FIREDOG_EMBED.
+class ShellEventObserver final : public nsIObserver {
+ public:
+  NS_DECL_ISUPPORTS
+  NS_IMETHOD Observe(nsISupports*, const char*, const char16_t* aData) override {
+    WindowServer* window = g_window.load();
+    if (!window || !aData) return NS_OK;
+    NS_ConvertUTF16toUTF8 data(aData);
+    // One line each: the window reads lines.
+    if (data.FindChar('\n') >= 0) return NS_OK;
+    window->send(std::string("firedog ") + data.get());
+    return NS_OK;
+  }
+
+ private:
+  ~ShellEventObserver() = default;
+};
+NS_IMPL_ISUPPORTS(ShellEventObserver, nsIObserver)
+
+static bool askFullscreen(nsIWidget* aWidget, bool aFullScreen) {
+  // Popups and other windows than the one on the windowserver keep the
+  // headless widget's own size modes.
+  WindowServer* window = g_window.load();
+  if (!window || !aWidget || aWidget != g_mainWidget.load()) return false;
+  if (!window->setFullscreen(aFullScreen)) return false;
+  g_fullscreenAsked = aFullScreen ? 1 : 0;
+  return true;
+}
+
+extern "C" FireDogWindowManager firedog_window_manager = {askFullscreen};
+
+static void configuredByWindowManager(bool aFullScreen) {
+  if (nsIWidget* widget = g_mainWidget.load()) firedog_window_manager_configured(widget, aFullScreen);
+}
+
+// Whether popups were drawn over the last presented compositor frame.
+static bool g_popupsShown = false;
+
+// Present the compositor's changed rows, with any open popups painted over
+// them. Returns false when the windowserver is gone.
+static bool presentComposited(WindowServer& window, Frames& frames, bool& firstFrame) {
+  auto& c = g_composited;
+  const bool popups = popups_visible();
+  std::unique_lock<std::mutex> lock(c.lock);
+  // Between a configure and the compositor's first frame at the new size the
+  // rows would have the wrong stride; that frame follows shortly.
+  if (c.width != window.width || c.height != window.height) return true;
+  g_damaged.store(false);
+  if (!popups && !g_popupsShown) {
+    if (c.top >= c.bottom) return true;
+    const int top = c.top, rows = c.bottom - c.top;
+    c.top = c.bottom = 0;
+    if (!window.presentRows(c.pixels.data(), top, rows)) {
+      perror("firedog: windowserver present");
+      return false;
+    }
+    frames.valid = false;  // `front` no longer mirrors the screen
+  } else {
+    // Popups overlap the frame, so compose a copy and send what differs from
+    // what is shown (closing a popup restores the rows it covered).
+    frames.ensure(window.width, window.height);
+    memcpy(frames.back.data(), c.pixels.data(), frames.back.size());
+    c.top = c.bottom = 0;
+    lock.unlock();
+    paint_popups_into(frames.back.data(), frames.width, frames.height);
+    const size_t stride = static_cast<size_t>(frames.width) * 4;
+    int top = 0, bottom = frames.height;
+    if (frames.valid) {
+      const uint8_t* now = frames.back.data();
+      const uint8_t* shown = frames.front.data();
+      while (top < bottom && rowEqual(now + stride * top, shown + stride * top, stride)) top++;
+      while (bottom > top && rowEqual(now + stride * (bottom - 1), shown + stride * (bottom - 1), stride)) bottom--;
+    }
+    if (top < bottom) {
+      if (!window.presentRows(frames.back.data(), top, bottom - top)) {
+        perror("firedog: windowserver present");
+        return false;
+      }
+      frames.front.swap(frames.back);
+      frames.valid = true;
+    }
+    g_popupsShown = popups;
+  }
+  // RenderDocument usually shows the first frame before the compositor's
+  // first one arrives, so say when the window switches over on its own.
+  static bool switched = false;
+  if (!switched) {
+    fprintf(stderr, "firedog: first frame presented from the compositor (%dx%d)\n", window.width, window.height);
+    switched = true;
+  }
+  firstFrame = false;
+  return true;
+}
+
+// Without a URL argument, open browser.startup.homepage like Firefox does.
+// Distributions set it in /usr/lib/firefox/browser/defaults/preferences/*.js. about:home and
+// about:newtab need the Firefox front-end, which this window does not have yet.
+static std::string startUrl(const char* argument) {
+  if (argument && *argument) return argument;
+  nsAutoCString home;
+  if (NS_SUCCEEDED(mozilla::Preferences::GetCString("browser.startup.homepage", home))) {
+    int32_t bar = home.FindChar('|');  // several pages are separated by |
+    if (bar >= 0) home.Truncate(bar);
+    if (!home.IsEmpty() && !StringBeginsWith(home, "about:home"_ns) &&
+        !StringBeginsWith(home, "about:newtab"_ns)) {
+      return home.get();
+    }
+  }
+  return "about:blank";
+}
+
+// Whether the outer loop itself is running Gecko's events (waiting for one, or
+// letting what input started settle). Those events run one level deep; a loop
+// nested in one of them is what NestedLoopPump pumps.
+static bool g_outerLoopRunsEvents = false;
+
+// What the outer loop and the nested event loops share while they pump the
+// windowserver connection.
+struct PumpState {
+  Frames frames;
+  bool firstFrame = true;
+  uint64_t paintedGeneration = 0;
+  std::chrono::steady_clock::time_point lastPaint = std::chrono::steady_clock::now();
+  // The code main() returns once pumping found the program should end (the
+  // windowserver closed the window: 0, presenting failed: 1). Negative while
+  // it should go on.
+  int exitCode = -1;
+};
+
+// Hand what the windowserver sent to Gecko and present what Gecko painted.
+// `settle` lets what the input started run before painting; only the outer
+// loop does, since a nested loop is itself in the middle of running events.
+static void pump(WindowServer& window, PumpState& state, bool settle) {
+  std::vector<std::string> batch;
+  {
+    std::lock_guard<std::mutex> lock(g_inboxLock);
+    batch.swap(g_inbox);
+  }
+  const bool active = !batch.empty();
+  // The compositor only draws a widget that is shown, sized to the window and
+  // allowed to paint; RenderDocument never needed any of that, so nothing
+  // else keeps it so (idempotent and cheap once it holds).
+  if (g_compositorEnabled.load()) gpu_ensure_active(window.width, window.height);
+  g_mainWidget.store(main_widget());
+  // Pointer motion alone repaints only if it changed something (a hover
+  // style, a cursor-dependent highlight): at 60 Hz of motion over plain
+  // content a RenderDocument per move cost ~13 ms of CPU for nothing.
+  bool onlyMotion = active;
+  if (active) {
+    for (const auto& line : batch) {
+      if (!isMotion(line)) { onlyMotion = false; break; }
+    }
+    coalesce(batch);
+    for (const auto& line : batch) {
+      if (!dispatch(window, line)) {
+        state.exitCode = 0;
+        return;
+      }
+    }
+    // Let what the input started (handlers, focus changes) settle before
+    // painting, without waiting for anything.
+    if (settle) {
+      g_outerLoopRunsEvents = true;
+      NS_ProcessPendingEvents(nullptr, 0);
+      g_outerLoopRunsEvents = false;
+    }
+    // Tell the windowserver where text is typed, so the input method's
+    // candidates open under the caret.
+    int cx = 0, cy = 0, cw = 0, ch = 0;
+    const std::string cursor = caret_rect(&cx, &cy, &cw, &ch)
+        ? nsPrintfCString(" %d %d %d %d", cx, cy, cw, ch).get()
+        : "";
+    if (cursor != g_cursor) {
+      g_cursor = cursor;
+      window.setCursor(cursor);
+    }
+    // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
+    const auto copied = get_clipboard_text();
+    if (!copied.empty() && copied != g_clipboard) {
+      g_clipboard = copied;
+      window.setClipboard(copied);
+    }
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const uint64_t generation = paint_generation();
+  const auto since = now - state.lastPaint;
+  if (g_compositorFrames.load()) {
+    // The compositor draws the window. After input, paint at once instead of
+    // at the next refresh tick; the render thread's frame then wakes this
+    // loop (endDrawing) and only its rows are sent. Popups are painted here,
+    // so their changes (hover, a menu opening) follow the refresh driver.
+    if (active) paint_now_if_pending();
+    const bool popups = popups_visible();
+    if (g_damaged.load() || popups != g_popupsShown ||
+        (popups && (active || generation != state.paintedGeneration))) {
+      state.paintedGeneration = generation;
+      state.lastPaint = now;
+      if (!presentComposited(window, state.frames, state.firstFrame)) state.exitCode = 1;
+    }
+  } else if (
+      // RenderDocument: paint right after input (the change shows without
+      // waiting for a refresh tick), when Gecko painted on its own since the
+      // last frame (animations, smooth scrolling, the caret's blink, loads),
+      // when a paint has been pending a while, and once a second as a
+      // backstop.
+      (active && (!onlyMotion || paint_pending())) || state.firstFrame ||
+      generation != state.paintedGeneration ||
+      (paint_pending() && since >= std::chrono::milliseconds(100)) ||
+      since >= std::chrono::seconds(1)) {
+    state.paintedGeneration = generation;
+    state.lastPaint = now;
+    if (!paintFrame(window, state.frames, state.firstFrame)) state.exitCode = 1;
+  }
+}
+
+static PumpState* g_pumpState = nullptr;
+
+// Pumps the windowserver connection from event loops nested in Gecko. A page's
+// alert(), confirm() and prompt() run one (SpinEventLoopUntil) until the
+// dialog is answered, and so does a sync XHR; the outer loop does not run
+// meanwhile. Without this the dialog was never
+// presented and the keys and clicks that would answer it never reached Gecko,
+// so the page stayed frozen. Toolkits do the same in nsBaseAppShell, which
+// processes native events before every event, nested or not.
+class NestedLoopPump final : public nsIThreadObserver {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+
+  NS_IMETHOD OnDispatchedEvent() override { return NS_OK; }
+
+  NS_IMETHOD OnProcessNextEvent(nsIThreadInternal*, bool) override {
+    mDepth++;
+    // The outer loop pumps before it runs events; here only loops nested in
+    // what it runs, or in the input it dispatches. A loop pumping at this
+    // depth is already running (it is presenting or dispatching): only a loop
+    // it nests may pump again.
+    WindowServer* window = g_window.load();
+    if ((mDepth == 1 && g_outerLoopRunsEvents) || !g_pumpState || !window ||
+        g_pumpState->exitCode >= 0 || mPumpingDepth >= mDepth) {
+      return NS_OK;
+    }
+    const uint32_t outer = mPumpingDepth;
+    mPumpingDepth = mDepth;
+    pump(*window, *g_pumpState, /* settle */ false);
+    mPumpingDepth = outer;
+    return NS_OK;
+  }
+
+  NS_IMETHOD AfterProcessNextEvent(nsIThreadInternal*, bool) override {
+    mDepth--;
+    return NS_OK;
+  }
+
+ private:
+  ~NestedLoopPump() = default;
+  // How many ProcessNextEvent calls the main thread is inside, and the depth
+  // of the innermost one pumping. Only the main thread touches these.
+  uint32_t mDepth = 0;
+  uint32_t mPumpingDepth = 0;
+};
+NS_IMPL_ISUPPORTS(NestedLoopPump, nsIThreadObserver)
+
+// Chromium's switches that FireDog takes. They come before the URL, as with
+// chrome: --remote-debugging-port=N serves the Chrome DevTools Protocol on
+// 127.0.0.1:N (an embedder that reloads or inspects the page uses it),
+// --remote-allow-origins=LIST lets those web origins open its WebSocket,
+// --remote-debugging-pipe speaks the protocol on file descriptors 3 (read) and
+// 4 (write) instead, as Puppeteer and Playwright launch Chromium, so only the
+// process that started FireDog can drive it, and --class=NAME names the
+// window's application (Chromium's WM_CLASS switch) so that a tiling window
+// manager can tell two FireDogs apart.
+struct Switches {
+  int remoteDebuggingPort = 0;
+  bool remoteDebuggingPipe = false;
+  std::string remoteAllowOrigins;
+  std::string windowClass = "firedog";
+  const char* url = nullptr;
+};
+
+static bool switchValue(const char* argument, const char* name, const char** value) {
+  const size_t length = strlen(name);
+  if (strncmp(argument, name, length) != 0 || argument[length] != '=') return false;
+  *value = argument + length + 1;
+  return true;
+}
+
+// The windowserver's commands are space-separated words, so a class is one.
+static bool validClass(const char* value) {
+  if (!*value) return false;
+  for (const char* c = value; *c; c++) {
+    if (!isalnum(static_cast<unsigned char>(*c)) && !strchr("._-", *c)) return false;
+  }
+  return true;
+}
+
+static Switches parseSwitches(int argc, char** argv) {
+  Switches switches;
+  for (int i = 1; i < argc; i++) {
+    const char* value;
+    if (switchValue(argv[i], "--remote-debugging-port", &value)) {
+      switches.remoteDebuggingPort = atoi(value);
+    } else if (strcmp(argv[i], "--remote-debugging-pipe") == 0) {
+      switches.remoteDebuggingPipe = true;
+    } else if (switchValue(argv[i], "--remote-allow-origins", &value)) {
+      switches.remoteAllowOrigins = value;
+    } else if (switchValue(argv[i], "--class", &value) && validClass(value)) {
+      switches.windowClass = value;
+    } else if (!switches.url) {
+      switches.url = argv[i];
+    }
+  }
+  return switches;
+}
+
+int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+    puts("usage: firedog [--remote-debugging-port=PORT | --remote-debugging-pipe] [--remote-allow-origins=ORIGINS]\n"
+         "               [--class=NAME] [URL]\n"
+         "Uses DISPLAY and PROFILE_DIR inside BrowserOS.");
+    return 0;
+  }
+  const Switches switches = parseSwitches(argc, argv);
+  const char* gre = getenv("GRE_DIR");
+  if (!gre) gre = "/usr/lib/firedog";
+  setenv("MOZ_FORCE_DISABLE_E10S", "1", 1);
+  setenv("MOZ_HEADLESS", "1", 1);
+  setenv("GECKO_NOWASMJIT", "1", 1);
+  // The firefox command shows Firefox's own front-end (tabs, address bar).
+  setenv("GECKO_CHROME", "1", 0);
+  // The desktop runs at GDK_SCALE device pixels per CSS pixel, like GTK.
+  const char* scaleEnv = getenv("GDK_SCALE");
+  int scale = scaleEnv ? atoi(scaleEnv) : 1;
+  if (scale < 1) scale = 1;
+  g_scale = scale;
+  WindowServer window;
+  if (!window.open(1120 * scale, 720 * scale, switches.windowClass)) { perror("firedog: windowserver"); return 1; }
+  g_window.store(&window);
+  int result = xul_init(gre);
+  if (result) { fprintf(stderr, "firedog: XPCOM initialization failed: %x\n", result); return 1; }
+  mozilla::Preferences::SetCString("layout.css.devPixelsPerPx", nsPrintfCString("%d", scale));
+  // The shortcut modifier. The desktop is laid out like macOS, so it is ⌘
+  // (Meta) as in Firefox for macOS. On a host whose keyboard has no ⌘ to hand
+  // (Windows and Linux, where the system takes the Windows key) the embedder
+  // passes FIREDOG_ACCEL=control and the shortcuts use Ctrl, as Firefox does
+  // there; otherwise copy, paste and the rest would need a key the user
+  // cannot press.
+  const char* accel = getenv("FIREDOG_ACCEL");
+  const bool controlAccel = accel && strcmp(accel, "control") == 0;
+  mozilla::Preferences::SetUint("ui.key.accelKey", controlAccel ? 17 : 224);
+  // The window repaints whenever the refresh driver paints, so the caret can
+  // blink as on other desktops (xul_init stops it for one-shot snapshots).
+  mozilla::Preferences::SetInt("ui.caretBlinkTime", 530);
+  // Before browser.xhtml loads: its script starts the endpoint from these prefs.
+  if (switches.remoteDebuggingPort > 0) {
+    mozilla::Preferences::SetInt("firedog.devtools.remote-debugging-port", switches.remoteDebuggingPort);
+  }
+  if (switches.remoteDebuggingPipe) {
+    mozilla::Preferences::SetBool("firedog.devtools.remote-debugging-pipe", true);
+    registerDevToolsPipe();
+  }
+  if (!switches.remoteAllowOrigins.empty()) {
+    mozilla::Preferences::SetCString("firedog.devtools.remote-allow-origins", switches.remoteAllowOrigins.c_str());
+  }
+  const bool chrome = getenv("GECKO_CHROME") && *getenv("GECKO_CHROME");
+  // Inside FireDog's window, which draws the tabs and the toolbar: Firefox's
+  // front-end hides its own and takes commands from the window (shell.js).
+  if (window.embedded()) {
+    mozilla::Preferences::SetBool("firedog.shell.embedded", true);
+    nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+    if (observers) observers->AddObserver(new ShellEventObserver(), "firedog-shell-event", false);
+  }
+  // Firefox's window (browser.xhtml) comes up first; pages then open in its tabs.
+  if (chrome && !xul_load("chrome://browser/content/browser.xhtml", window.width, window.height)) return 1;
+  const std::string url = startUrl(switches.url);
+  // The window is shown before the page has loaded, as other browsers do: a page
+  // that waits on a slow or unreachable host would otherwise hold back the first
+  // frame for the 30 s xul_load waits at most.
+  if ((!chrome || url != "about:blank") &&
+      !xul_load(url.c_str(), window.width, window.height, /* waitForLoad */ false)) {
+    return 1;
+  }
+  fprintf(stderr, "firedog: page loading, entering the event loop\n");
+  if (const char* paint = getenv("FIREDOG_PAINT"); paint && strcmp(paint, "document") == 0) {
+    g_compositorEnabled.store(false);
+  }
+  std::thread(readNotices, &window).detach();
+  // Registered once the browser window is up, so no window has been destroyed
+  // yet. Without the chrome there is no browser window to wait for.
+  nsCOMPtr<nsIObserverService> observers = do_GetService("@mozilla.org/observer-service;1");
+  if (chrome && observers) {
+    nsCOMPtr<nsIObserver> gone = new WindowsGoneObserver();
+    observers->AddObserver(gone, "xul-window-destroyed", false);
+    observers->AddObserver(gone, "quit-application", false);
+  }
+  // A backstop for a change that never reaches the refresh driver: one paint a
+  // second costs one RenderDocument and, if nothing changed, no present. The
+  // timer also wakes the event loop when nothing else would.
+  nsCOMPtr<nsITimer> backstop;
+  NS_NewTimerWithCallback(getter_AddRefs(backstop), [](nsITimer*) {}, 1000,
+                          nsITimer::TYPE_REPEATING_SLACK, "firedog::backstop"_ns);
+  // The outer loop and every nested event loop (see NestedLoopPump) pump the
+  // windowserver connection through the same state.
+  PumpState state;
+  g_pumpState = &state;
+  nsCOMPtr<nsIThreadInternal> mainThread = do_QueryInterface(NS_GetCurrentThread());
+  RefPtr<NestedLoopPump> nestedPump = new NestedLoopPump();
+  if (mainThread) mainThread->AddObserver(nestedPump);
+  while (window.connected() && !g_windowsGone && state.exitCode < 0) {
+    pump(window, state, /* settle */ true);
+    if (state.exitCode >= 0) break;
+    // Sleep until Gecko has something to run: a notice (the reader's runnable),
+    // a timer, a refresh tick, a network reply.
+    g_outerLoopRunsEvents = true;
+    NS_ProcessNextEvent(nullptr, true);
+    g_outerLoopRunsEvents = false;
+  }
+  if (mainThread) mainThread->RemoveObserver(nestedPump);
+  g_pumpState = nullptr;
+  return state.exitCode < 0 ? 0 : state.exitCode;
+}

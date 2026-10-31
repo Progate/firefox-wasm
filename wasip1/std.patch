@@ -1,0 +1,79 @@
+diff --git a/library/std/src/os/wasi/fs.rs b/library/std/src/os/wasi/fs.rs
+index 248112c..1ca9274 100644
+--- a/library/std/src/os/wasi/fs.rs
++++ b/library/std/src/os/wasi/fs.rs
+@@ -334,7 +334,7 @@ impl MetadataExt for fs::Metadata {
+         self.as_inner().as_inner().st_ino
+     }
+     fn nlink(&self) -> u64 {
+-        self.as_inner().as_inner().st_nlink
++        self.as_inner().as_inner().st_nlink.into()
+     }
+ }
+ 
+diff --git a/library/std/src/sys/pal/wasi/helpers.rs b/library/std/src/sys/pal/wasi/helpers.rs
+index 4f2eb11..56fa2aa 100644
+--- a/library/std/src/sys/pal/wasi/helpers.rs
++++ b/library/std/src/sys/pal/wasi/helpers.rs
+@@ -4,8 +4,33 @@ pub fn abort_internal() -> ! {
+     unsafe { libc::abort() }
+ }
+ 
++/// The errno with the same name as each WASI preview1 errno (index + 1). BrowserOS's libc, and the
++/// `libc` crate this std is built with, use the Linux values; the preview1 calls return WASI's.
++/// `ENOTCAPABLE` (76), which Linux does not have, becomes `EPERM`.
++#[cfg(target_env = "p1")]
++const ERRNO_OF_WASI: [libc::c_int; 76] = [
++    libc::E2BIG, libc::EACCES, libc::EADDRINUSE, libc::EADDRNOTAVAIL, libc::EAFNOSUPPORT,
++    libc::EAGAIN, libc::EALREADY, libc::EBADF, libc::EBADMSG, libc::EBUSY, libc::ECANCELED,
++    libc::ECHILD, libc::ECONNABORTED, libc::ECONNREFUSED, libc::ECONNRESET, libc::EDEADLK,
++    libc::EDESTADDRREQ, libc::EDOM, libc::EDQUOT, libc::EEXIST, libc::EFAULT, libc::EFBIG,
++    libc::EHOSTUNREACH, libc::EIDRM, libc::EILSEQ, libc::EINPROGRESS, libc::EINTR, libc::EINVAL,
++    libc::EIO, libc::EISCONN, libc::EISDIR, libc::ELOOP, libc::EMFILE, libc::EMLINK, libc::EMSGSIZE,
++    libc::EMULTIHOP, libc::ENAMETOOLONG, libc::ENETDOWN, libc::ENETRESET, libc::ENETUNREACH,
++    libc::ENFILE, libc::ENOBUFS, libc::ENODEV, libc::ENOENT, libc::ENOEXEC, libc::ENOLCK,
++    libc::ENOLINK, libc::ENOMEM, libc::ENOMSG, libc::ENOPROTOOPT, libc::ENOSPC, libc::ENOSYS,
++    libc::ENOTCONN, libc::ENOTDIR, libc::ENOTEMPTY, libc::ENOTRECOVERABLE, libc::ENOTSOCK,
++    libc::ENOTSUP, libc::ENOTTY, libc::ENXIO, libc::EOVERFLOW, libc::EOWNERDEAD, libc::EPERM,
++    libc::EPIPE, libc::EPROTO, libc::EPROTONOSUPPORT, libc::EPROTOTYPE, libc::ERANGE, libc::EROFS,
++    libc::ESPIPE, libc::ESRCH, libc::ESTALE, libc::ETIMEDOUT, libc::ETXTBSY, libc::EXDEV,
++    libc::EPERM,
++];
++
+ #[inline]
+ #[cfg(target_env = "p1")]
+ pub(crate) fn err2io(err: wasi::Errno) -> crate::io::Error {
+-    crate::io::Error::from_raw_os_error(err.raw().into())
++    let errno = match usize::from(err.raw()) {
++        n @ 1..=76 => ERRNO_OF_WASI[n - 1],
++        _ => libc::EIO,
++    };
++    crate::io::Error::from_raw_os_error(errno)
+ }
+diff --git a/library/std/src/sys/io/error/wasi.rs b/library/std/src/sys/io/error/wasi.rs
+--- a/library/std/src/sys/io/error/wasi.rs
++++ b/library/std/src/sys/io/error/wasi.rs
+@@ -1,19 +1,15 @@
+ use crate::ffi::CStr;
+ use crate::io as std_io;
+ 
+-unsafe extern "C" {
+-    #[thread_local]
+-    #[link_name = "errno"]
+-    static mut libc_errno: libc::c_int;
+-}
+-
++// BrowserOS's libc is musl, whose errno is per thread behind
++// __errno_location() rather than a thread-local variable named errno.
+ pub fn errno() -> i32 {
+-    unsafe { libc_errno as i32 }
++    unsafe { *libc::__errno_location() as i32 }
+ }
+ 
+ pub fn set_errno(val: i32) {
+     unsafe {
+-        libc_errno = val;
++        *libc::__errno_location() = val;
+     }
+ }
+ 

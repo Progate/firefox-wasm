@@ -3,26 +3,63 @@
 // Split from the monolithic embed-xul.cpp. See embed-xul.h.
 #include "embed-xul.h"
 #include "nsUserIdleService.h"
+#include "nsXULAppAPI.h"
+#include "nsCommandLine.h"
+#include "nsAppRunner.h"
+#include "nsIProfileUnlocker.h"
+#include "nsIToolkitProfile.h"
 #include "mozilla/GenericFactory.h"
 #include "mozilla/ModuleUtils.h"
+#include <dirent.h>
+#include <fcntl.h>
+#include "mozilla/UniquePtr.h"
+#include "nsPrintfCString.h"
+// mach's generated app descriptor (see xul_init); it names its object sAppData
+#define sAppData kGeneratedAppData
+#include "application.ini.h"
+#undef sAppData
 // For the chrome build, NS_InitXPCOM is given binDir = the APP dir (/gre/browser)
 // so resource:/// (NS_XPCOM_CURRENT_PROCESS_DIR) resolves to the Firefox front-end
 // (its modules/sessionstore/... live under /gre/browser), while NS_GRE_DIR stays at
 // the GRE (/gre) -- the standard Firefox GRE/app directory split. This provider
-// mimics the parts of nsXREDirProvider the front-end needs: NS_GRE_DIR and the
-// NS_APP_PREFS_DEFAULTS_DIR_LIST (so $app/defaults/preferences/firefox.js loads --
-// without an omnijar, the pref service only finds the browser default prefs via
-// this dir list). Everything else falls through to the default provider.
+// mimics the parts of nsXREDirProvider the front-end needs: NS_GRE_DIR, the
+// distribution directory (XRE_APP_DISTRIBUTION_DIR, where the enterprise
+// policies read policies.json) and the NS_APP_PREFS_DEFAULTS_DIR_LIST (so
+// $app/defaults/preferences/firefox.js loads -- without an omnijar, the pref
+// service only finds the browser default prefs via this dir list). Everything
+// else falls through to the default provider.
+//
+// It also answers the profile directories from the start, as nsXREDirProvider
+// does once XRE has selected a profile. The startup caches look their directory
+// up while they initialize: StartupCache during NS_InitXPCOM and ScriptPreloader
+// on the first module import, both through ProfLDS. If it is missing then, they
+// stay disabled for the whole session and every launch compiles the front-end's
+// scripts from source again.
 class GreDirProvider final : public nsIDirectoryServiceProvider2 {
  public:
   NS_DECL_ISUPPORTS
-  GreDirProvider(const char* aGreDir, const char* aAppDir)
-      : mGreDir(aGreDir), mAppDir(aAppDir) {}
+  GreDirProvider(const char* aGreDir, const char* aAppDir,
+                 const char* aProfileDir)
+      : mGreDir(aGreDir), mAppDir(aAppDir), mProfileDir(aProfileDir) {}
   NS_IMETHOD GetFile(const char* aProp, bool* aPersistent,
                      nsIFile** aResult) override {
     if (!strcmp(aProp, NS_GRE_DIR) || !strcmp(aProp, NS_GRE_BIN_DIR)) {
       *aPersistent = true;
       return NS_NewNativeLocalFile(mGreDir, aResult);
+    }
+    if (!strcmp(aProp, NS_APP_USER_PROFILE_50_DIR) ||
+        !strcmp(aProp, NS_APP_USER_PROFILE_LOCAL_50_DIR) ||
+        !strcmp(aProp, NS_APP_PROFILE_DIR_STARTUP) ||
+        !strcmp(aProp, NS_APP_PROFILE_LOCAL_DIR_STARTUP)) {
+      *aPersistent = true;
+      return NS_NewNativeLocalFile(mProfileDir, aResult);
+    }
+    if (!strcmp(aProp, XRE_APP_DISTRIBUTION_DIR)) {
+      // $GRE/distribution, as nsXREDirProvider::GetFile resolves it.
+      *aPersistent = true;
+      nsresult rv = NS_NewNativeLocalFile(mGreDir, aResult);
+      NS_ENSURE_SUCCESS(rv, rv);
+      return (*aResult)->AppendNative("distribution"_ns);
     }
     return NS_ERROR_FAILURE;
   }
@@ -46,9 +83,196 @@ class GreDirProvider final : public nsIDirectoryServiceProvider2 {
   ~GreDirProvider() = default;
   nsCString mGreDir;
   nsCString mAppDir;
+  nsCString mProfileDir;
 };
 NS_IMPL_ISUPPORTS(GreDirProvider, nsIDirectoryServiceProvider,
                   nsIDirectoryServiceProvider2)
+
+// Reads a small text file whole (the startup cache keys). Empty if it is missing.
+static nsCString ReadKeyFile(const nsACString& aPath) {
+  nsAutoCString text;
+  if (FILE* file = fopen(PromiseFlatCString(aPath).get(), "r")) {
+    char buffer[256];
+    size_t length = fread(buffer, 1, sizeof(buffer), file);
+    fclose(file);
+    text.Assign(buffer, length);
+  }
+  return std::move(text);
+}
+
+// Identifies the build the startup caches in a profile were written by. XRE
+// clears them when compatibility.ini records another build, but this embedding
+// skips that check, so without this a profile kept across an update would run
+// bytecode compiled from the previous build's scripts. The bytecode depends on
+// the JS engine, which changes only with a `mach build` and so with its build
+// ID (aEngineBuildID, from the generated application.ini.h), and on the
+// front-end's scripts, whose hash repack.mjs writes as the GRE's own key.
+static nsCString StartupCacheKey(const char* aEngineBuildID, const char* aGreDir) {
+  nsAutoCString key(aEngineBuildID);
+  key.Append('\n');
+  key.Append(ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", aGreDir)));
+  return std::move(key);
+}
+
+// Copies with read(2)/write(2) in large pieces. Every system call is a round trip
+// to the kernel worker, so stdio's small buffered writes made copying the
+// shipped caches (about 17 MB) take a second of the start. The copy is written
+// beside the target and renamed over it at the end, so a copy cut short (the
+// tab closed, a failed read) never leaves a truncated file under the real name.
+static bool CopyWholeFile(const nsACString& aFrom, const nsACString& aTo) {
+  int from = open(PromiseFlatCString(aFrom).get(), O_RDONLY);
+  if (from < 0) return false;
+  const nsPrintfCString part("%s.part", PromiseFlatCString(aTo).get());
+  int to = open(part.get(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  bool ok = to >= 0;
+  constexpr size_t kChunk = 4 << 20;
+  mozilla::UniquePtr<char[]> buffer = mozilla::MakeUnique<char[]>(kChunk);
+  for (ssize_t length; ok && (length = read(from, buffer.get(), kChunk)) != 0;) {
+    if (length < 0) {
+      ok = false;
+      break;
+    }
+    for (ssize_t written = 0; ok && written < length;) {
+      ssize_t n = write(to, buffer.get() + written, length - written);
+      ok = n > 0;
+      written += n;
+    }
+  }
+  close(from);
+  if (to >= 0 && close(to) != 0) ok = false;
+  if (ok) ok = rename(part.get(), PromiseFlatCString(aTo).get()) == 0;
+  if (!ok) unlink(part.get());
+  return ok;
+}
+
+// Copies the files under aFrom that aTo does not have, keeping the directory
+// tree. Existing files are left alone. Returns false if a copy failed.
+static bool CopyMissingFiles(const nsACString& aFrom, const nsACString& aTo) {
+  DIR* entries = opendir(PromiseFlatCString(aFrom).get());
+  if (!entries) return false;
+  mkdir(PromiseFlatCString(aTo).get(), 0755);
+  bool ok = true;
+  while (struct dirent* entry = readdir(entries)) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") ||
+        !strcmp(entry->d_name, "firedog-cache-key")) {
+      continue;
+    }
+    const nsPrintfCString from("%s/%s", PromiseFlatCString(aFrom).get(), entry->d_name);
+    const nsPrintfCString to("%s/%s", PromiseFlatCString(aTo).get(), entry->d_name);
+    struct stat found;
+    if (stat(from.get(), &found) != 0) {
+      ok = false;
+    } else if (S_ISDIR(found.st_mode)) {
+      ok &= CopyMissingFiles(from, to);
+    } else if (access(to.get(), F_OK) != 0) {
+      ok &= CopyWholeFile(from, to);
+    }
+  }
+  closedir(entries);
+  return ok;
+}
+
+// Marks a profile whose copy from $GRE/profile has not finished (PrepareProfile)
+static constexpr char kTemplateMarker[] = ".firedog-from-template";
+
+// Starts a new profile from $GRE/profile when that was written by this very
+// build (aKey, see StartupCacheKey). The packaging runs FireDog once in an empty
+// profile and ships what Firefox created in it: the empty databases (NSS's
+// cert9.db and key4.db, cookies, permissions, IndexedDB), the add-on manager's
+// list of the built-in add-ons and the search engine settings. Creating these
+// takes a new profile's first launch most of a second more than later ones.
+// Nothing in them belongs to a learner: the databases hold no records and NSS
+// no private keys, and the per-profile keys NSS and Firefox make are made when
+// first needed. Only a profile that has nothing yet (besides its lock and the
+// startup cache) gets them, so a learner's own profile is never touched;
+// times.json, the creation date, is not shipped.
+//
+// A marker file is written before the copy and removed after it. A launch cut
+// short in between (the learner closed the tab) leaves the marker, and the next
+// launch copies the files still missing before Firefox has used the profile.
+// If a copy fails, Firefox creates what is missing itself, as in any new
+// profile, so the marker is removed then too.
+static void PrepareProfile(const char* aProfileDir, const char* aGreDir,
+                           const nsCString& aKey) {
+  const nsPrintfCString marker("%s/%s", aProfileDir, kTemplateMarker);
+  if (access(marker.get(), F_OK) != 0) {
+    DIR* entries = opendir(aProfileDir);
+    if (!entries) return;
+    bool empty = true;
+    while (struct dirent* entry = readdir(entries)) {
+      if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..") &&
+          strcmp(entry->d_name, "startupCache") && strcmp(entry->d_name, "lock") &&
+          strcmp(entry->d_name, ".parentlock")) {
+        empty = false;
+      }
+    }
+    closedir(entries);
+    if (!empty) return;
+  }
+  const nsPrintfCString seed("%s/profile", aGreDir);
+  if (!ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get())).Equals(aKey)) {
+    unlink(marker.get());
+    return;
+  }
+  if (FILE* file = fopen(marker.get(), "w")) fclose(file);
+  bool ok = CopyMissingFiles(seed, nsDependentCString(aProfileDir));
+  unlink(marker.get());
+  printf("xul_init: new profile %s from the GRE\n", ok ? "started" : "partly started");
+}
+
+// Readies <profile>/startupCache for this build before NS_InitXPCOM (StartupCache
+// reads its file during XPCOM init). A cache written by another build (aKey, see
+// StartupCacheKey) is removed. A new or emptied one is filled from
+// $GRE/startupCache when that was written by this very build: the packaging
+// runs FireDog once and ships the caches it wrote, so that the first launch
+// in a new profile loads the front-end's scripts as compiled bytecode instead
+// of compiling them from source, which is most of a cold start's work.
+static void PrepareStartupCache(const char* aProfileDir, const char* aGreDir,
+                                const nsCString& aKey) {
+  nsAutoCString dir(aProfileDir);
+  dir.AppendLiteral("/startupCache");
+  const nsPrintfCString keyPath("%s/firedog-cache-key", dir.get());
+  if (ReadKeyFile(keyPath).Equals(aKey)) return;
+  auto empty = [&dir]() {
+    DIR* entries = opendir(dir.get());
+    if (!entries) return false;
+    while (struct dirent* entry = readdir(entries)) {
+      if (entry->d_name[0] == '.') continue;
+      unlink(nsPrintfCString("%s/%s", dir.get(), entry->d_name).get());
+    }
+    closedir(entries);
+    return true;
+  };
+  if (!empty()) mkdir(dir.get(), 0755);
+  const nsPrintfCString seed("%s/startupCache", aGreDir);
+  const char* outcome = "empty";
+  if (ReadKeyFile(nsPrintfCString("%s/firedog-cache-key", seed.get())).Equals(aKey)) {
+    bool seeded = false;
+    if (DIR* entries = opendir(seed.get())) {
+      seeded = true;
+      while (struct dirent* entry = readdir(entries)) {
+        if (entry->d_name[0] == '.' || !strcmp(entry->d_name, "firedog-cache-key")) continue;
+        seeded &= CopyWholeFile(nsPrintfCString("%s/%s", seed.get(), entry->d_name),
+                                nsPrintfCString("%s/%s", dir.get(), entry->d_name));
+      }
+      closedir(entries);
+    }
+    if (!seeded) {
+      // A copy that failed part way (the disk is full) leaves no half of a
+      // cache, and no key either, so that the next launch seeds it again
+      empty();
+      printf("xul_init: startup cache could not be seeded from the GRE\n");
+      return;
+    }
+    outcome = "seeded from the GRE";
+  }
+  // The key goes last, so that a launch cut short during the copy redoes it
+  if (FILE* file = fopen(keyPath.get(), "w")) {
+    fwrite(aKey.get(), 1, aKey.Length(), file);
+    fclose(file);
+  }
+  printf("xul_init: startup cache reset for this build (%s)\n", outcome);
+}
 
 // The headless widget toolkit registers no nsIAppShell (NS_APPSHELL_CID): a pure
 // headless build is unusual -- Firefox --headless piggybacks on the GTK appshell,
@@ -62,6 +286,17 @@ class EmbedAppShell final : public nsBaseAppShell {
  public:
   EmbedAppShell() = default;
   nsresult InitShell() { return Init(); }
+
+  // Init() makes the appshell the main thread's observer. nsBaseAppShell then
+  // looks for native events before each event the thread runs, and as there are
+  // none, it queues a dummy event whenever the thread would sleep: the main
+  // thread never slept and spent a core on dummy events while the page was still.
+  NS_IMETHOD OnProcessNextEvent(nsIThreadInternal*, bool) override {
+    return NS_OK;
+  }
+  NS_IMETHOD AfterProcessNextEvent(nsIThreadInternal*, bool) override {
+    return NS_OK;
+  }
 
  protected:
   ~EmbedAppShell() override = default;
@@ -134,6 +369,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
   // pthread blocks for it; under the in-process interpreter the inner app pthread
   // runs synchronously and cannot yield, so this deadlocks. Skipping it falls the
   // profile back to the default in-memory WasmFS backend (mkdir creates /opfs/*).
+#if defined(__EMSCRIPTEN__)
   if (getenv("GECKO_OPFS_MOUNT") && !getenv("GECKO_SKIP_OPFS")) {
     backend_t ob = wasmfs_create_opfs_backend();
     int orv = wasmfs_create_directory("/opfs", 0777, ob);
@@ -157,6 +393,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     printf("xul_init: mounted %s (GRE provider backend) rv=%d\n", greDir, grv);
     fflush(stdout);
   }
+
+#endif
 
   // Content build: binDir = the GRE (/gre), no provider. Chrome build: binDir = the
   // APP dir (/gre/browser) so resource:/// points at the Firefox front-end, with a
@@ -199,11 +437,97 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     return (int)rv;
   }
 
+  // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
+  // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so
+  // point gAppData at a static app descriptor. Values mirror a Firefox build (ID
+  // is the Firefox application id, so add-ons targeting Firefox match, and
+  // runtime.getBrowserInfo().version is defined). Set it before NS_InitXPCOM, as
+  // XRE does: the component manager reads the chrome manifests during init and
+  // drops every entry flagged application={id} that does not match the running
+  // application. With gAppData still null, that dropped BrowserComponents'
+  // "category app-startup nsBrowserGlue", so the Firefox front-end's startup
+  // (BrowserGlue: SessionStore, the desktop actors, the first-window tasks)
+  // never ran.
+  // The descriptor is the one `mach build` generates from
+  // browser/app/application.ini.in (application.ini.h, as nsBrowserApp.cpp
+  // includes it), so the version and the build ID are this build's own. The
+  // build ID is the time of that `mach build`. repack.mjs, which builds the
+  // front-end FireDog ships, writes the time of the repack into
+  // $GRE/application.ini, and the later of the two is used: the add-on manager
+  // rescans the built-in add-ons only when the build ID changes
+  // (XPIProvider's extensions.lastAppBuildId), and a repack alone can add or
+  // remove them.
+  static mozilla::XREAppData sAppData(kGeneratedAppData);
+  {
+    mozilla::XREAppData repacked(kGeneratedAppData);
+    nsCOMPtr<nsIFile> ini;
+    if (NS_SUCCEEDED(NS_NewNativeLocalFile(
+            nsPrintfCString("%s/application.ini", greDir), getter_AddRefs(ini))) &&
+        NS_SUCCEEDED(XRE_ParseAppData(ini, repacked)) &&
+        strcmp(repacked.buildID, sAppData.buildID) > 0) {
+      sAppData.buildID = repacked.buildID;
+    }
+  }
+  gAppData = &sAppData;
+  printf("xul_init: set gAppData (appinfo version=%s, build ID=%s)\n",
+         (const char*)sAppData.version, (const char*)sAppData.buildID);
+  fflush(stdout);
+
+  const char* profPath = getenv("PROFILE_DIR");
+  if (!profPath || !*profPath) profPath = "/profile";
+  // Mount the persistent /profile provider backend (WasmFS) before anything
+  // touches the profile, so cookies/IndexedDB/places persist via the consumer's
+  // FsProvider. PrepareProfile and PrepareStartupCache below create directories
+  // in it; mounted after them, the mount would find profPath taken (EEXIST) and
+  // the profile would silently live in memory. Gated on the ENV flag index.ts
+  // sets when a profile provider exists (the JS Module.geckoProviders the hooks
+  // read isn't visible on this pthread, but ENV is). Backend + hooks:
+  // emsdk-patches/provider_backend.h + build/provider-fs.js.
+#if defined(__EMSCRIPTEN__)
+  if (getenv("GECKO_PROFILE_PROVIDER")) {
+    backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
+    int mrv = wasmfs_create_directory(profPath, 0777, pb);
+    printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
+    fflush(stdout);
+  }
+#endif
+  // Lock the profile as XRE does when it selects one, before anything here
+  // changes it, and hand the lock to XRE once XPCOM is up. Without the lock
+  // nsIXULRuntime.replacedLockTime throws, which aborts BrowserGlue's
+  // first-window startup (_maybeOfferProfileReset) before the
+  // browser-first-window-ready tasks run. A profile another FireDog holds is
+  // not opened, as Firefox refuses it: two of them writing its databases and
+  // caches would corrupt them.
+  for (uint32_t slash = 1; slash <= strlen(profPath); slash++) {
+    if (profPath[slash] == '/' || profPath[slash] == '\0') {
+      mkdir(nsAutoCString(Substring(nsDependentCString(profPath), 0, slash)).get(), 0755);
+    }
+  }
+  static nsCOMPtr<nsIProfileLock> sProfileLock;
+  {
+    nsCOMPtr<nsIFile> profDir;
+    rv = NS_NewNativeLocalFile(nsDependentCString(profPath), getter_AddRefs(profDir));
+    if (NS_SUCCEEDED(rv)) {
+      rv = NS_LockProfilePath(profDir, profDir, nullptr, getter_AddRefs(sProfileLock));
+    }
+    printf("xul_init: profile lock rv=0x%08x\n", (unsigned)rv);
+    fflush(stdout);
+    if (NS_FAILED(rv)) {
+      printf("xul_init: the profile %s is in use by another FireDog\n", profPath);
+      fflush(stdout);
+      return (int)rv;
+    }
+  }
+
+  const nsCString cacheKey = StartupCacheKey(kGeneratedAppData.buildID, greDir);
+  PrepareProfile(profPath, greDir, cacheKey);
+  PrepareStartupCache(profPath, greDir, cacheKey);
+
   printf("xul_init: calling NS_InitXPCOM (binDir=%s)...\n", binPath.get());
   fflush(stdout);
   nsCOMPtr<nsIServiceManager> servMan;
   nsCOMPtr<nsIDirectoryServiceProvider> provider;
-  if (chrome) provider = new GreDirProvider(greDir, binPath.get());
+  if (chrome) provider = new GreDirProvider(greDir, binPath.get(), profPath);
   rv = NS_InitXPCOM(getter_AddRefs(servMan), binDir, provider);
   printf("xul_init: NS_InitXPCOM returned rv=0x%08x (%s)\n", (unsigned)rv,
          NS_SUCCEEDED(rv) ? "SUCCESS" : "FAIL");
@@ -238,34 +562,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         fflush(stdout);
       }
     }
-
-    // Populate Services.appinfo (nsIXULAppInfo). XRE_main normally sets the global
-    // gAppData from the app's nsXREAppData; this minimal embedding skips XRE, so
-    // gAppData stays null -> the nsIXULAppInfo interface is not exposed and
-    // appinfo.version/ID/appBuildID are all `undefined`. That breaks version-gated
-    // logic: WebExtensions can't match a target application (isCompatible=false ->
-    // "incompatible with {app} {$version}", $version blank) and add-on background
-    // code that reads runtime.getBrowserInfo().version (e.g. uBlock Origin) gets
-    // undefined and misbehaves. Point gAppData at a static app descriptor. Values
-    // mirror a Firefox build (ID is the Firefox app id so add-ons targeting Firefox
-    // match); platformVersion/platformBuildID come from gToolkitVersion/BuildID
-    // (compile-time) once the interface is exposed. Set after NS_InitXPCOM so init
-    // itself is unaffected; appinfo consumers (AddonManager, front-end) run later.
-    // Keep in sync with browser/config/version.txt (GRE_MILESTONE / the build's
-    // app version); MOZ_APP_VERSION isn't a C macro in this embedder's compile.
-    static const char* const kAppVersion = "153.0a1";
-    static const mozilla::StaticXREAppData kStaticAppData = {
-        .vendor = "Mozilla",
-        .name = "Firefox",
-        .remotingName = "firefox",
-        .version = kAppVersion,
-        .buildID = "20990101000000",
-        .ID = "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",  // Firefox application id
-    };
-    static mozilla::XREAppData sAppData(kStaticAppData);
-    gAppData = &sAppData;
-    printf("xul_init: set gAppData (appinfo version=%s)\n", kAppVersion);
-    fflush(stdout);
 
     // Initialize sqlite for mozStorage. XREMain normally constructs an
     // AutoSQLiteLifetime to call sqlite3_config()/sqlite3_initialize(); this
@@ -496,8 +792,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
     // Force IPv4: emscripten SOCKFS builds its WebSocket URL as ws://addr:port and
     // parses it with a regex that can't handle the colons in an IPv6 literal, so an
     // AAAA/IPv6 connect attempt is unusable. WISP carries IPv4 fine.
+    // BrowserOS's sockets carry IPv6, so the WASI build keeps it: `localhost` is
+    // then tried as 127.0.0.1 and ::1, and a server listening on ::1 only (Vite's
+    // default) opens as in Firefox on Linux.
+#if defined(__EMSCRIPTEN__)
     mozilla::Preferences::SetBool("network.dns.disableIPv6", true);
     printf("xul_init: disabled IPv6 (SOCKFS ws:// url can't encode IPv6 literals)\n");
+#endif
 
     // Disable browser services not needed for rendering that stall/crash in this
     // minimal embedding. The big one: Safe Browsing / tracking protection run the
@@ -557,21 +858,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
 
     // Real sites need storage: cookies, IndexedDB, cache, places history all
     // require a profile directory. Register ProfD/ProfLD at PROFILE_DIR (WasmFS:
-    // a native-OPFS mount at /opfs/<path>, or a provider-backed /profile below).
+    // a native-OPFS mount at /opfs/<path>, or the provider-backed /profile mounted
+    // before NS_InitXPCOM).
     {
-      const char* profPath = getenv("PROFILE_DIR");
-      if (!profPath || !*profPath) profPath = "/profile";
-      // Mount the persistent /profile provider backend (WasmFS) BEFORE ProfD setup,
-      // so cookies/IndexedDB/places persist via the consumer's FsProvider. Gated on
-      // the ENV flag index.ts sets when a profile provider exists (the JS
-      // Module.geckoProviders the hooks read isn't visible on this pthread, but ENV
-      // is). Backend + hooks: emsdk-patches/provider_backend.h + build/provider-fs.js.
-      if (getenv("GECKO_PROFILE_PROVIDER")) {
-        backend_t pb = wasmfs_create_provider_backend(/*mountId=*/1);
-        int mrv = wasmfs_create_directory(profPath, 0777, pb);
-        printf("xul_init: mounted persistent %s (provider backend) rv=%d\n", profPath, mrv);
-        fflush(stdout);
-      }
       nsCOMPtr<nsIFile> profDir;
       if (NS_SUCCEEDED(NS_NewNativeLocalFile(nsDependentCString(profPath),
                                              getter_AddRefs(profDir)))) {
@@ -583,6 +872,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
           dirSvc->Set(NS_APP_USER_PROFILE_LOCAL_50_DIR, profDir);
           printf("xul_init: profile dir = %s\n", profPath);
         }
+        // The lock taken before NS_InitXPCOM
+        XRE_SetProfileLock(sProfileLock);
       }
     }
 
@@ -638,7 +929,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
       // MozXULElement etc. in chrome documents via a document-element-inserted
       // observer) and BrowserGlue (the Firefox front-end's startup). Without it the
       // chrome custom elements (tabs, urlbar, toolbar buttons) never initialize.
-      NS_CreateServicesFromCategory("app-startup", nullptr, "app-startup",
+      // XRE hands the category a command line in its initial-launch state, and
+      // BrowserGlue reads flags from it (findFlag) on app-startup. With nullptr it
+      // threw there. This embedding has no command-line flags to pass on.
+      nsCOMPtr<nsIFile> workingDir;
+      NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR, getter_AddRefs(workingDir));
+      nsCOMPtr<nsICommandLineRunner> cmdLine = new nsCommandLine();
+      const char* const argv[] = {"firedog"};
+      cmdLine->Init(1, argv, workingDir, nsICommandLine::STATE_INITIAL_LAUNCH);
+      NS_CreateServicesFromCategory("app-startup", cmdLine, "app-startup",
                                     nullptr);
       printf("xul_init: ran app-startup category\n");
       fflush(stdout);
@@ -657,39 +956,75 @@ extern "C" EMSCRIPTEN_KEEPALIVE int xul_init(const char* greDir) {
         obs->NotifyObservers(nullptr, "profile-do-change", u"startup");
         printf("xul_init: profile-do-change done\n");
         fflush(stdout);
-        // profile-after-change is the second half of the standard profile-startup
-        // sequence (XRE fires both). We were skipping it, which left several
-        // profile-after-change observers uninitialized -- notably
-        // RemoteWorkerService (registered by nsLayoutStatics::Initialize), whose
-        // observer starts the worker-launcher thread + registers the PARENT-process
-        // RemoteWorker actor. Without it, RemoteWorkerManager::SelectTargetActor has
-        // no parent actor for an e10s-disabled (in-parent) ServiceWorker, so it falls
-        // back to LaunchNewContentProcess -- which fails here ("Failed to launch tab
-        // subprocess", no subprocesses in this single-process wasm build) and the SW
-        // registration rejects ("...threw an exception during script evaluation").
+        // Start the enterprise policies right after profile-do-change, as
+        // nsXREDirProvider::DoStartup does. Without it distribution/policies.json
+        // is never read, so Certificates.Install never adds BrowserOS's local CA
+        // and every https:// page through the egress proxy fails with
+        // SEC_ERROR_UNKNOWN_ISSUER.
+        nsCOMPtr<nsIObserver> policies =
+            do_GetService("@mozilla.org/enterprisepolicies;1");
+        if (policies) {
+          policies->Observe(nullptr, "policies-startup", nullptr);
+          printf("xul_init: started enterprise policies\n");
+          fflush(stdout);
+        }
+        // Chrome build: start the Add-on Manager where nsXREDirProvider::DoStartup
+        // does, between the policies and profile-after-change -- the amManager
+        // integration service starts the AddonManager (XPIProvider, extensions
+        // DB) on the "addons-startup" topic. Without this, AddonManager.isReady
+        // stays false and installs throw NS_ERROR_NOT_INITIALIZED, so
+        // WebExtensions can't load.
+        if (chrome) {
+          nsCOMPtr<nsIObserver> em =
+              do_GetService("@mozilla.org/addons/integration;1");
+          if (em) {
+            em->Observe(nullptr, "addons-startup", nullptr);
+            printf("xul_init: started Add-on Manager (addons-startup)\n");
+          } else {
+            printf("xul_init: addon integration service unavailable\n");
+          }
+          fflush(stdout);
+        }
+        // profile-after-change completes the profile startup, as in
+        // nsXREDirProvider::DoStartup: the notification, then the components
+        // registered in the profile-after-change category, which nothing else
+        // creates. Without the notification RemoteWorkerService (registered by
+        // nsLayoutStatics::Initialize) never starts the worker-launcher thread
+        // or registers the parent-process RemoteWorker actor, so an in-parent
+        // ServiceWorker falls back to launching a content process, which fails
+        // here, and its registration rejects. Without the category,
+        // CrashMonitor never starts, and SessionStartup throws on
+        // CrashMonitor.previousCheckpoints whenever a previous session exists:
+        // sessionstore-windows-restored never comes, so every launch after the
+        // first left extensions' background pages unstarted and BrowserGlue's
+        // _onWindowsRestored and idle startup tasks unrun. The category also
+        // starts form history, query stripping, the cookie banner service and
+        // the update timer manager.
         printf("xul_init: firing profile-after-change...\n");
         fflush(stdout);
         obs->NotifyObservers(nullptr, "profile-after-change", u"startup");
+        (void)NS_CreateServicesFromCategory("profile-after-change", nullptr,
+                                            "profile-after-change");
+        obs->NotifyObservers(nullptr, "profile-initial-state", nullptr);
         printf("xul_init: profile-after-change done\n");
         fflush(stdout);
       }
     }
 
-    // Chrome build: start the Add-on Manager exactly as XRE does
-    // (nsXREDirProvider) -- the amManager integration service starts the
-    // AddonManager (XPIProvider, extensions DB) on the "addons-startup" topic.
-    // Without this, AddonManager.isReady stays false and installs throw
-    // NS_ERROR_NOT_INITIALIZED, so WebExtensions can't load.
     if (chrome) {
-      nsCOMPtr<nsIObserver> em =
-          do_GetService("@mozilla.org/addons/integration;1");
-      if (em) {
-        em->Observe(nullptr, "addons-startup", nullptr);
-        printf("xul_init: started Add-on Manager (addons-startup)\n");
-      } else {
-        printf("xul_init: addon integration service unavailable\n");
+      // final-ui-startup comes next, before the first window opens, as in
+      // XRE_mainRun. BrowserGlue starts session restore on it (SessionStartup,
+      // which reads the session file, and SessionStore). Without it the
+      // window is never tracked by SessionStore: "reopen closed tab" stays
+      // empty, and a tab's context menu throws in SessionStore
+      // (getLastClosedTabCount) before it hides the items that do not apply.
+      nsCOMPtr<nsIObserverService> obs =
+          do_GetService("@mozilla.org/observer-service;1");
+      if (obs) {
+        obs->NotifyObservers(nullptr, "final-ui-startup", nullptr);
+        printf("xul_init: final-ui-startup done\n");
+        fflush(stdout);
       }
-      fflush(stdout);
     }
     // Keep the runtime alive (no NS_ShutdownXPCOM): we proceed to render.
     printf("xul_init: *** XPCOM INITIALIZED *** (runtime kept alive)\n");
