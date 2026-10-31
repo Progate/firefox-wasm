@@ -185,3 +185,9 @@ pref("browser.newtabpage.activity-stream.asrouter.providers.message-groups", "{\
 pref("browser.newtabpage.activity-stream.asrouter.providers.onboarding", "{\"id\":\"onboarding\",\"type\":\"local\",\"localProvider\":\"OnboardingMessageProvider\",\"enabled\":false,\"exclude\":[]}");
 pref("browser.newtabpage.activity-stream.asrouter.providers.cfr", "{\"id\":\"cfr\",\"enabled\":false,\"type\":\"remote-settings\",\"collection\":\"cfr\",\"updateCycleInMs\":3600000}");
 pref("browser.newtabpage.activity-stream.asrouter.providers.messaging-experiments", "{\"id\":\"messaging-experiments\",\"enabled\":false,\"type\":\"remote-experiments\",\"updateCycleInMs\":3600000}");
+
+// pdf.js's viewer is not packaged (repack.mjs, pruneUnusedFeatures): a PDF is
+// downloaded instead of shown.
+pref("pdfjs.disabled", true);
+// No spelling dictionary is packaged either; do not check spelling.
+pref("layout.spellcheckDefault", 0);
