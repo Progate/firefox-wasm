@@ -22,7 +22,11 @@ HOST=$(rustc -vV | sed -n 's/^host: //p')
 if [ ! -d "$RUST_SOURCE/.git" ]; then
   git init -q "$RUST_SOURCE"
 fi
-git -C "$RUST_SOURCE" fetch -q --depth 1 "$REPOSITORY" "$COMMIT"
+# download-ci-llvm finds the LLVM to download from the history (the last merge
+# that touched src/llvm-project), so fetch the history without the file contents.
+unshallow=()
+if [ "$(git -C "$RUST_SOURCE" rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+git -C "$RUST_SOURCE" fetch -q --filter=blob:none "${unshallow[@]}" "$REPOSITORY" "$COMMIT"
 git -C "$RUST_SOURCE" checkout -q FETCH_HEAD
 
 cat > "$RUST_SOURCE/bootstrap.toml" <<EOF
@@ -51,6 +55,9 @@ llvm-libunwind = "system"
 musl-libdir = "$BROWSEROS_SYSROOT/usr/lib/wasm32-linux-musl"
 EOF
 
+# The cc crate (bootstrap and the build scripts of std's dependencies) looks for
+# the sysroot of wasm32 Linux targets in WASM_MUSL_SYSROOT.
+export WASM_MUSL_SYSROOT="$BROWSEROS_SYSROOT"
 # Both standard libraries in one run: building one leaves only it in the
 # stage1 sysroot.
 cd "$RUST_SOURCE"

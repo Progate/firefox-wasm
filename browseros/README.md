@@ -60,6 +60,7 @@ export WASI_SDK_PATH=/opt/wasi-sdk
 bash /port/browseros/rust.sh
 export BROWSEROS_RUSTC=/work/rust-browseros/build/host/stage1/bin/rustc
 export GECKO_SOURCE=/work/firefox     # the pinned Gecko source
+export MOZCONFIG=/port/mozconfig.full.browseros BROWSEROS_TOOLS=/port/browseros/bin
 
 bash /port/browseros/configure.sh     # applies gecko.patch, the crate forks and the branding; runs mach configure
 cd /work/firefox

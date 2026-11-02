@@ -232,6 +232,29 @@ index 6cb8639067..cf623e6dff 100644
 +#if defined(__wasm__)
  .size ICU_DATA_SYMBOL, . - ICU_DATA_SYMBOL
  #endif
+diff --git a/config/makefiles/rust.mk b/config/makefiles/rust.mk
+index efbccd36e5..d68a764f20 100644
+--- a/config/makefiles/rust.mk
++++ b/config/makefiles/rust.mk
+@@ -579,8 +579,10 @@ force-cargo-library-build:
+ # the chance of proxy bypasses originating from rust code.
+ # The check only works when rust code is built with -Clto but without MOZ_LTO_RUST_CROSS.
+ # Sanitizers and sancov also fail because compiler-rt hooks network functions.
++# The check reads ELF symbol tables, which wasm objects do not have.
+ ifndef MOZ_PROFILE_GENERATE
+ ifeq ($(OS_ARCH), Linux)
++ifneq ($(TARGET_CPU), wasm32)
+ ifeq (,$(rustflags_sancov)$(MOZ_ASAN)$(MOZ_TSAN)$(MOZ_UBSAN))
+ ifndef MOZ_LTO_RUST_CROSS
+ ifneq (,$(filter -Clto,$(cargo_rustc_flags)))
+@@ -590,6 +592,7 @@ endif
+ endif
+ endif
+ endif
++endif
+ 
+ $(eval $(call make_cargo_rule,$(RUST_LIBRARY_FILE),force-cargo-library-build))
+ 
 diff --git a/dom/base/Document.cpp b/dom/base/Document.cpp
 index 86d153d812..60624ec61d 100644
 --- a/dom/base/Document.cpp
