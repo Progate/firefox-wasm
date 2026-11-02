@@ -1,0 +1,3 @@
+#!/bin/sh
+# The C compiler for BrowserOS: browser-cc (@progate/browser-ld) with the world's sysroot.
+exec node "${BROWSER_LD:?set BROWSER_LD to packages/browser-ld}/bin/browser-cc.mjs" --sysroot="${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT}" "$@"
