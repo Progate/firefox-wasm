@@ -45,6 +45,18 @@ from `./mach package`'s output.
     `wasip1/main.cpp` hands it on the observer topic `firedog-shell-command`,
     and reports the tabs (titles, addresses, loading, the connection's
     security) and a request for the address bar on `firedog-shell-event`.
+    It also registers `modules/firedog/FilePicker.sys.mjs`.
+  - `modules/firedog/FilePicker.sys.mjs` is the file picker of a page's
+    `<input type=file>` (`@mozilla.org/parent/filepicker;1`, which the
+    headless toolkit does not provide, so a file input did nothing). As
+    Firefox on Linux hands the choice to the desktop, it asks FireDog's window
+    with the event `pick-files` (the input's `accept` and `multiple`); the
+    window asks the windowserver, whose host has the person choose, and
+    answers with the command `picked-files` and the chosen files'
+    `[{name, mime, path}]` under `/dev/shm/picker/`. The page gets Files of
+    their bytes, read when they arrive, since the windowserver deletes them at
+    the next choice. Folders (`webkitdirectory`) and save dialogs are not
+    offered: the host's file input chooses files only.
   - `newtab.html` is the blank page that new tabs, new windows and Home show,
     in Progate's design with its Ninja Wanko (`@progate/illustrations`'
     `wanko-laptop.svg`, inline). `repack.mjs` puts it in place of Firefox's
