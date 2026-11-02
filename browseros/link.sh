@@ -8,9 +8,15 @@
 # so the program takes libxul's inputs (toolkit/library/build/libxul_so.list and
 # its static libraries) and the glue a Firefox program carries (mozglue, mfbt,
 # fmt). The libraries libxul loads stay shared libraries next to the program:
-# NSPR, NSS, SQLite, the codecs, and the LGPL libraries (SoundTouch in
-# liblgpllibs.so, ffvpx in libmozavcodec.so), which Gecko keeps separate so
-# that they stay replaceable.
+# NSPR, NSS, SQLite and the codecs.
+#
+# FireDog leaves out the LGPL libraries Gecko keeps in shared libraries:
+# liblgpllibs.so (SoundTouch) and ffvpx (libmozavutil.so, libmozavcodec.so).
+# libxul reaches ffvpx only through dlopen and plays without it when the open
+# fails. Its calls into SoundTouch go through RLBoxSoundTouch, which
+# gecko.patch replaces on wasm with a version that never calls SoundTouch; that
+# wrapper is Mozilla's own code but is built into liblgpllibs, so its object is
+# taken alone.
 set -euo pipefail
 : "${WASI_SDK_PATH:?set WASI_SDK_PATH}"
 : "${BROWSEROS_SYSROOT:?set BROWSEROS_SYSROOT}"
@@ -62,7 +68,8 @@ list "$APP" firefox.list \
   | grep -v -e '/browser/app/' -e '/xpcom/glue/standalone/' > "$BUILD/glue.list"
 list "$LIBXUL" libxul_so.list > "$BUILD/libxul.list"
 mapfile -t STATIC < <(libs "$LIBXUL" STATIC_LIBS; libs "$APP" STATIC_LIBS)
-mapfile -t SHARED < <(libs "$LIBXUL" SHARED_LIBS)
+mapfile -t SHARED < <(libs "$LIBXUL" SHARED_LIBS | grep -v '/liblgpllibs\.so$')
+SHARED+=("$OBJ/media/libsoundtouch/src/RLBoxSoundTouch.o")
 mapfile -t OS_LIBS < <(libs "$LIBXUL" OS_LIBS; libs "$APP" OS_LIBS)
 
 # Gecko's main thread recurses deeply (layout, the JS interpreter), so it gets

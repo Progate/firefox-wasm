@@ -81,8 +81,8 @@ When only the embedder changed (`browseros/*.cpp`, `gecko.js/src/embed-*.cpp`),
 
 The program is `/work/out/firedog`, installed in BrowserOS as
 `/usr/lib/firedog/firedog-bin`. Next to it go the shared libraries Gecko keeps
-out of libxul (`dist/bin/*.so`: NSPR, NSS, SQLite, the codecs, liblgpllibs and
-ffvpx), which the program finds through its RUNPATH (`$ORIGIN`), and the
+out of libxul (`dist/bin/*.so`: NSPR, NSS, SQLite and the codecs), which the
+program finds through its RUNPATH (`$ORIGIN`), and the
 resources it reads at run time: `application.ini`, `platform.ini`, `omni.ja`,
 `browser/omni.ja` and `defaults/pref/channel-prefs.js` from
 `obj-full-browseros/dist/firefox`. Gecko fails in `gfxFT2FontList::FindFonts`
@@ -91,9 +91,16 @@ without any font; BrowserOS's system fonts are in `/usr/share/fonts`.
 `link.sh` links libxul's inputs (`toolkit/library/build/libxul_so.list` and its
 static libraries) into the program instead of loading `libxul.so`: the
 embedder calls Gecko's internal C++ API, which `libxul.so` does not export.
-Gecko's LGPL code stays in the shared libraries Gecko builds for it
-(SoundTouch in `liblgpllibs.so`, FFmpeg's in `libmozavcodec.so` and
-`libmozavutil.so`), so it remains replaceable.
+
+FireDog has no LGPL code. Gecko keeps its LGPL libraries in shared libraries,
+`liblgpllibs.so` (SoundTouch) and ffvpx (`libmozavutil.so`,
+`libmozavcodec.so`); FireDog does not ship them. libxul reaches ffvpx only
+through dlopen and plays without it. `gecko.patch` gives wasm an
+`RLBoxSoundTouch` that never calls SoundTouch, and `link.sh` takes that
+wrapper's object alone and leaves `liblgpllibs.so` out; playback-rate changes
+then shift the pitch. To check a build, list the program's function names and
+its NEEDED and look for none from SoundTouch or FFmpeg (`soundtouch::`, `av_`,
+`ff_`, `liblgpllibs.so`).
 
 Sound goes out through cubeb's `alsa` backend, as Firefox's does on Linux.
 BrowserOS's kernel has Linux's ALSA devices (`/dev/snd/controlC0` and
@@ -130,7 +137,7 @@ instead of `distribution/policies.json`.
 
 - `gecko.patch`: the changes to Gecko. Builds for `TARGET_CPU=wasm32` on Linux
   (bindgen's target, visibility, the GN-generated directories read as
-  riscv64); xptcall through tables of C++ functions that `xptcodegen.py`
+  riscv64); `RLBoxSoundTouch` without SoundTouch; xptcall through tables of C++ functions that `xptcodegen.py`
   generates per XPIDL signature (wasm's `call_indirect` checks the exact
   function type); child processes through `posix_spawn` (a wasm program cannot
   fork); the headless toolkit without GTK (gamepad, Web Serial, the UI message
