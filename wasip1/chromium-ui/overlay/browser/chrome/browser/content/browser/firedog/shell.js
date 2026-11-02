@@ -29,6 +29,10 @@ var FireDogShell = {
   lastTabs: "",
 
   init() {
+    // A page's <input type=file> asks the window to choose (FilePicker.sys.mjs).
+    ChromeUtils.importESModule(
+      "resource:///modules/firedog/FilePicker.sys.mjs"
+    ).FireDogFilePicker.register();
     Services.obs.addObserver(this, "firedog-shell-command");
     window.addEventListener(
       "unload",
