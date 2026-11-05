@@ -138,6 +138,35 @@ export class Target {
     child.detach();
   }
 
+  // Chromium opens a tab in the last focused window, as Puppeteer's
+  // browser.newPage() asks for; background keeps the selected tab in front, so
+  // a client can work in a tab of its own while the user watches theirs. New
+  // windows and other browser contexts are not supported: FireDog has one
+  // profile and draws one window.
+  createTarget({ url = "about:blank", background = false, newWindow = false, browserContextId } = {}) {
+    if (newWindow) {
+      throw new ProtocolError("Opening a new window is not supported");
+    }
+    if (browserContextId && browserContextId !== Targets.defaultBrowserContextId) {
+      throw new ProtocolError("Failed to find browser context with id " + browserContextId);
+    }
+    const win = Services.wm.getMostRecentWindow("navigator:browser");
+    if (!win?.gBrowser) {
+      throw new ProtocolError("No browser window to open the target in");
+    }
+    // A tab brought to the front is owned by the one it covers, so closing it
+    // returns to that tab (browser.tabs.selectOwnerOnClose) and not to
+    // whichever tab sits next to it.
+    const tab = win.gBrowser.addTab(url || "about:blank", {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      ownerTab: background ? null : win.gBrowser.selectedTab,
+    });
+    if (!background) {
+      win.gBrowser.selectedTab = tab;
+    }
+    return { targetId: Targets.forBrowser(tab.linkedBrowser).id };
+  }
+
   closeTarget({ targetId }) {
     const target = Targets.byId(targetId);
     if (!target) {
