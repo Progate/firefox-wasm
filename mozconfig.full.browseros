@@ -1,0 +1,80 @@
+# FireDog: Gecko for BrowserOS (wasm32, musl, Linux system calls).
+# This port is separate from the Emscripten build; no JS glue is linked.
+#
+# C and C++ are compiled by browser-cc (@progate/browser-ld), a driver that runs
+# upstream clang for wasm32-unknown-linux-musl and links with browser-ld, as the
+# C programs of BrowserOS are. Rust uses the wasm32-browseros-linux-musl target
+# of Progate/rust. The programs are position-independent executables and shared
+# libraries that load the world's libc.so and libc++.so.
+mk_add_options MOZ_OBJDIR=$topsrcdir/../obj-full-browseros
+ac_add_options --enable-application=browser
+ac_add_options --with-branding=browser/branding/firedog
+ac_add_options --target=wasm32-browseros-linux-musl
+# The world's sysroot: headers and libraries for C and C++, and the .pc files
+# pkg-config reads (the alsa audio backend finds libasound through alsa.pc).
+ac_add_options --with-sysroot=$BROWSEROS_SYSROOT
+# The cc crate (build scripts of Rust crates with C sources) looks for the
+# sysroot of wasm32 Linux targets in WASM_MUSL_SYSROOT.
+mk_add_options "export WASM_MUSL_SYSROOT=$BROWSEROS_SYSROOT"
+ac_add_options --enable-default-toolkit=cairo-headless
+ac_add_options --disable-jit
+ac_add_options --enable-portable-baseline-interp
+ac_add_options --enable-portable-baseline-interp-force
+ac_add_options --disable-shared-memory
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --enable-optimize=-O2
+# browseros/link.sh strips debug information from the program, and DWARF in
+# every object roughly doubles the size of the build directory.
+ac_add_options --disable-debug-symbols
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-backgroundtasks
+# The allocator is libc's malloc: the dynamic loader binds every module's
+# malloc to libc.so's, so a second allocator in the program would only see
+# part of the heap.
+ac_add_options --disable-jemalloc
+# BrowserOS has the Linux camera (V4L2 /dev/video0), sound (ALSA, read by cubeb)
+# and socket interfaces that getUserMedia and RTCPeerConnection use.
+ac_add_options --enable-webrtc
+ac_add_options --enable-audio-backends=alsa
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --disable-ctypes
+# Release engineering options, as a Mozilla release build has them: among
+# others, gkrust (Gecko's Rust code) is built with link-time optimization.
+ac_add_options --enable-release
+# Features a FireDog build leaves out, each a configure option Gecko has for
+# builds without it: JPEG XL images (Nightly-only) and the Web Speech API
+# (speech synthesis and recognition have no backend on BrowserOS); printing
+# (FireDog runs inside a tab of a learning page, which has no printer, and
+# @progate/browser-gecko's PrintingEnabled policy hides it); parental controls
+# and Negotiate/Kerberos authentication, which have no operating system service
+# on BrowserOS to talk to.
+ac_add_options --disable-jxl
+ac_add_options --disable-webspeech
+ac_add_options --disable-printing
+ac_add_options --disable-parental-controls
+ac_add_options --disable-negotiateauth
+# WiFi scanning for geolocation: a Linux build asks NetworkManager over D-Bus,
+# and BrowserOS has no session bus.
+ac_add_options --disable-necko-wifi
+ac_add_options --disable-bootstrap
+# bindgen must parse the C++ headers with the same LLVM as the compiler.
+ac_add_options --with-libclang-path=${LIBCLANG_PATH:-$WASI_SDK_PATH/lib}
+export CC="$BROWSEROS_TOOLS/cc"
+export CXX="$BROWSEROS_TOOLS/c++"
+export AR="$WASI_SDK_PATH/bin/llvm-ar"
+export RANLIB="$WASI_SDK_PATH/bin/llvm-ranlib"
+export NM="$WASI_SDK_PATH/bin/llvm-nm"
+# setjmp/longjmp use the wasm exception instructions (exnref), as libc.so does.
+export CFLAGS="-pthread -msimd128 -mllvm -wasm-enable-sjlj -I$topsrcdir/modules/freetype2/include"
+# clang 23 reports -Wunused-template under -Wall, which Gecko's
+# warnings-as-errors directories do not expect.
+export CXXFLAGS="$CFLAGS -Wno-unused-template"
+export BINDGEN_CFLAGS="-isystem $BROWSEROS_SYSROOT/usr/include/c++/v1"
+export LDFLAGS="-pthread"
+export RUSTFLAGS="-Ctarget-feature=+simd128"
+export RUSTC="${BROWSEROS_RUSTC:-rustc}"
+HOST_CC=clang
+HOST_CXX=clang++
+export LLVM_OBJDUMP="$WASI_SDK_PATH/bin/llvm-objdump"

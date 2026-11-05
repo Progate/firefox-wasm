@@ -21,12 +21,16 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #include <emscripten/wasmfs.h>
 
 // Persistent /profile + /gre provider backend, patched into libwasmfs (emsdk-
 // patches/provider_backend.h). Not in the public emscripten/wasmfs.h.
 extern "C" backend_t wasmfs_create_provider_backend(int mountId);
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 
 #include "nsXPCOM.h"
 #include "nsCOMPtr.h"
@@ -178,11 +182,22 @@ extern bool g_mirror;                  // embed-xul.cpp (env, set in main)
 // ---- cross-file functions ----
 extern "C" int xul_init(const char* greDir);                 // embed-init.cpp
 
-bool xul_load(const char* url, int width, int height);       // embed-browser.cpp
+// waitForLoad: in the chrome build, pump the event loop until the opened page
+// has loaded (or 30 s pass) before returning. FireDog passes false so that its
+// first frame does not wait for the page.
+bool xul_load(const char* url, int width, int height,
+              bool waitForLoad = true);                      // embed-browser.cpp
 void EnsureSize(int width, int height);                      // embed-browser.cpp
 bool RunChromeScript(const nsACString& aScript, char** aOutResult = nullptr);
 
 uint8_t* xul_paint(int width, int height);                   // embed-paint.cpp
+bool xul_paint_into(uint8_t* buf, int width, int height);
+uint64_t paint_generation();
+bool paint_pending();
+int paint_popups_into(uint8_t* buf, int width, int height);
+bool popups_visible();
+nsIWidget* main_widget();
+void paint_now_if_pending();
 void gpu_ensure_active(int width, int height);               // embed-paint.cpp
 uint8_t* paint_popup_overlay(int width, int height);         // embed-paint.cpp
 void PumpEvents();                                           // embed-paint.cpp
@@ -191,8 +206,12 @@ void do_mouse(int evType, int x, int y, int button, int clickCount,
               int buttons, int modifiers);                   // embed-input.cpp
 void do_wheel(int x, int y, double dx, double dy, int modifiers);
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
-            int modifiers);
+            int modifiers, const char* code = nullptr);
 bool set_clipboard_text(const char* utf8);
+std::string get_clipboard_text();
+void set_composition(const char* utf8);
+void commit_text(const char* utf8);
+bool caret_rect(int* x, int* y, int* width, int* height);
 
 char* mirror_collect_images();                               // embed-mirror.cpp
 char* mirror_collect_css();
