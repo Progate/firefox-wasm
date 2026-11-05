@@ -11,6 +11,16 @@ rest of Firefox's features are left out (see below). It starts in Japanese. None
 node browseros/chromium-ui/repack.mjs <dist/firefox or a gre/ directory> <out>
 ```
 
+`repack.mjs` cannot run again on its own output (it prunes files of the Gecko
+package and then finds them missing). When a change touches only
+`overlay/browser/` (FireDog's modules, styles and prefs), put the overlay into
+an already repacked `gre/` instead; it restamps `firedog-cache-key` and the
+BuildID as `repack.mjs` does, so seed the startup cache again afterwards:
+
+```sh
+node browseros/chromium-ui/reoverlay.mjs <gre/> <out>
+```
+
 The published build's `gre/` (browser-gecko's `prebuilt/gre`) is made this way
 from `./mach package`'s output.
 
