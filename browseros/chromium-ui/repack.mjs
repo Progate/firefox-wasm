@@ -42,6 +42,7 @@ import {cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, r
 import {homedir, tmpdir} from 'node:os'
 import {dirname, extname, join, relative, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
+import {patchDevtoolsFrontend} from './devtools-frontend-patches.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const [input, output] = process.argv.slice(2).map((path) => path && resolve(path))
@@ -515,7 +516,8 @@ const pruneDevtoolsClient = (browser, gre) => {
  * where devtools/DevToolsWindow.sys.mjs reads it. It is an archive of its own,
  * not part of browser/omni.ja, so that it is fetched only when DevTools first
  * opens. Files are cached in ~/.cache/firedog and checked against the
- * manifest's SHA-256.
+ * manifest's SHA-256; devtools-frontend-patches.mjs then fixes the staged
+ * copies for Gecko's layout.
  *
  * @param {string} output the GRE directory being written
  */
@@ -558,6 +560,9 @@ const writeDevtoolsFrontend = async (output) => {
   for (let i = 0; i < entries.length; i += 32) await Promise.all(entries.slice(i, i + 32).map(fetchOne))
   const staging = join(work, 'devtools-frontend')
   for (const [path] of entries) cpSync(join(cache, path), join(staging, path))
+  // The cache keeps the files as the manifest pins them; Gecko's layout fixes go
+  // only into the staged copy (devtools-frontend-patches.mjs).
+  for (const file of patchDevtoolsFrontend(staging)) console.log(`devtools-frontend: patched ${file}`)
   zip(staging, join(output, 'devtools-frontend.zip'))
 }
 
