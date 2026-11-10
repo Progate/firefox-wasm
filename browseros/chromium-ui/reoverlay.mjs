@@ -12,13 +12,15 @@
 // overlay removed are not removed here; run repack.mjs on the Gecko package
 // for that. The startup cache seeded into gre/startupCache goes stale with
 // the BuildID: seed it again before publishing (packages/browser-gecko's
-// seed:startup-cache).
+// seed:startup-cache). It also applies devtools-frontend-patches.mjs to the
+// gre's devtools-frontend.zip, so a fix there needs no repack either.
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {dirname, join, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
+import {patchDevtoolsFrontend} from './devtools-frontend-patches.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const [input, output] = process.argv.slice(2).map((path) => path && resolve(path))
@@ -42,6 +44,22 @@ try {
   execFileSync('zip', ['-q', '-0', '-X', '-r', join(output, 'browser/omni.ja'), '.'], {cwd: staging})
 } finally {
   rmSync(staging, {recursive: true, force: true})
+}
+
+const frontendZip = join(output, 'devtools-frontend.zip')
+if (existsSync(frontendZip)) {
+  const frontend = mkdtempSync(join(tmpdir(), 'firedog-reoverlay-frontend-'))
+  try {
+    execFileSync('unzip', ['-q', '-o', frontendZip, '-d', frontend])
+    const changed = patchDevtoolsFrontend(frontend)
+    if (changed.length) {
+      rmSync(frontendZip)
+      execFileSync('zip', ['-q', '-0', '-X', '-r', frontendZip, '.'], {cwd: frontend})
+      for (const file of changed) console.log(`devtools-frontend: patched ${file}`)
+    }
+  } finally {
+    rmSync(frontend, {recursive: true, force: true})
+  }
 }
 
 const archives = createHash('sha256')

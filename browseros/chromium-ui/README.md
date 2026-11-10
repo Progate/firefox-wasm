@@ -155,6 +155,16 @@ menu), speaking the Chrome DevTools Protocol to Gecko.
   `devtools-frontend.zip` next to `omni.ja`, read only when DevTools first
   opens. `tools/devtools-frontend-manifest.mjs` makes the manifest for another
   revision.
+- `devtools-frontend-patches.mjs` fixes the front-end where Gecko lays its CSS
+  out differently from Blink or lacks a DOM API it calls, and a panel shows it
+  (now: DataGrid's filler row, which pushed the rows of Application > Storage
+  and Network's list to the bottom, and `ShadowRoot.prototype.getSelection`,
+  whose absence made clicks on a tree's disclosure triangle throw). Each fix is
+  CSS or JS added after an anchor in a bundled file; a front-end
+  whose file lacks the anchor fails the repack. `repack.mjs` applies them to
+  the staged files and `reoverlay.mjs` to an existing `devtools-frontend.zip`.
+  To see the front-end in Gecko without FireDog, serve the unzipped files and
+  open `devtools_app.html?ws=<a Chromium target>&panel=resources` in Firefox.
 
 ## Checking it against Chromium
 
