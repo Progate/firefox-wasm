@@ -11,6 +11,16 @@ rest of Firefox's features are left out (see below). It starts in Japanese. None
 node browseros/chromium-ui/repack.mjs <dist/firefox or a gre/ directory> <out>
 ```
 
+`repack.mjs` cannot run again on its own output (it prunes files of the Gecko
+package and then finds them missing). When a change touches only
+`overlay/browser/` (FireDog's modules, styles and prefs), put the overlay into
+an already repacked `gre/` instead; it restamps `firedog-cache-key` and the
+BuildID as `repack.mjs` does, so seed the startup cache again afterwards:
+
+```sh
+node browseros/chromium-ui/reoverlay.mjs <gre/> <out>
+```
+
 The published build's `gre/` (browser-gecko's `prebuilt/gre`) is made this way
 from `./mach package`'s output.
 
@@ -145,6 +155,16 @@ menu), speaking the Chrome DevTools Protocol to Gecko.
   `devtools-frontend.zip` next to `omni.ja`, read only when DevTools first
   opens. `tools/devtools-frontend-manifest.mjs` makes the manifest for another
   revision.
+- `devtools-frontend-patches.mjs` fixes the front-end where Gecko lays its CSS
+  out differently from Blink or lacks a DOM API it calls, and a panel shows it
+  (now: DataGrid's filler row, which pushed the rows of Application > Storage
+  and Network's list to the bottom, and `ShadowRoot.prototype.getSelection`,
+  whose absence made clicks on a tree's disclosure triangle throw). Each fix is
+  CSS or JS added after an anchor in a bundled file; a front-end
+  whose file lacks the anchor fails the repack. `repack.mjs` applies them to
+  the staged files and `reoverlay.mjs` to an existing `devtools-frontend.zip`.
+  To see the front-end in Gecko without FireDog, serve the unzipped files and
+  open `devtools_app.html?ws=<a Chromium target>&panel=resources` in Firefox.
 
 ## Checking it against Chromium
 
