@@ -1,17 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
-// Fixes to Chromium's DevTools front-end for Gecko's layout, applied to the
-// files repack.mjs (and reoverlay.mjs) put into devtools-frontend.zip.
+// Fixes to Chromium's DevTools front-end for Gecko, applied to the files
+// repack.mjs (and reoverlay.mjs) put into devtools-frontend.zip.
 //
 // The front-end is Chromium's own build, pinned by devtools-frontend.json, and
-// it lays itself out for Blink. Where Gecko lays the same CSS out differently
-// and the difference shows in a panel, the fix goes here as CSS added next to
-// an anchor in the bundled file, so that a front-end update whose file no
-// longer has the anchor fails the repack instead of silently dropping the fix.
+// it is written for Blink. Where Gecko lays the same CSS out differently or
+// lacks a DOM API it calls, and the difference shows in a panel, the fix goes
+// here as CSS or JS added next to an anchor in the bundled file, so that a
+// front-end update whose file no longer has the anchor fails the repack
+// instead of silently dropping the fix.
 import {readFileSync, writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 
 /**
  * One fix: `add` is written right after `anchor` in `file`.
+ *
+ * ShadowRoot.prototype.getSelection: Blink has it, Gecko does not. The
+ * front-end's Node.prototype.getComponentSelection calls it for any node in a
+ * shadow root, and TreeElement's click handler (treeElementToggled) asks
+ * hasSelection() before toggling, so in Gecko every click on a tree's
+ * disclosure triangle threw "e.getSelection is not a function" and the tree
+ * (Application's storage, Sources' files and others) opened only from the
+ * keyboard. Gecko's window selection already reaches into shadow trees, so the
+ * shadow root's selection falls back to it; it is defined only where missing,
+ * so a Gecko that gains the method keeps its own.
  *
  * DataGrid (the tables of Application > Storage, Network's request list and
  * others) puts its header in a sticky <thead> and, above the rows, a filler
@@ -27,6 +38,11 @@ import {join} from 'node:path'
  * filler's own height applies again.
  */
 export const DEVTOOLS_FRONTEND_PATCHES = [
+  {
+    file: 'ui/dom_extension/dom_extension.js',
+    anchor: 'return e instanceof ShadowRoot?e.getSelection():this.window().getSelection()};',
+    add: 'ShadowRoot.prototype.getSelection||(ShadowRoot.prototype.getSelection=function(){return this.ownerDocument.defaultView.getSelection()});',
+  },
   {
     file: 'ui/legacy/components/data_grid/data_grid.js',
     anchor: '.data-grid .top-filler-td,\n.data-grid .bottom-filler-td{height:auto!important;padding:0!important}',
