@@ -5918,3 +5918,77 @@ index 42ba00ad3c..4be0e24350 100644
    // The in-process wasm interpreter (GECKO_WASM_INTERP) recurses one C++ frame
    // per guest wasm call, so worker threads running guest wasm (e.g.
    // embed-demo-in-embed-demo) need a much deeper physical stack than the JS
+diff --git a/toolkit/components/backgroundhangmonitor/BackgroundHangMonitor.cpp b/toolkit/components/backgroundhangmonitor/BackgroundHangMonitor.cpp
+index 0434655..9e2e201 100644
+--- a/toolkit/components/backgroundhangmonitor/BackgroundHangMonitor.cpp
++++ b/toolkit/components/backgroundhangmonitor/BackgroundHangMonitor.cpp
+@@ -586,8 +586,17 @@ void BackgroundHangMonitor::Startup() {
+ #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
+   MOZ_ASSERT(!BackgroundHangManager::sInstance, "Already initialized");
+ 
+-  if (XRE_IsContentProcess() &&
+-      StaticPrefs::toolkit_content_background_hang_monitor_disabled()) {
++  // BrowserOS (wasm32): every thread is a Web Worker with its own JS heap and
++  // a slice of the page's address-space reservation. Hang reports are never
++  // sent, so do not start the monitor and processor threads.
++#  ifdef __wasm__
++  const bool disabledOnPlatform = true;
++#  else
++  const bool disabledOnPlatform = false;
++#  endif
++  if (disabledOnPlatform ||
++      (XRE_IsContentProcess() &&
++       StaticPrefs::toolkit_content_background_hang_monitor_disabled())) {
+     BackgroundHangManager::sDisabled = true;
+     return;
+   }
+diff --git a/netwerk/system/netlink/NetlinkService.cpp b/netwerk/system/netlink/NetlinkService.cpp
+index 1e8ae5c..27541fd 100644
+--- a/netwerk/system/netlink/NetlinkService.cpp
++++ b/netwerk/system/netlink/NetlinkService.cpp
+@@ -1228,7 +1228,7 @@ NetlinkService::Run() {
+ }
+ 
+ nsresult NetlinkService::Init(NetlinkServiceListener* aListener) {
+-  nsresult rv;
++  [[maybe_unused]] nsresult rv;
+ 
+   // No lock needed: Init() runs before the netlink thread starts.
+   MOZ_PUSH_IGNORE_THREAD_SAFETY
+@@ -1247,6 +1247,13 @@ nsresult NetlinkService::Init(NetlinkServiceListener* aListener) {
+     return NS_ERROR_UNEXPECTED;
+   }
+ 
++#ifdef __wasm__
++  // BrowserOS: the network of the world does not change under the browser,
++  // and every thread is a Web Worker with its own JS heap and a slice of the
++  // page's address-space reservation. Without the monitor thread,
++  // nsNetworkLinkService reports the link state as unknown.
++  return NS_ERROR_NOT_IMPLEMENTED;
++#else
+   if (pipe(mShutdownPipe) == -1) {
+     LOG(("Cannot create pipe"));
+     return NS_ERROR_FAILURE;
+@@ -1256,6 +1263,7 @@ nsresult NetlinkService::Init(NetlinkServiceListener* aListener) {
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   return NS_OK;
++#endif
+ }
+ 
+ nsresult NetlinkService::Shutdown() {
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index cc508f7..9646dea 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -1131,6 +1131,10 @@ pub extern "C" fn wr_thread_pool_new(low_priority: bool) -> *mut WrThreadPool {
+     // We clamp to 4 high priority threads because contention and memory usage
+     // make it not worth going higher
+     let max = if low_priority { 8 } else { 4 };
++    // BrowserOS (wasm32): every thread is a Web Worker with its own JS heap and
++    // a slice of the page's address-space reservation, and the scene builder
++    // and renderer already run beside these. One worker per pool is enough.
++    let max = if cfg!(target_arch = "wasm32") { 1 } else { max };
+     let num_threads = num_cpus::get().min(max);
+ 
+     let priority_tag = if low_priority { "LP" } else { "" };
