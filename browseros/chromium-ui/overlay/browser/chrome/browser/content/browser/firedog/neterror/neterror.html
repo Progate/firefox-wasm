@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Copyright 2013 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file (chromium/LICENSE).
+
+     Chromium's components/neterror/resources/neterror.html, standing in for
+     Firefox's aboutNetError.html (about:neterror and about:certerror).
+     neterror.mjs fills the body and adds the page's own stylesheets. URLs are
+     absolute: the document's URL is about:neterror, not this file's. -->
+<html dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src chrome:; object-src 'none'">
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="chrome://browser/content/firedog/neterror/chromium/interstitial_core.css">
+  <link rel="stylesheet" href="chrome://browser/content/firedog/neterror/chromium/interstitial_common.css">
+  <script type="module" src="chrome://browser/content/firedog/neterror/neterror.mjs"></script>
+</head>
+<body>
+</body>
+</html>

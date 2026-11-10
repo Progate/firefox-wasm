@@ -51,6 +51,7 @@ CXXFLAGS=(
   -std=gnu++20 -fno-exceptions -fno-rtti -fno-sized-deallocation -fno-aligned-new
   -DMOZILLA_INTERNAL_API -DMOZ_HAS_MOZGLUE -DNDEBUG=1
   -isystem "$INC" -isystem "$INC/nspr" -isystem "$ROOT/firefox/nsprpub/pr/include"
+  -isystem "$OBJ/build"  # application.ini.h (embed-init.cpp)
   -pthread "${EMBED_OPT[@]}"
 )
 echo ">> compiling embedder (embed-*.cpp)"
