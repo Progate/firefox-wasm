@@ -5992,3 +5992,79 @@ index cc508f7..9646dea 100644
      let num_threads = num_cpus::get().min(max);
  
      let priority_tag = if low_priority { "LP" } else { "" };
+diff --git a/dom/media/gmp/GMPService.cpp b/dom/media/gmp/GMPService.cpp
+index 80e9b16c86..e747252bce 100644
+--- a/dom/media/gmp/GMPService.cpp
++++ b/dom/media/gmp/GMPService.cpp
+@@ -415,6 +415,14 @@ nsresult GeckoMediaPluginService::GetThreadLocked(nsIThread** aThread) {
+     if (mGMPThreadShutdown) {
+       return NS_ERROR_FAILURE;
+     }
++#ifdef __wasm__
++    // BrowserOS (wasm32): a media plugin is a native library loaded into its
++    // own process, which cannot run here, and every thread is a Web Worker
++    // with its own JS heap and a slice of the page's address-space
++    // reservation. Fail every request to the GMP thread instead of starting
++    // it; callers already handle the thread being unavailable.
++    return NS_ERROR_NOT_AVAILABLE;
++#endif
+ 
+     nsresult rv = NS_NewNamedThread("GMPThread", getter_AddRefs(mGMPThread));
+     if (NS_WARN_IF(NS_FAILED(rv))) {
+diff --git a/dom/media/gmp/GMPServiceParent.cpp b/dom/media/gmp/GMPServiceParent.cpp
+index da50323f7d..9171bf9e66 100644
+--- a/dom/media/gmp/GMPServiceParent.cpp
++++ b/dom/media/gmp/GMPServiceParent.cpp
+@@ -130,6 +130,14 @@ nsresult GeckoMediaPluginServiceParent::Init() {
+     return rv;
+   }
+ 
++#ifdef __wasm__
++  // BrowserOS (wasm32): no media plugin (OpenH264, Widevine) is installed, and
++  // every thread is a Web Worker with its own JS heap and a slice of the
++  // page's address-space reservation. Do not start the GMP thread to scan for
++  // plugins; GetThreadLocked refuses to start it on BrowserOS.
++  return NS_OK;
++#endif
++
+   // Kick off scanning for plugins
+   nsCOMPtr<nsIThread> thread;
+   rv = GetThread(getter_AddRefs(thread));
+diff --git a/netwerk/base/nsStreamTransportService.cpp b/netwerk/base/nsStreamTransportService.cpp
+index 0613c0ab88..bc4ed0e5a9 100644
+--- a/netwerk/base/nsStreamTransportService.cpp
++++ b/netwerk/base/nsStreamTransportService.cpp
+@@ -252,7 +252,14 @@ already_AddRefed<nsStreamTransportService> nsStreamTransportService::Create() {
+   pool->SetName("StreamTrans"_ns);
+   // TODO: Make these settings configurable.
+   pool->SetThreadLimit(25);
++  // BrowserOS (wasm32): every thread is a Web Worker with its own JS heap and
++  // a slice of the page's address-space reservation. Keep one idle thread
++  // instead of four; the rest exit after the grace timeout.
++#ifdef __wasm__
++  pool->SetIdleThreadLimit(1);
++#else
+   pool->SetIdleThreadLimit(4);
++#endif
+   pool->SetIdleThreadMaximumTimeout(30 * 1000);
+   pool->SetIdleThreadGraceTimeout(500);
+ 
+diff --git a/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp b/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
+index 5316903828..8bfc4c502c 100644
+--- a/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
++++ b/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
+@@ -1999,6 +1999,14 @@ nsresult nsUrlClassifierDBService::ReadDisallowCompletionsTablesFromPrefs() {
+ nsresult nsUrlClassifierDBService::Init() {
+   MOZ_ASSERT(NS_IsMainThread(), "Must initialize DB service on main thread");
+ 
++#ifdef __wasm__
++  // BrowserOS (wasm32): FireDog downloads no Safe Browsing or tracking lists,
++  // and every thread is a Web Worker with its own JS heap and a slice of the
++  // page's address-space reservation. Without the service, callers skip URL
++  // classification, as they do when it fails to start.
++  return NS_ERROR_NOT_AVAILABLE;
++#endif
++
+   switch (XRE_GetProcessType()) {
+     case GeckoProcessType_Default:
+       // The parent process is supported.
