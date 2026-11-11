@@ -56,6 +56,7 @@ var FireDogShell = {
       onSecurityChange: () => this.schedule(),
     });
     this.takeLocationFocus();
+    window.addEventListener("mousemove", event => this.sendCursor(event), true);
     this.send("ready");
     this.schedule();
   },
@@ -66,6 +67,87 @@ var FireDogShell = {
     for (const name of ["select", "focus"]) {
       gURLBar[name] = () => this.send("focus-location");
     }
+  },
+
+  // The pointer's shape over the pages (and DevTools, a page too). Gecko's
+  // widget here is the headless one, which keeps to itself the cursor that
+  // EventStateManager chooses, so the window showed the arrow everywhere: over
+  // links, text, and DevTools' split. The shape is read from the element under
+  // the pointer instead and sent to the window, which shows it while the
+  // pointer is over the page. Pages' mouse events reach this window because
+  // FireDog's tabs are not remote.
+  lastCursor: "",
+
+  sendCursor(event) {
+    const cursor = this.cursorAt(event);
+    if (cursor === this.lastCursor) {
+      return;
+    }
+    this.lastCursor = cursor;
+    this.send("cursor-shape", cursor);
+  },
+
+  // The shape for the CSS cursor of the element under the pointer: a keyword
+  // as written (an image's fallback keyword for url()), and for `auto` what
+  // EventStateManager picks: the hand over links, the text beam over text and
+  // editable fields, the arrow elsewhere. The window's names are CSS's
+  // (wp_cursor_shape).
+  cursorAt(event) {
+    const target = event.originalTarget;
+    const element =
+      target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+    const view = element?.ownerDocument?.defaultView;
+    if (!element || !view) {
+      return "default";
+    }
+    const style = view.getComputedStyle(element);
+    const keyword = style.cursor.split(",").pop().trim();
+    if (keyword !== "auto") {
+      return /^[a-z-]+$/.test(keyword) ? keyword : "default";
+    }
+    if (element.closest(":any-link")) {
+      return "pointer";
+    }
+    if (element.isContentEditable || this.isTextField(element)) {
+      return "text";
+    }
+    if (style.userSelect !== "none" && this.isOverText(element, event)) {
+      return "text";
+    }
+    return "default";
+  },
+
+  // Whether the pointer is on a line of the element's own text (not on its
+  // padding or between its children), where a text frame would set the beam.
+  isOverText(element, event) {
+    const range = element.ownerDocument.createRange();
+    for (const node of element.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.data.trim()) {
+        continue;
+      }
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) {
+        if (
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  },
+
+  isTextField(element) {
+    if (element.localName === "textarea") {
+      return true;
+    }
+    if (element.localName !== "input") {
+      return false;
+    }
+    return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(element.type);
   },
 
   send(event, ...args) {
