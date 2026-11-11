@@ -141,6 +141,7 @@ class DevToolsWindow {
     stack.prepend(browser);
     this.browser = browser;
     this.stack = stack;
+    this.holdPointerWhilePressed();
     // The page keeps the whole content area, covering the front-end's
     // browser, until the front-end has laid itself out and sends its first
     // setInspectedPageBounds; Chrome likewise shows docked DevTools only once
@@ -276,6 +277,44 @@ class DevToolsWindow {
     });
   }
 
+  // A press that starts in the front-end keeps the pointer until it is
+  // released, as Chrome's docked DevTools do (the press captures the mouse
+  // for the DevTools view). Without that, dragging the split towards the
+  // page (to widen DevTools) stops as soon as the pointer is over the page:
+  // the page's <browser> lies on top of the front-end's, so its moves and the
+  // release go to the page, the front-end's drag never ends, and the split
+  // follows the pointer again once it comes back. While the press lasts the
+  // page takes no pointer events, so they reach the front-end's <browser>
+  // underneath, which covers the whole content area.
+  holdPointerWhilePressed() {
+    const release = () => {
+      this.pageBrowser.style.pointerEvents = "";
+    };
+    // FireDog's tabs are not remote, so the front-end's mouse events reach
+    // its <browser> and the chrome window.
+    this.browser.addEventListener(
+      "mousedown",
+      event => {
+        if (event.button === 0) {
+          this.pageBrowser.style.pointerEvents = "none";
+        }
+      },
+      true
+    );
+    this.browser.addEventListener("mouseup", release, true);
+    // A release outside FireDog's window comes as a move with no button held.
+    this.browser.addEventListener(
+      "mousemove",
+      event => {
+        if (!(event.buttons & 1)) {
+          release();
+        }
+      },
+      true
+    );
+    this.releasePointer = release;
+  }
+
   setInspectedPageBounds({ x, y, width, height }) {
     this.pageBrowser.classList.add("firedog-devtools-inspected");
     const style = this.pageBrowser.style;
@@ -337,6 +376,7 @@ class DevToolsWindow {
     Services.obs.removeObserver(this.observer, "document-element-inserted");
     this.transport.close();
     this.browser.remove();
+    this.releasePointer?.();
     const style = this.pageBrowser.style;
     for (const name of ["marginInlineStart", "marginTop", "width", "height", "flex"]) {
       style[name] = "";
