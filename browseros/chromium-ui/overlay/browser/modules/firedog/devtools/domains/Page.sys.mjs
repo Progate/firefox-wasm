@@ -79,6 +79,10 @@ function secureContextType(win) {
   return parent && !parent.isSecureContext ? "InsecureAncestor" : "InsecureScheme";
 }
 
+// The isolated world Chromium's DevTools front-end gives its live metrics
+// script (models/live-metrics/live-metrics.js).
+const LIVE_METRICS_WORLD = "DevTools Performance Metrics";
+
 export class Page {
   constructor(session) {
     this.session = session;
@@ -342,8 +346,17 @@ export class Page {
     throw new ProtocolError("No entry with passed id");
   }
 
-  addScriptToEvaluateOnNewDocument({ source }) {
+  addScriptToEvaluateOnNewDocument({ source, worldName }) {
     const identifier = String(this.nextScriptId++);
+    // The Performance panel's live metrics inject web-vitals into an isolated
+    // world named LIVE_METRICS_WORLD. FireDog has no isolated worlds, so it
+    // would run in the page itself, and its PerformanceObserver for entry
+    // types Gecko lacks (layout-shift, visibility-state) put two warnings in
+    // the page's console on every load. Leave it out; the identifier still
+    // lets the front-end remove it.
+    if (worldName === LIVE_METRICS_WORLD) {
+      return { identifier };
+    }
     this.scriptsOnNewDocument.set(identifier, { source });
     this._listen();
     return { identifier };

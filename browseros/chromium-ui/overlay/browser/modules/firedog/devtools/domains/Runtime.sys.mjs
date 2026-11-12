@@ -75,6 +75,9 @@ export function frameIdOf(target, browsingContext) {
   return browsingContext.id.toString(16).toUpperCase().padStart(32, "0");
 }
 
+// Where FireDog's DevTools modules (this domain's siblings) are loaded from.
+const OWN_MODULES = "resource:///modules/firedog/";
+
 export class Runtime {
   constructor(session) {
     this.session = session;
@@ -337,6 +340,13 @@ export class Runtime {
   // V8's; other errors and warnings (CSS, network, security) go to Log.
   _consoleMessage(message) {
     if (!(message instanceof Ci.nsIScriptError) || !message.innerWindowID) {
+      return;
+    }
+    // Warnings that FireDog's own DevTools code causes in the page, such as
+    // Gecko's "layout was forced before the page was fully loaded" when CSS
+    // reads a computed style while the page loads, are not the page's; Chrome
+    // shows nothing for the same reads.
+    if (message.sourceName?.startsWith(OWN_MODULES)) {
       return;
     }
     const context = this._contextForInnerWindowId(message.innerWindowID);
