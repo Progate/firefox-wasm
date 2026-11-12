@@ -170,17 +170,21 @@ var FireDogShell = {
           gBrowser.removeTab(tab(args[0]), { animate: false });
         }
         break;
+      // Browser:Back and the others are <command> elements that browser-sets.js
+      // runs from their "command" event; goDoCommand() only asks the focused
+      // element's controllers, which know none of them, so it did nothing.
+      // Call what those commands call instead.
       case "back":
-        goDoCommand("Browser:Back");
+        BrowserCommands.back();
         break;
       case "forward":
-        goDoCommand("Browser:Forward");
+        BrowserCommands.forward();
         break;
       case "reload":
-        goDoCommand("Browser:Reload");
+        BrowserCommands.reload();
         break;
       case "stop":
-        goDoCommand("Browser:Stop");
+        BrowserCommands.stop();
         break;
       case "focus-page":
         gBrowser.selectedBrowser.focus();
