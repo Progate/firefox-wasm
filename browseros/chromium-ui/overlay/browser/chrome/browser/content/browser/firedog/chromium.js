@@ -66,6 +66,62 @@ var FireDogChromium = {
     }
   },
 
+  // Chrome's --auto-open-devtools-for-tabs, for the first tab: when the pref
+  // firedog.devtools.open-on-start names a panel ("console", "elements", ...),
+  // DevTools opens on the selected tab once startup has finished and shows
+  // that panel. A learner who checks every change in the Console otherwise has
+  // to open it again from the context menu each time the exercise starts.
+  // Empty (the default) leaves DevTools closed.
+  openDevToolsOnStart(DevTools, frontendAction) {
+    const panel = Services.prefs.getStringPref("firedog.devtools.open-on-start", "");
+    if (!panel) {
+      return;
+    }
+    // DevTools docks into the tab's browser stack, which is not in the
+    // document until the first page has a location (delayed startup can
+    // finish before that, and DevTools.open then finds no stack). So it opens
+    // on the first location change of the selected tab, or right away when
+    // the tab already shows a page.
+    let opened = false;
+    const open = () => {
+      const browser = gBrowser.selectedBrowser;
+      if (opened || !browser?.parentNode || browser.currentURI.spec == "about:blank") {
+        return;
+      }
+      opened = true;
+      gBrowser.removeTabsProgressListener(listener);
+      // The front-end takes seconds to load, and the page has logged by then;
+      // Chrome opens DevTools before the page runs, so its Console shows the
+      // first page's messages. Reloading once the panel is up shows them the
+      // same way (as if the learner pressed reload with DevTools open).
+      frontendAction(DevTools.open(gBrowser.selectedTab), api => {
+        api.showPanel(panel);
+        setTimeout(() => browser.reload(), 300);
+      });
+    };
+    const listener = {
+      onLocationChange(browser) {
+        if (browser == gBrowser.selectedBrowser) {
+          // The stack is put in place after the location change is reported.
+          Promise.resolve().then(open);
+        }
+      },
+    };
+    gBrowser.addTabsProgressListener(listener);
+    if (gBrowserInit.delayedStartupFinished) {
+      open();
+      return;
+    }
+    const observer = subject => {
+      if (subject != window) {
+        return;
+      }
+      Services.obs.removeObserver(observer, "browser-delayed-startup-finished");
+      open();
+    };
+    Services.obs.addObserver(observer, "browser-delayed-startup-finished");
+  },
+
   // Chrome DevTools (devtools/DevToolsWindow.sys.mjs) on Chromium's keys:
   // F12 and ⌥⌘I open or close it, ⌥⌘J opens the Console, ⌥⌘C picks an
   // element, and "検証" (Inspect) at the end of the page's context menu opens
@@ -83,6 +139,7 @@ var FireDogChromium = {
     );
     const frontendAction = (devtools, action) =>
       devtools?.whenLoaded(api => action(Cu.waiveXrays(api)));
+    this.openDevToolsOnStart(DevTools, frontendAction);
     const ctrlKeys =
       Services.prefs.getIntPref("ui.key.accelKey", KeyEvent.DOM_VK_META) ==
       KeyEvent.DOM_VK_CONTROL;

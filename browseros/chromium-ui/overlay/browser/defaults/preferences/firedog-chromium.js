@@ -83,6 +83,13 @@ pref("devtools.jsonview.enabled", false);
 pref("firedog.devtools.remote-debugging-port", 0);
 pref("firedog.devtools.remote-debugging-pipe", false);
 pref("firedog.devtools.remote-allow-origins", "");
+// DevTools on the first tab when the window starts (Chrome's
+// --auto-open-devtools-for-tabs): the name of the panel to show ("console",
+// "elements", "sources", "network"), or empty to leave DevTools closed.
+pref("firedog.devtools.open-on-start", "");
+// The dock side DevTools starts with until the learner moves it: "right"
+// (Chrome's default), "bottom" or "left".
+pref("firedog.devtools.dock-side", "right");
 
 // Features FireDog leaves out, with the prefs Firefox itself has for them.
 // FireDog runs inside a tab of a learning page as the browser a learner checks

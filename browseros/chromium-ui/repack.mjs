@@ -3,6 +3,7 @@
 // resources `./mach package` wrote, without rebuilding Gecko.
 //
 //   node browseros/chromium-ui/repack.mjs <dist/firefox> <out>
+//   node browseros/chromium-ui/repack.mjs --overlay-only <gre> <out>
 //
 // <dist/firefox> is the directory with application.ini, omni.ja and
 // browser/omni.ja (obj-full-browseros/dist/firefox, or the gre/ directory of a
@@ -36,6 +37,16 @@
 //     a repack changes the scripts without relinking Gecko.
 // Both archives are written stored (no compression), as `./mach package`
 // writes them; the published files are compressed on the wire.
+//
+// --overlay-only takes a gre/ this script has already written (browser-gecko's
+// prebuilt/gre) and copies overlay/browser/ into its browser/omni.ja again,
+// then rewrites firedog-cache-key and the BuildID. The other steps expect
+// `./mach package`'s output (the images to empty, the parts to prune and the
+// startup tasks to take out are gone after the first repack), so a change
+// that only touches the overlay's own files (chromium.js, the DevTools
+// embedder, firedog-chromium.js) can be published without the Gecko build
+// output. It does not take files out: an overlay file that was removed stays
+// in the archive until a full repack.
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs'
@@ -45,7 +56,11 @@ import {fileURLToPath} from 'node:url'
 import {patchDevtoolsFrontend} from './devtools-frontend-patches.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const [input, output] = process.argv.slice(2).map((path) => path && resolve(path))
+const overlayOnly = process.argv.includes('--overlay-only')
+const [input, output] = process.argv
+  .slice(2)
+  .filter((arg) => arg !== '--overlay-only')
+  .map((path) => path && resolve(path))
 if (!input || !output) {
   console.error('usage: repack.mjs <dist/firefox> <out>')
   process.exit(1)
@@ -718,8 +733,47 @@ const pruneStartupTasks = (browser) => {
   writeFileSync(manifest, lines.filter((line) => !unused.has(task(line))).join('\n'))
 }
 
-const work = mkdtempSync(join(tmpdir(), 'firedog-repack-'))
-try {
+/**
+ * Writes firedog-cache-key from both archives (see the note at the top).
+ *
+ * @param {string} output the gre/ directory
+ */
+const writeCacheKey = (output) => {
+  const archives = createHash('sha256')
+  for (const file of ['omni.ja', 'browser/omni.ja']) archives.update(readFileSync(join(output, file)))
+  writeFileSync(join(output, 'firedog-cache-key'), `${archives.digest('hex')}\n`)
+}
+
+/**
+ * --overlay-only: copies overlay/browser/ into a published gre/'s
+ * browser/omni.ja again (see the note at the top).
+ */
+const repackOverlay = () => {
+  const work = mkdtempSync(join(tmpdir(), 'firedog-overlay-'))
+  try {
+    if (input !== output) {
+      rmSync(output, {recursive: true, force: true})
+      cpSync(input, output, {recursive: true})
+    }
+    const browser = join(work, 'browser')
+    unzip(join(output, 'browser/omni.ja'), browser)
+    if (!existsSync(join(browser, 'chrome/browser/content/browser/firedog/chromium.js'))) {
+      throw new Error(`${input} has not been repacked; run without --overlay-only on ./mach package's output`)
+    }
+    cpSync(join(here, 'overlay/browser'), browser, {recursive: true})
+    checkNamedFirefoxParts(browser)
+    zip(browser, join(output, 'browser/omni.ja'))
+    writeCacheKey(output)
+    stampBuildId(output)
+    for (const file of ['browser/omni.ja', 'firedog-cache-key', 'application.ini']) console.log(`wrote ${join(output, file)}`)
+  } finally {
+    rmSync(work, {recursive: true, force: true})
+  }
+}
+
+const work = overlayOnly ? null : mkdtempSync(join(tmpdir(), 'firedog-repack-'))
+if (overlayOnly) repackOverlay()
+else try {
   if (input !== output) {
     rmSync(output, {recursive: true, force: true})
     cpSync(input, output, {recursive: true})
@@ -763,9 +817,7 @@ try {
   zip(gre, join(output, 'omni.ja'))
   zip(browser, join(output, 'browser/omni.ja'))
 
-  const archives = createHash('sha256')
-  for (const file of ['omni.ja', 'browser/omni.ja']) archives.update(readFileSync(join(output, file)))
-  writeFileSync(join(output, 'firedog-cache-key'), `${archives.digest('hex')}\n`)
+  writeCacheKey(output)
   stampBuildId(output)
 
   await writeDevtoolsFrontend(output)

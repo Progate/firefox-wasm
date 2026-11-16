@@ -36,7 +36,10 @@ from `./mach package`'s output.
     the window, and a narrower surface (a preview pane) would otherwise never
     show a frame from the compositor.
   - `chromium.js` adds what Firefox's markup does not have (Chrome DevTools on
-    Chromium's keys), removes the keyboard shortcuts of the features FireDog
+    Chromium's keys, and on the first tab at startup when
+    `firedog.devtools.open-on-start` names a panel, as Chrome's
+    `--auto-open-devtools-for-tabs` does; `firedog.devtools.dock-side` sets the
+    side it docks to until the learner moves it), removes the keyboard shortcuts of the features FireDog
     leaves out, and replays the first page's location change, which
     FireDog's embedder starts before the window listens for it. FireDog's tabs
     are not remote, so it also hands a right-click that lands on a tab's
