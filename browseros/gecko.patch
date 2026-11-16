@@ -6031,19 +6031,23 @@ index da50323f7d..9171bf9e66 100644
    nsCOMPtr<nsIThread> thread;
    rv = GetThread(getter_AddRefs(thread));
 diff --git a/netwerk/base/nsStreamTransportService.cpp b/netwerk/base/nsStreamTransportService.cpp
-index 0613c0ab88..bc4ed0e5a9 100644
+index 0613c0ab88..ceb55a256d 100644
 --- a/netwerk/base/nsStreamTransportService.cpp
 +++ b/netwerk/base/nsStreamTransportService.cpp
-@@ -252,7 +252,14 @@ already_AddRefed<nsStreamTransportService> nsStreamTransportService::Create() {
+@@ -251,8 +251,18 @@ already_AddRefed<nsStreamTransportService> nsStreamTransportService::Create() {
+   nsCOMPtr<nsIThreadPool> pool = new nsThreadPool();
    pool->SetName("StreamTrans"_ns);
    // TODO: Make these settings configurable.
-   pool->SetThreadLimit(25);
 +  // BrowserOS (wasm32): every thread is a Web Worker with its own JS heap and
-+  // a slice of the page's address-space reservation. Keep one idle thread
-+  // instead of four; the rest exit after the grace timeout.
++  // a slice of the page's address-space reservation. At startup the pool
++  // otherwise grows to 16-18 threads for a few seconds; run at most eight at a
++  // time and queue the rest. Keep one idle thread instead of four; the rest
++  // exit after the grace timeout.
 +#ifdef __wasm__
++  pool->SetThreadLimit(8);
 +  pool->SetIdleThreadLimit(1);
 +#else
+   pool->SetThreadLimit(25);
    pool->SetIdleThreadLimit(4);
 +#endif
    pool->SetIdleThreadMaximumTimeout(30 * 1000);
@@ -6068,3 +6072,55 @@ index 5316903828..8bfc4c502c 100644
    switch (XRE_GetProcessType()) {
      case GeckoProcessType_Default:
        // The parent process is supported.
+diff --git a/gfx/webrender_bindings/RenderThread.cpp b/gfx/webrender_bindings/RenderThread.cpp
+index 2a25c5c930..e9adbe2a94 100644
+--- a/gfx/webrender_bindings/RenderThread.cpp
++++ b/gfx/webrender_bindings/RenderThread.cpp
+@@ -1585,6 +1585,15 @@ bool WebRenderShaders::ResumeWarmup() {
+ }
+ 
+ WebRenderThreadPool::WebRenderThreadPool(bool low_priority) {
++#ifdef __wasm__
++  // BrowserOS (wasm32): every thread is a Web Worker with its own JS heap and
++  // a slice of the page's address-space reservation. Do not start the
++  // low-priority pool; its work goes to the regular pool (WebRenderAPI.cpp).
++  if (low_priority) {
++    mThreadPool = nullptr;
++    return;
++  }
++#endif
+   mThreadPool = wr_thread_pool_new(low_priority);
+ }
+ 
+diff --git a/gfx/webrender_bindings/WebRenderAPI.cpp b/gfx/webrender_bindings/WebRenderAPI.cpp
+index b3ea69775d..6804ed5f7c 100644
+--- a/gfx/webrender_bindings/WebRenderAPI.cpp
++++ b/gfx/webrender_bindings/WebRenderAPI.cpp
+@@ -235,8 +235,15 @@ RefPtr<WebRenderAPI::CreatePromise> WebRenderAPI::Create(
+             StaticPrefs::gfx_webrender_panic_on_gl_error_AtStartup();
+ #endif
+ 
++#ifdef __wasm__
++        // BrowserOS (wasm32): no WRSceneBuilderLP thread and no low-priority
++        // worker pool (RenderThread.cpp); low-priority transactions go to the
++        // scene builder, as for windows other than the main one.
++        const bool supportLowPriorityTransactions = false;
++#else
+         const bool isMainWindow = true;  // TODO!
+         const bool supportLowPriorityTransactions = isMainWindow;
++#endif
+         const bool supportLowPriorityThreadpool =
+             supportLowPriorityTransactions &&
+             StaticPrefs::gfx_webrender_enable_low_priority_pool();
+@@ -285,7 +292,11 @@ RefPtr<WebRenderAPI::CreatePromise> WebRenderAPI::Create(
+                 gfx::gfxVars::UseWebRenderScissoredCacheClears(), swgl, gl,
+                 compositor->SurfaceOriginIsTopLeft(), progCache, shaders,
+                 renderThread->ThreadPool().Raw(),
++#ifdef __wasm__
++                renderThread->ThreadPool().Raw(),
++#else
+                 renderThread->ThreadPoolLP().Raw(),
++#endif
+                 renderThread->MemoryChunkPool(),
+                 renderThread->GlyphRasterThread().Raw(), &WebRenderMallocSizeOf,
+                 &WebRenderMallocEnclosingSizeOf, 0, compositor.get(),
