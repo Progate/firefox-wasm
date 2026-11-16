@@ -33,8 +33,16 @@ const FRONTEND_URL = `resource://${FRONTEND_HOST}/devtools_app.html?can_dock=tru
 // The front-end's settings, kept as Chrome keeps them in the profile's
 // preferences: one JSON object of string values.
 const PREFERENCES_PREF = "firedog.devtools.frontend-preferences";
-// The dock side Chrome starts with when nothing is stored.
-const DEFAULT_DOCK_SIDE = "right";
+// The dock side the front-end starts with when nothing is stored: "right"
+// (Chrome's default), "bottom" or "left". A page that teaches with the
+// Console under the page sets "bottom", which leaves the page its full width
+// in a narrow preview pane.
+const DOCK_SIDE_PREF = "firedog.devtools.dock-side";
+const DOCK_SIDES = ["right", "bottom", "left"];
+function defaultDockSide() {
+  const side = Services.prefs.getStringPref(DOCK_SIDE_PREF, "right");
+  return DOCK_SIDES.includes(side) ? side : "right";
+}
 
 let substitutionReady = false;
 function registerFrontend() {
@@ -434,7 +442,7 @@ DevToolsWindow.prototype.embedder = {
   registerPreference() {},
   getPreferences() {
     const preferences = readPreferences();
-    preferences.currentDockState ??= JSON.stringify(DEFAULT_DOCK_SIDE);
+    preferences.currentDockState ??= JSON.stringify(defaultDockSide());
     // The front-end starts in English and offers the browser's language in an
     // infobar. FireDog's own UI is in the browser's language, and a learner's
     // profile may not outlive the session, so DevTools starts the way "Always
