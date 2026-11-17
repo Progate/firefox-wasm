@@ -32,6 +32,7 @@ const DOMAINS = new Set([
   "ServiceWorker",
   "Storage",
   "Target",
+  "Tracing",
 ]);
 
 export class ProtocolError extends Error {
