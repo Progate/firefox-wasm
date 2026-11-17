@@ -12,6 +12,7 @@
 #include "mozilla/ModuleUtils.h"
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include "mozilla/UniquePtr.h"
 #include "nsPrintfCString.h"
 // mach's generated app descriptor (see xul_init); it names its object sAppData
@@ -26,8 +27,10 @@
 // distribution directory (XRE_APP_DISTRIBUTION_DIR, where the enterprise
 // policies read policies.json) and the NS_APP_PREFS_DEFAULTS_DIR_LIST (so
 // $app/defaults/preferences/firefox.js loads -- without an omnijar, the pref
-// service only finds the browser default prefs via this dir list). Everything
-// else falls through to the default provider.
+// service only finds the browser default prefs via this dir list), and the
+// Linux Mozilla directories (XRE_SYS/USER_NATIVE_MANIFESTS, which the enterprise
+// policy Certificates.Install needs). Everything else falls through to the
+// default provider.
 //
 // It also answers the profile directories from the start, as nsXREDirProvider
 // does once XRE has selected a profile. The startup caches look their directory
@@ -60,6 +63,26 @@ class GreDirProvider final : public nsIDirectoryServiceProvider2 {
       nsresult rv = NS_NewNativeLocalFile(mGreDir, aResult);
       NS_ENSURE_SUCCESS(rv, rv);
       return (*aResult)->AppendNative("distribution"_ns);
+    }
+    // The Mozilla directories of a Linux system, as nsXREDirProvider::GetFile
+    // resolves them: /usr/lib/mozilla for the system and ~/.mozilla for the user.
+    // The enterprise policy Certificates.Install looks both up before it installs
+    // anything (Policies.sys.mjs), so without them every certificate in
+    // policies.json was dropped -- the OS's local CA among them, and with it every
+    // TLS server inside the OS (NET::ERR_CERT_AUTHORITY_INVALID).
+    if (!strcmp(aProp, XRE_SYS_NATIVE_MANIFESTS)) {
+      *aPersistent = true;
+      return NS_NewNativeLocalFile("/usr/lib/mozilla"_ns, aResult);
+    }
+    if (!strcmp(aProp, XRE_USER_NATIVE_MANIFESTS)) {
+      // Like GetUserDataDirectoryHome: the legacy $HOME/.mozilla, and a failure
+      // when the process has no home
+      const char* home = getenv("HOME");
+      if (!home || !*home) return NS_ERROR_FAILURE;
+      *aPersistent = true;
+      nsresult rv = NS_NewNativeLocalFile(nsDependentCString(home), aResult);
+      NS_ENSURE_SUCCESS(rv, rv);
+      return (*aResult)->AppendNative(".mozilla"_ns);
     }
     return NS_ERROR_FAILURE;
   }
