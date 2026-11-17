@@ -55,7 +55,9 @@ const CONSOLE_TYPES = {
 };
 
 let debuggerSandbox = null;
-function newDebugger() {
+// Tracing keeps its own Debugger in the same invisible compartment, so its
+// onEnterFrame hook exists only while a trace records.
+export function newDebugger() {
   if (!debuggerSandbox) {
     debuggerSandbox = Cu.Sandbox(
       Services.scriptSecurityManager.getSystemPrincipal(),

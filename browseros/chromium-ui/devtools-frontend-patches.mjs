@@ -36,6 +36,15 @@ import {join} from 'node:path'
  * <thead>'s) while it is 0px keeps it under the header and leaves the spare
  * height to the bottom filler, as in Blink; once rows are scrolled out the
  * filler's own height applies again.
+ *
+ * The Performance panel's "Disable JavaScript samples" starts checked. FireDog
+ * has no sampling profiler: its JavaScript samples come from a Debugger hook
+ * on every call (domains/Tracing.sys.mjs), which keeps the page's code on
+ * SpiderMonkey's debugging path while recording, and the page's JavaScript ran about
+ * forty times slower. Without samples a recording costs the page nothing
+ * measurable and its durations are the page's own; checking the box off
+ * still gives the call tree. The setting's default (`defaultValue:!1`) is made
+ * true by appending `||!0`.
  */
 export const DEVTOOLS_FRONTEND_PATCHES = [
   {
@@ -47,6 +56,11 @@ export const DEVTOOLS_FRONTEND_PATCHES = [
     file: 'ui/legacy/components/data_grid/data_grid.js',
     anchor: '.data-grid .top-filler-td,\n.data-grid .bottom-filler-td{height:auto!important;padding:0!important}',
     add: '.data-grid tr.data-grid-filler-row[style*="height: 0px"] > .top-filler-td{height:21px!important}',
+  },
+  {
+    file: 'ui/settings/settings.js',
+    anchor: '{name:"timeline-disable-js-sampling",type:e.Settings.SettingType.BOOLEAN,defaultValue:!1',
+    add: '||!0',
   },
 ]
 
