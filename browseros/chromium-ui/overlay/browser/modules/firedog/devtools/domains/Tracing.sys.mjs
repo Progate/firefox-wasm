@@ -22,16 +22,18 @@
 //   (FunctionCall): when an event reaches a target, the target's listeners
 //   for it (nsIEventListenerService) get a breakpoint at their entry, which
 //   SpiderMonkey compiles into those functions alone. Setting onEnterFrame
-//   instead, even for one frame, throws away the JIT code of the whole page
-//   each time, and the code an event runs was five times slower.
+//   instead, even for one frame, puts the whole page's code on SpiderMonkey's
+//   slower debugging path (FireDog builds it without a JIT, on the portable
+//   baseline interpreter) and its fast path has to warm up again each time:
+//   the code an event ran was five times slower.
 // - With JavaScript samples on (the Performance panel's "Disable JavaScript
 //   samples" unchecked; FireDog's front-end starts with it checked, see
 //   devtools-frontend-patches.mjs), onEnterFrame stays set for the whole
 //   recording: every outermost frame becomes FunctionCall or EvaluateScript,
 //   and the call stack is taken about every SAMPLING_INTERVAL_MS into a CPU
 //   profile (Profile and ProfileChunk), as V8 samples. Observing every call
-//   keeps SpiderMonkey's JIT out of the page's code and calls the hook on each
-//   call, so the page's JavaScript runs about forty times slower while such a
+//   keeps the page's code on SpiderMonkey's debugging path and calls the hook
+//   on each call, so the page's JavaScript runs about forty times slower while such a
 //   trace records. Without samples, recording leaves its speed as it is.
 // - The docshell's reflow observer reports each layout with its duration
 //   (Layout), and MozAfterPaint the paint after it (Paint, without a

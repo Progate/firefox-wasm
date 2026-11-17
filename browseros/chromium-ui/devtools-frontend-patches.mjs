@@ -39,8 +39,8 @@ import {join} from 'node:path'
  *
  * The Performance panel's "Disable JavaScript samples" starts checked. FireDog
  * has no sampling profiler: its JavaScript samples come from a Debugger hook
- * on every call (domains/Tracing.sys.mjs), which keeps the page's code out of
- * SpiderMonkey's JIT while recording, and the page's JavaScript ran about
+ * on every call (domains/Tracing.sys.mjs), which keeps the page's code on
+ * SpiderMonkey's debugging path while recording, and the page's JavaScript ran about
  * forty times slower. Without samples a recording costs the page nothing
  * measurable and its durations are the page's own; checking the box off
  * still gives the call tree. The setting's default (`defaultValue:!1`) is made
