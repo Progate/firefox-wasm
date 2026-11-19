@@ -527,6 +527,48 @@ index c5581eb618..97a98af6bb 100644
  
  nsAuthSambaNTLM::nsAuthSambaNTLM() = default;
  
+diff --git a/extensions/permissions/PermissionManager.cpp b/extensions/permissions/PermissionManager.cpp
+index f8040c8973..e5cebfdc99 100644
+--- a/extensions/permissions/PermissionManager.cpp
++++ b/extensions/permissions/PermissionManager.cpp
+@@ -29,6 +29,7 @@
+ #include "mozilla/StaticPrefs_permissions.h"
+ #include "mozilla/MozPromise.h"
+ #include "mozilla/SyncRunnable.h"
++#include "mozStorageHelper.h"
+ #include "xpcpublic.h"
+ #include "mozilla/glean/ExtensionsPermissionsMetrics.h"
+ 
+@@ -765,7 +766,13 @@ PermissionManager::~PermissionManager() {
+   mPermissionKeyPromiseMap.Clear();
+ 
+   if (mThread) {
++#ifdef __wasm__
++    // The shared database thread outlives the service; wait for its pending
++    // permission work instead of shutting it down.
++    mozilla::storage::DrainSharedDatabaseThread();
++#else
+     mThread->Shutdown();
++#endif
+     mThread = nullptr;
+   }
+ }
+@@ -867,8 +874,15 @@ nsresult PermissionManager::Init() {
+   AddIdleDailyMaintenanceJob();
+ 
+   MOZ_ASSERT(!mThread);
++#ifdef __wasm__
++  // On wasm the permission database runs on the shared database thread
++  // instead of its own (see mozilla::storage::GetSharedDatabaseThread).
++  mThread = mozilla::storage::GetSharedDatabaseThread();
++  NS_ENSURE_TRUE(mThread, NS_ERROR_FAILURE);
++#else
+   NS_ENSURE_SUCCESS(NS_NewNamedThread("Permission", getter_AddRefs(mThread)),
+                     NS_ERROR_FAILURE);
++#endif
+ 
+   PRThread* prThread;
+   MOZ_ALWAYS_SUCCEEDS(mThread->GetPRThread(&prThread));
 diff --git a/gfx/cairo/cairo/src/cairo-ft-font.c b/gfx/cairo/cairo/src/cairo-ft-font.c
 index 02481e8b06..e3919ce5ce 100644
 --- a/gfx/cairo/cairo/src/cairo-ft-font.c
@@ -1688,6 +1730,39 @@ index 34112f14e2..3b23a9df9d 100644
  
  /**
   * The callback for MozStackWalk and MozStackWalkThread.
+diff --git a/netwerk/cookie/CookiePersistentStorage.cpp b/netwerk/cookie/CookiePersistentStorage.cpp
+index b45b08d8c3..fcbe8b4b91 100644
+--- a/netwerk/cookie/CookiePersistentStorage.cpp
++++ b/netwerk/cookie/CookiePersistentStorage.cpp
+@@ -706,7 +706,13 @@ void CookiePersistentStorage::CleanupDBConnection() {
+ 
+ void CookiePersistentStorage::Close() {
+   if (mThread) {
++#ifdef __wasm__
++    // The shared database thread outlives the cookie service; wait for its
++    // pending cookie work instead of shutting it down.
++    mozilla::storage::DrainSharedDatabaseThread();
++#else
+     mThread->Shutdown();
++#endif
+     mThread = nullptr;
+   }
+ 
+@@ -926,7 +932,14 @@ void CookiePersistentStorage::Activate() {
+     return;
+   }
+ 
++#ifdef __wasm__
++  // On wasm the cookie database runs on the shared database thread instead of
++  // its own (see mozilla::storage::GetSharedDatabaseThread).
++  mThread = mozilla::storage::GetSharedDatabaseThread();
++  NS_ENSURE_TRUE_VOID(mThread);
++#else
+   NS_ENSURE_SUCCESS_VOID(NS_NewNamedThread("Cookie", getter_AddRefs(mThread)));
++#endif
+ 
+   RefPtr<CookiePersistentStorage> self = this;
+   nsCOMPtr<nsIRunnable> runnable =
 diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
 index 23a1d35e89..5fcfa72d77 100644
 --- a/nsprpub/pr/include/md/_linux.h
@@ -4447,48 +4522,71 @@ index 8f689950e7..55cd64e7c4 100644
              #[cfg(windows)]
              let handle = join_handle.as_raw_handle();
 diff --git a/storage/mozStorageConnection.cpp b/storage/mozStorageConnection.cpp
-index bc0d67b5ed..556a0b4aa4 100644
+index bc0d67b5ed..25cf693743 100644
 --- a/storage/mozStorageConnection.cpp
 +++ b/storage/mozStorageConnection.cpp
-@@ -9,6 +9,8 @@
+@@ -9,6 +9,9 @@
  #include "nsIFile.h"
  #include "nsIFileURL.h"
  #include "nsIXPConnect.h"
 +#include "mozilla/StaticMutex.h"
++#include "mozilla/SyncRunnable.h"
 +#include "mozilla/StaticPtr.h"
  #include "mozilla/AppShutdown.h"
  #include "mozilla/CheckedInt.h"
  #include "mozilla/glean/StorageMetrics.h"
-@@ -915,6 +917,28 @@ nsIEventTarget* Connection::getAsyncExecutionTarget() {
+@@ -906,6 +909,31 @@ int32_t Connection::getSqliteRuntimeStatus(int32_t aStatusOption,
+   return curr;
+ }
+ 
++#ifdef __wasm__
++already_AddRefed<nsIThread> GetSharedDatabaseThread() {
++  static StaticRefPtr<nsIThread> sSharedDatabaseThread;
++  static StaticMutex sSharedDatabaseThreadMutex MOZ_UNANNOTATED;
++  StaticMutexAutoLock lock(sSharedDatabaseThreadMutex);
++  if (!sSharedDatabaseThread) {
++    nsCOMPtr<nsIThread> thread;
++    if (NS_FAILED(NS_NewNamedThread("sqldb:shared"_ns, getter_AddRefs(thread)))) {
++      NS_WARNING("Failed to create the shared database thread.");
++      return nullptr;
++    }
++    sSharedDatabaseThread = thread.forget();
++  }
++  return do_AddRef(sSharedDatabaseThread.get());
++}
++
++void DrainSharedDatabaseThread() {
++  nsCOMPtr<nsIThread> thread = GetSharedDatabaseThread();
++  if (thread && !thread->IsOnCurrentThread()) {
++    SyncRunnable::DispatchToThread(
++        thread, NS_NewRunnableFunction("storage::DrainSharedDatabaseThread", [] {}));
++  }
++}
++#endif
++
+ nsIEventTarget* Connection::getAsyncExecutionTarget() {
+   NS_ENSURE_TRUE(IsOnCurrentSerialEventTarget(eventTargetOpenedOn), nullptr);
+ 
+@@ -915,6 +943,18 @@ nsIEventTarget* Connection::getAsyncExecutionTarget() {
    }
  
    // Create the async event target if there's none yet.
 +#ifdef __wasm__
-+  // On wasm (BrowserOS) every thread is a Web Worker holding its own copy of
-+  // Gecko's wasm instance, so all connections share one async thread instead
-+  // of starting one per database. Statements of different databases are
-+  // serialized on it, which keeps each connection's own order.
++  // On wasm (BrowserOS) every connection runs its async statements on the one
++  // shared database thread (see GetSharedDatabaseThread). Statements of
++  // different databases are serialized on it, which keeps each connection's
++  // own order.
 +  if (!mAsyncExecutionThread) {
-+    static StaticRefPtr<nsIThread> sSharedAsyncThread;
-+    static StaticMutex sSharedAsyncThreadMutex MOZ_UNANNOTATED;
-+    StaticMutexAutoLock lock(sSharedAsyncThreadMutex);
-+    if (!sSharedAsyncThread) {
-+      nsCOMPtr<nsIThread> thread;
-+      nsresult rv =
-+          NS_NewNamedThread("sqldb:shared"_ns, getter_AddRefs(thread));
-+      if (NS_FAILED(rv)) {
-+        NS_WARNING("Failed to create async thread.");
-+        return nullptr;
-+      }
-+      sSharedAsyncThread = thread.forget();
++    mAsyncExecutionThread = GetSharedDatabaseThread();
++    if (!mAsyncExecutionThread) {
++      return nullptr;
 +    }
-+    mAsyncExecutionThread = sSharedAsyncThread.get();
 +  }
 +#endif
    if (!mAsyncExecutionThread) {
      // Names start with "sqldb:" followed by a recognizable name, like the
      // database file name, or a specially crafted name like "memory".
-@@ -1459,7 +1483,11 @@ void Connection::shutdownAsyncThread() {
+@@ -1459,7 +1499,11 @@ void Connection::shutdownAsyncThread() {
    MOZ_ASSERT(mAsyncExecutionThread);
    MOZ_ASSERT(mAsyncExecutionThreadShuttingDown);
  
@@ -4500,6 +4598,44 @@ index bc0d67b5ed..556a0b4aa4 100644
    mAsyncExecutionThread = nullptr;
  }
  
+diff --git a/storage/mozStorageHelper.h b/storage/mozStorageHelper.h
+index 8a893d84e4..c7ab516d05 100644
+--- a/storage/mozStorageHelper.h
++++ b/storage/mozStorageHelper.h
+@@ -11,6 +11,7 @@
+ #include "mozilla/ScopeExit.h"
+ 
+ #include "mozilla/storage/SQLiteMutex.h"
++#include "mozilla/AlreadyAddRefed.h"
+ #include "mozIStorageConnection.h"
+ #include "mozIStorageStatement.h"
+ #include "mozIStoragePendingStatement.h"
+@@ -322,4 +323,25 @@ class MOZ_STACK_CLASS mozStorageStatementScoper {
+ // queries are stable in the face of source code changes.
+ #define MOZ_STORAGE_UNIQUIFY_QUERY_STR "/* " __FILE__ " */ "
+ 
++#ifdef __wasm__
++class nsIThread;
++
++namespace mozilla::storage {
++
++/**
++ * The one thread that runs database work on wasm (BrowserOS): the async
++ * statements of every connection, and the database threads of the permission
++ * and cookie services. Every thread there is a Web Worker holding its own copy
++ * of Gecko's wasm instance, so these share one thread instead of starting one
++ * each. It is never shut down; callers that used to shut their own thread down
++ * to finish pending work wait with DrainSharedDatabaseThread instead.
++ */
++already_AddRefed<nsIThread> GetSharedDatabaseThread();
++
++/** Wait until the work dispatched to the shared database thread so far ran. */
++void DrainSharedDatabaseThread();
++
++}  // namespace mozilla::storage
++#endif
++
+ #endif /* MOZSTORAGEHELPER_H */
 diff --git a/third_party/abseil-cpp/absl/base/internal/direct_mmap.h b/third_party/abseil-cpp/absl/base/internal/direct_mmap.h
 index 986a8200ad..65e41c85a2 100644
 --- a/third_party/abseil-cpp/absl/base/internal/direct_mmap.h
