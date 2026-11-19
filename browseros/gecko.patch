@@ -933,6 +933,66 @@ index 438cd8f41f..1cf1134ecd 100644
  pub unsafe extern "C" fn wgpu_vksemaphore_delete(handle: *mut VkSemaphoreHandle) {
      let _ = Box::from_raw(handle);
  }
+diff --git a/gfx/wr/webrender/src/compositor/sw_compositor.rs b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+index 60a82f42e7..db33992822 100644
+--- a/gfx/wr/webrender/src/compositor/sw_compositor.rs
++++ b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+@@ -920,6 +920,12 @@ impl SwCompositeThread {
+             shutting_down: AtomicBool::new(false),
+         });
+         let result = info.clone();
++        // On wasm (BrowserOS), every thread is a Web Worker holding its own copy
++        // of Gecko's wasm instance, so do not start a composite thread. The render
++        // thread processes the queued jobs itself in wait_for_composites.
++        if cfg!(target_arch = "wasm32") {
++            return result;
++        }
+         let thread_name = "SwComposite";
+         thread::Builder::new()
+             .name(thread_name.into())
+@@ -1047,6 +1053,25 @@ impl SwCompositeThread {
+         return None;
+     }
+ 
++    /// Take a job without waiting, for processing the queue on the render thread
++    /// when there is no composite thread (wasm). Returns None once the queue is
++    /// empty.
++    fn take_inline_job(&self) -> Option<(&mut SwCompositeGraphNode, i32)> {
++        loop {
++            if let Some((job, band)) = self.try_take_job() {
++                return Some((job, band));
++            }
++            let mut jobs = self.lock();
++            if let Some((job, band)) = self.try_take_job() {
++                return Some((job, band));
++            }
++            match jobs.pop_front() {
++                Some(job) => self.current_job.store(job.get_ptr_mut(), Ordering::SeqCst),
++                None => return None,
++            }
++        }
++    }
++
+     /// Take a job from the queue. Optionally block waiting for jobs to become
+     /// available if this is called from the SwComposite thread.
+     fn take_job(&self, wait: bool) -> Option<(&mut SwCompositeGraphNode, i32)> {
+@@ -1117,6 +1142,16 @@ impl SwCompositeThread {
+     /// they were queued without having to rely upon possibly unavailable
+     /// graph dependencies.
+     fn wait_for_composites(&self, sync: bool) {
++        // Without a composite thread (wasm), process every queued job on this
++        // thread in the order it was queued, which also keeps synchronous
++        // composites in order.
++        if cfg!(target_arch = "wasm32") {
++            while let Some((job, band)) = self.take_inline_job() {
++                self.process_job(job, band, false);
++            }
++            self.jobs_completed.store(true, Ordering::SeqCst);
++            return;
++        }
+         // If processing asynchronously, try to steal jobs from the composite
+         // thread if it is busy.
+         if !sync {
 diff --git a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs b/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
 index 586893df59..27253e5e32 100644
 --- a/gfx/wr/wr_glyph_rasterizer/src/platform/unix/font.rs
@@ -1165,10 +1225,29 @@ index 49864f7400..e1dbc2b77f 100644
  #else
  #define EVENT__SIZEOF_TIME_T 4
 diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
-index d6df934e70..45e6017f4f 100644
+index d6df934e70..7614a0f9c3 100644
 --- a/ipc/glue/GeckoChildProcessHost.cpp
 +++ b/ipc/glue/GeckoChildProcessHost.cpp
-@@ -1913,6 +1913,19 @@ RefPtr<ProcessLaunchPromise> BaseProcessLauncher::Launch(
+@@ -177,9 +177,18 @@ class BaseProcessLauncher {
+     SprintfLiteral(mChildIDString, "%d", aHost->mChildID);
+ 
+     // Compute the serial event target we'll use for launching.
++#ifdef __wasm__
++    // FireDog never launches a child process (Launch rejects them below), and
++    // every thread is a Web Worker with its own copy of Gecko's wasm instance.
++    // Run the launcher on the background pool instead of starting the
++    // dedicated "IPC Launch" thread just to reject the launch.
++    MOZ_ALWAYS_SUCCEEDS(NS_CreateBackgroundTaskQueue(
++        "BaseProcessLauncher", getter_AddRefs(mLaunchThread)));
++#else
+     nsCOMPtr<nsIEventTarget> threadOrPool = GetIPCLauncher();
+     mLaunchThread =
+         TaskQueue::Create(threadOrPool.forget(), "BaseProcessLauncher");
++#endif
+ 
+     if (ShouldHaveDirectoryService()) {
+       // "Current process directory" means the app dir, not the current
+@@ -1913,6 +1922,19 @@ RefPtr<ProcessLaunchPromise> BaseProcessLauncher::Launch(
      GeckoChildProcessHost* aHost) {
    AssertIOThread();
  
@@ -4367,6 +4446,60 @@ index 8f689950e7..55cd64e7c4 100644
              let handle = join_handle.as_pthread_t();
              #[cfg(windows)]
              let handle = join_handle.as_raw_handle();
+diff --git a/storage/mozStorageConnection.cpp b/storage/mozStorageConnection.cpp
+index bc0d67b5ed..556a0b4aa4 100644
+--- a/storage/mozStorageConnection.cpp
++++ b/storage/mozStorageConnection.cpp
+@@ -9,6 +9,8 @@
+ #include "nsIFile.h"
+ #include "nsIFileURL.h"
+ #include "nsIXPConnect.h"
++#include "mozilla/StaticMutex.h"
++#include "mozilla/StaticPtr.h"
+ #include "mozilla/AppShutdown.h"
+ #include "mozilla/CheckedInt.h"
+ #include "mozilla/glean/StorageMetrics.h"
+@@ -915,6 +917,28 @@ nsIEventTarget* Connection::getAsyncExecutionTarget() {
+   }
+ 
+   // Create the async event target if there's none yet.
++#ifdef __wasm__
++  // On wasm (BrowserOS) every thread is a Web Worker holding its own copy of
++  // Gecko's wasm instance, so all connections share one async thread instead
++  // of starting one per database. Statements of different databases are
++  // serialized on it, which keeps each connection's own order.
++  if (!mAsyncExecutionThread) {
++    static StaticRefPtr<nsIThread> sSharedAsyncThread;
++    static StaticMutex sSharedAsyncThreadMutex MOZ_UNANNOTATED;
++    StaticMutexAutoLock lock(sSharedAsyncThreadMutex);
++    if (!sSharedAsyncThread) {
++      nsCOMPtr<nsIThread> thread;
++      nsresult rv =
++          NS_NewNamedThread("sqldb:shared"_ns, getter_AddRefs(thread));
++      if (NS_FAILED(rv)) {
++        NS_WARNING("Failed to create async thread.");
++        return nullptr;
++      }
++      sSharedAsyncThread = thread.forget();
++    }
++    mAsyncExecutionThread = sSharedAsyncThread.get();
++  }
++#endif
+   if (!mAsyncExecutionThread) {
+     // Names start with "sqldb:" followed by a recognizable name, like the
+     // database file name, or a specially crafted name like "memory".
+@@ -1459,7 +1483,11 @@ void Connection::shutdownAsyncThread() {
+   MOZ_ASSERT(mAsyncExecutionThread);
+   MOZ_ASSERT(mAsyncExecutionThreadShuttingDown);
+ 
++#ifndef __wasm__
++  // On wasm the async thread is shared by every connection (see
++  // getAsyncExecutionTarget) and outlives this one. The close already ran on it.
+   MOZ_ALWAYS_SUCCEEDS(mAsyncExecutionThread->Shutdown());
++#endif
+   mAsyncExecutionThread = nullptr;
+ }
+ 
 diff --git a/third_party/abseil-cpp/absl/base/internal/direct_mmap.h b/third_party/abseil-cpp/absl/base/internal/direct_mmap.h
 index 986a8200ad..65e41c85a2 100644
 --- a/third_party/abseil-cpp/absl/base/internal/direct_mmap.h
