@@ -77,10 +77,16 @@ mapfile -t OS_LIBS < <(libs "$LIBXUL" OS_LIBS; libs "$APP" OS_LIBS)
 # call back into (mozglue's functions), as -rdynamic does for Firefox. The
 # shared libraries are installed next to the program ($ORIGIN), as in a Firefox
 # installation directory.
+#
+# The program exports __tls_base, the one global of its own whose value differs
+# between threads (each thread's __wasm_init_tls sets it). BrowserOS can then
+# run several threads on one worker and one instance, saving and restoring
+# __tls_base by name when it switches between them, even when it compiles the
+# program while streaming it from a URL and never sees the bytes.
 "${CXX[@]}" "${ARCH_FLAGS[@]}" -O2 -pie \
   "${OBJS[@]}" -Wl,@"$BUILD/libxul.list" -Wl,@"$BUILD/glue.list" \
   "${STATIC[@]}" "${SHARED[@]}" $(printf '%s\n' "${OS_LIBS[@]}" | sort -u) \
-  -Wl,-rpath,'$ORIGIN' \
+  -Wl,-rpath,'$ORIGIN' -Wl,--export=__tls_base \
   -Wl,-z,stack-size=16777216 -Wl,--strip-debug -Wl,--error-limit=0 \
   -o "$OUT"
 ls -la "$OUT"
