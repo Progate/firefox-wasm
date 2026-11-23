@@ -6323,10 +6323,10 @@ index 0613c0ab88..ceb55a256d 100644
    pool->SetIdleThreadGraceTimeout(500);
  
 diff --git a/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp b/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
-index 5316903828..8bfc4c502c 100644
+index 5316903828..4ffad63b87 100644
 --- a/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
 +++ b/toolkit/components/url-classifier/nsUrlClassifierDBService.cpp
-@@ -1999,6 +1999,14 @@ nsresult nsUrlClassifierDBService::ReadDisallowCompletionsTablesFromPrefs() {
+@@ -1999,6 +1999,20 @@ nsresult nsUrlClassifierDBService::ReadDisallowCompletionsTablesFromPrefs() {
  nsresult nsUrlClassifierDBService::Init() {
    MOZ_ASSERT(NS_IsMainThread(), "Must initialize DB service on main thread");
  
@@ -6335,12 +6335,37 @@ index 5316903828..8bfc4c502c 100644
 +  // and every thread is a Web Worker with its own JS heap and a slice of the
 +  // page's address-space reservation. Without the service, callers skip URL
 +  // classification, as they do when it fails to start.
++  //
++  // GetInstance() keeps this object after Init() fails and returns it on the
++  // next call, so the service manager can still hand out a service that has
++  // no gDbBackgroundThread and no mWorker. Its entry points then refuse as
++  // they do after Shutdown() has cleared gDbBackgroundThread: most check it
++  // already, and AsyncClassifyLocalWithFeatures() checks it under __wasm__.
 +  return NS_ERROR_NOT_AVAILABLE;
 +#endif
 +
    switch (XRE_GetProcessType()) {
      case GeckoProcessType_Default:
        // The parent process is supported.
+@@ -2916,6 +2930,18 @@ nsUrlClassifierDBService::AsyncClassifyLocalWithFeatures(
+     return NS_OK;
+   }
+ 
++#ifdef __wasm__
++  // BrowserOS (wasm32): Init() starts no background thread, and the lookup
++  // below is dispatched to it; through a null gDbBackgroundThread the program
++  // traps ("null function") when PurgeTrackerService classifies cookies on
++  // idle-daily. Fail without calling aCallback, as after Shutdown(): the
++  // callers (PurgeTrackerService, URLClassifierLocalParent,
++  // StorageAccessAPIHelper, ClearDataCallback) take a failure as no match.
++  if (!gDbBackgroundThread) {
++    return NS_ERROR_NOT_AVAILABLE;
++  }
++#endif
++
+   using namespace mozilla::Telemetry;
+   auto startTime = TimeStamp::Now();  // For telemetry.
+ 
 diff --git a/gfx/webrender_bindings/RenderThread.cpp b/gfx/webrender_bindings/RenderThread.cpp
 index 2a25c5c930..e9adbe2a94 100644
 --- a/gfx/webrender_bindings/RenderThread.cpp
