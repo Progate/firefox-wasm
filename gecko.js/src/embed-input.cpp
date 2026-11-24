@@ -3,6 +3,7 @@
 #include "embed-xul.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "nsBaseClipboard.h"
 #include "nsFocusManager.h"
 #include "nsITextInputProcessor.h"
 #include "nsITextInputProcessorCallback.h"
@@ -381,4 +382,20 @@ bool caret_rect(int* x, int* y, int* width, int* height) {
   *width = std::max(rect.width, 1);
   *height = rect.height;
   return true;
+}
+
+// A number that changes whenever something is put on the global clipboard,
+// even the text it already held, so the host learns of every copy. The
+// clipboard service here is always the headless clipboard (see
+// nsContentProcessWidgetFactory.h in gecko.patch), an nsBaseClipboard. It is
+// looked up once: the pump asks after every event it runs.
+int32_t clipboard_sequence() {
+  using namespace mozilla;
+  static nsBaseClipboard* clipboard = [] {
+    nsCOMPtr<nsIClipboard> service = do_GetService("@mozilla.org/widget/clipboard;1");
+    return static_cast<nsBaseClipboard*>(service.forget().take());
+  }();
+  if (!clipboard) return -1;
+  return clipboard->GetNativeClipboardSequenceNumber(nsIClipboard::kGlobalClipboard)
+      .unwrapOr(-1);
 }

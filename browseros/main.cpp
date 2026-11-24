@@ -10,6 +10,7 @@
 #include "nsIWindowMediator.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -40,9 +41,18 @@ static int g_scale = 1;
 // (nsIDOMWindowUtils MODIFIER_ALT 1, CONTROL 2, SHIFT 4, META 8).
 static int g_buttons = 0;
 static int g_modifiers = 0;
-// What the system clipboard holds, as far as this window knows. Gecko's
-// clipboard differing from it means the page copied something.
-static std::string g_clipboard;
+// Gecko's clipboard_sequence() when this window last told the windowserver
+// what it holds, or put there what the windowserver sent. A change means the
+// page copied something, though it may be the text the host already had: the
+// host's clipboard can have changed since, out of this window's sight.
+static int32_t g_clipboardSequence = -1;
+// The last press, to count a double or triple click: GTK counts presses of
+// one button within its double-click time and distance (400 ms, 5 px).
+static int g_clickCount = 0;
+static int g_clickButton = -1;
+static int g_clickX = 0;
+static int g_clickY = 0;
+static std::chrono::steady_clock::time_point g_clickAt;
 // The typing place last told to the windowserver (" x y width height", or
 // empty when nothing editable has the focus).
 static std::string g_cursor;
@@ -231,7 +241,22 @@ static bool dispatch(WindowServer& window, const std::string& line) {
     int phase = 0;
     if (strcmp(state, "down") == 0) { phase = 1; g_buttons |= bit; }
     else if (strcmp(state, "up") == 0) { phase = 2; g_buttons &= ~bit; }
-    do_mouse(phase, x / g_scale, y / g_scale, domButton, phase ? 1 : 0, g_buttons, g_modifiers);
+    // Gecko selects a word on a press counted 2 and a line on 3; the count
+    // also makes the release fire dblclick.
+    if (phase == 1) {
+      const auto now = std::chrono::steady_clock::now();
+      const bool again = domButton == g_clickButton &&
+          now - g_clickAt <= std::chrono::milliseconds(400) &&
+          abs(x - g_clickX) <= 5 * g_scale && abs(y - g_clickY) <= 5 * g_scale;
+      g_clickCount = again && g_clickCount < 3 ? g_clickCount + 1 : 1;
+      g_clickButton = domButton;
+      g_clickX = x;
+      g_clickY = y;
+      g_clickAt = now;
+    }
+    const int clickCount =
+        phase == 0 ? 0 : (domButton == g_clickButton ? g_clickCount : 1);
+    do_mouse(phase, x / g_scale, y / g_scale, domButton, clickCount, g_buttons, g_modifiers);
     // The headless widget raises no contextmenu event of its own; on Linux it
     // follows the right button's press.
     if (phase == 1 && domButton == 2) {
@@ -264,8 +289,10 @@ static bool dispatch(WindowServer& window, const std::string& line) {
   // follows it, so ⌘V pastes what other windows copied.
   if (sscanf(line.c_str(), "selection %d", &id) == 1) {
     const auto space = line.find(' ', strlen("selection "));
-    g_clipboard = space == std::string::npos ? "" : decode(line.substr(space + 1));
-    set_clipboard_text(g_clipboard.c_str());
+    const std::string text = space == std::string::npos ? "" : decode(line.substr(space + 1));
+    set_clipboard_text(text.c_str());
+    // Not the page's copy: do not hand it back as one.
+    g_clipboardSequence = clipboard_sequence();
   }
   return true;
 }
@@ -718,12 +745,17 @@ static void pump(WindowServer& window, PumpState& state, bool settle) {
       g_cursor = cursor;
       window.setCursor(cursor);
     }
-    // Hand what the page copied (⌘C, a menu's Copy) to the system clipboard.
+  }
+  // Hand what the page copied (⌘C, a menu's Copy, navigator.clipboard) to the
+  // system clipboard. Checked on every pump, not only after input: a script's
+  // writeText finishes in a later event, and waiting for the next input would
+  // leave the host's clipboard stale until the pointer moves over the window,
+  // or for good when the focus moves to another window first.
+  const int32_t sequence = clipboard_sequence();
+  if (sequence != g_clipboardSequence) {
+    g_clipboardSequence = sequence;
     const auto copied = get_clipboard_text();
-    if (!copied.empty() && copied != g_clipboard) {
-      g_clipboard = copied;
-      window.setClipboard(copied);
-    }
+    if (!copied.empty()) window.setClipboard(copied);
   }
   const auto now = std::chrono::steady_clock::now();
   const uint64_t generation = paint_generation();
