@@ -23,6 +23,7 @@ set -euo pipefail
 : "${BROWSER_LD:?set BROWSER_LD}"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OBJ=${GECKO_OBJDIR:-/work/obj-full-browseros}
+SRC=${GECKO_SOURCE:-/work/firefox}
 OUT=${1:-/work/out/firedog}
 BUILD=$(dirname "$OUT")/link
 mkdir -p "$BUILD"
@@ -38,6 +39,10 @@ CXXFLAGS=(
   -isystem "$OBJ/dist/include" -isystem "$OBJ/dist/include/nspr"
   -isystem "$OBJ/dist/include/nss"
   -isystem "$OBJ/build"  # application.ini.h (embed-init.cpp)
+  # IPC's headers, as Gecko's chromium-config.mozbuild gives them: the
+  # clipboard (nsBaseClipboard.h, embed-input.cpp) includes PContent.h
+  -isystem "$OBJ/ipc/ipdl/_ipdlheaders" -isystem "$SRC/ipc/chromium/src"
+  -isystem "$SRC/third_party/abseil-cpp"
   "${ARCH_FLAGS[@]}" -Wno-unused-template
 )
 

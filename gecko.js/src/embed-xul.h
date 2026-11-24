@@ -209,6 +209,7 @@ void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
             int modifiers, const char* code = nullptr);
 bool set_clipboard_text(const char* utf8);
 std::string get_clipboard_text();
+int32_t clipboard_sequence();
 void set_composition(const char* utf8);
 void commit_text(const char* utf8);
 bool caret_rect(int* x, int* y, int* width, int* height);
