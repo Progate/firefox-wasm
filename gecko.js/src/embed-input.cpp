@@ -156,7 +156,8 @@ void do_wheel(int x, int y, double dx, double dy, int modifiers) {
 }
 
 // Build + dispatch one keyboard event of the given message through the widget.
-static void dispatch_key(nsIWidget* widget, mozilla::EventMessage msg,
+// Returns whether the page canceled it (preventDefault).
+static bool dispatch_key(nsIWidget* widget, mozilla::EventMessage msg,
                          const nsAString& key, int keyCode, int charCode,
                          int modifiers, const char* code) {
   using namespace mozilla;
@@ -184,11 +185,18 @@ static void dispatch_key(nsIWidget* widget, mozilla::EventMessage msg,
                                  : 0);
   }
   widget->DispatchEvent(&ev);
+  return ev.DefaultPrevented();
 }
 
 // Synthesize a keyboard event (evType: 0 keydown, 1 keyup). On keydown, also
 // dispatch a keypress for non-modifier keys (matching DOM ordering), which is
 // what drives text insertion + editor commands.
+//
+// A keydown the page canceled gets no keypress, as in every browser (UI Events:
+// canceling keydown suppresses keypress). Editors such as Monaco handle
+// Backspace, Enter and Tab on keydown and cancel it; a keypress after that runs
+// the default action again in their hidden textarea, which they read back as
+// input, so one Backspace deleted two characters.
 void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
                    int modifiers, const char* code) {
   using namespace mozilla;
@@ -204,8 +212,8 @@ void do_key(int evType, const char* keyUtf8, int keyCode, int charCode,
   bool isModifierKey = WidgetKeyboardEvent::GetModifierForKeyName(kni) !=
                        MODIFIER_NONE;
   if (evType == 0) {
-    dispatch_key(widget, eKeyDown, key, keyCode, 0, modifiers, code);
-    if (!isModifierKey) {
+    const bool canceled = dispatch_key(widget, eKeyDown, key, keyCode, 0, modifiers, code);
+    if (!isModifierKey && !canceled) {
       dispatch_key(widget, eKeyPress, key, keyCode, charCode, modifiers, code);
     }
   } else {
